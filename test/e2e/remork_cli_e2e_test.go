@@ -191,6 +191,17 @@ func TestRemorkProductRunSafeMode(t *testing.T) {
 	mustContain(t, remoteOnly, "local pending changes are ignored")
 }
 
+func TestRemorkProductRunSyncsCleanStaleWorkspace(t *testing.T) {
+	h := newProductHarness(t)
+	h.writeRemote("a.txt", "remote-one\n")
+	h.bindAndSync()
+	h.writeRemote("a.txt", "remote-two\n")
+
+	out := h.runInLocal("run", "cat a.txt")
+	mustContain(t, out, "remote-two")
+	h.assertLocal("a.txt", "remote-two\n")
+}
+
 type cliHarness struct {
 	t         *testing.T
 	home      string

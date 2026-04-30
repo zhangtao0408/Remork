@@ -85,6 +85,19 @@ func TestSyncSameRevisionNormalToLargeWritesMeta(t *testing.T) {
 	assertOp(t, plan, "model.bin", OpWriteMeta)
 }
 
+func TestSyncSameRevisionDifferentHashDownloadsFile(t *testing.T) {
+	manifest := api.ManifestResponse{Entries: []api.FileEntry{
+		{Path: "a.txt", Type: api.FileTypeFile, Size: 4, Hash: "sha256:remote", Revision: "same"},
+	}}
+	snap := state.Snapshot{Entries: map[string]state.TrackedFile{
+		"a.txt": {Path: "a.txt", Type: api.FileTypeFile, BaseHash: "sha256:base", Revision: "same", Large: false},
+	}}
+
+	plan := PlanSync(manifest, snap, Options{})
+
+	assertOp(t, plan, "a.txt", OpDownload)
+}
+
 func TestSyncDirtyRemoteDeleteBecomesConflict(t *testing.T) {
 	plan := PlanRemoteDeletes(state.Snapshot{Entries: map[string]state.TrackedFile{
 		"deleted.txt": {Path: "deleted.txt", Revision: "rev-old"},

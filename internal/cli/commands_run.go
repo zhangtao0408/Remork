@@ -55,6 +55,17 @@ func newRunCommand(opts Options) *cobra.Command {
 					fmt.Fprintln(cmd.ErrOrStderr(), decision.Message)
 					return codedCommandError{code: decision.ExitCode, err: fmt.Errorf("%s", decision.Message)}
 				}
+				if status.RemoteUpdates > 0 {
+					syncResult, err := runCtx.runner.Sync(ctx, syncer.SyncOptions{})
+					if err != nil {
+						return err
+					}
+					if syncResult.Conflicts > 0 {
+						msg := "Remote updates conflict with local files; resolve conflicts before running remote commands."
+						fmt.Fprintln(cmd.ErrOrStderr(), msg)
+						return codedCommandError{code: exitcode.Conflict, err: fmt.Errorf("%s", msg)}
+					}
+				}
 			} else {
 				decision := preflight.Decide(preflight.WorkspaceState{}, preflight.Options{
 					RemoteOnly:  remoteOnly,

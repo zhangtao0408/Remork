@@ -392,6 +392,9 @@ func statusCurrent(tracked state.TrackedFile, entry api.FileEntry) bool {
 	if tracked.Revision != entry.Revision {
 		return false
 	}
+	if entry.Hash != "" && tracked.BaseHash != "" && entry.Hash != tracked.BaseHash {
+		return false
+	}
 	if entry.Large && !tracked.Large && tracked.MetaPath == "" {
 		return true
 	}
