@@ -125,13 +125,13 @@ func DetectDirty(localRoot string, snap Snapshot) ([]DirtyChange, error) {
 	var changes []DirtyChange
 	seen := map[string]bool{}
 	for path, tracked := range snap.Entries {
-		if tracked.Large && tracked.MetaPath != "" {
-			continue
-		}
 		seen[path] = true
 		full, err := transfer.LocalPath(localRoot, path)
 		if err != nil {
 			return nil, err
+		}
+		if tracked.Large && tracked.MetaPath != "" {
+			continue
 		}
 		info, err := os.Lstat(full)
 		if os.IsNotExist(err) {

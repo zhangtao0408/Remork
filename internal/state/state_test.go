@@ -111,6 +111,37 @@ func TestDetectDirtyRejectsTrackedSymlinkFile(t *testing.T) {
 	}
 }
 
+func TestDetectDirtyRejectsLargeTrackedPathEscape(t *testing.T) {
+	parent := t.TempDir()
+	local := filepath.Join(parent, "local")
+	if err := os.Mkdir(local, 0o755); err != nil {
+		t.Fatalf("mkdir local: %v", err)
+	}
+
+	snap := Snapshot{WorkspaceRef: "lab:/workspace", Entries: map[string]TrackedFile{
+		"../outside.bin": {Path: "../outside.bin", Large: true, MetaPath: "../outside.bin.meta", Type: api.FileTypeFile},
+	}}
+	if _, err := DetectDirty(local, snap); err == nil {
+		t.Fatal("DetectDirty accepted large tracked path escape, want error")
+	}
+}
+
+func TestDetectDirtyRejectsLargeTrackedSymlinkFile(t *testing.T) {
+	local := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.bin")
+	mustWrite(t, outside, []byte("outside"))
+	if err := os.Symlink(outside, filepath.Join(local, "large.bin")); err != nil {
+		t.Fatalf("symlink local file: %v", err)
+	}
+
+	snap := Snapshot{WorkspaceRef: "lab:/workspace", Entries: map[string]TrackedFile{
+		"large.bin": {Path: "large.bin", Large: true, MetaPath: "large.bin.meta", Type: api.FileTypeFile},
+	}}
+	if _, err := DetectDirty(local, snap); err == nil {
+		t.Fatal("DetectDirty accepted large tracked symlink file, want error")
+	}
+}
+
 func TestDetectDirtyIgnoresLocalBindingMarker(t *testing.T) {
 	local := t.TempDir()
 	mustWrite(t, filepath.Join(local, ".remork-local.json"), []byte(`{"host":"lab"}`))
