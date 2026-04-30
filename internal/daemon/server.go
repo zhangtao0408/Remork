@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -118,10 +119,14 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := apply.Apply(root, cs)
 	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, apply.ErrConflict) {
+			status = http.StatusConflict
+		}
 		var buf bytes.Buffer
 		_ = json.NewEncoder(&buf).Encode(result)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
+		w.WriteHeader(status)
 		_, _ = w.Write(buf.Bytes())
 		return
 	}

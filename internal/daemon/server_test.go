@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"remork/internal/state"
 	"remork/internal/watch"
 )
 
@@ -79,6 +80,37 @@ func TestManifestUnknownRootReturnsForbidden(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestApplyEndpointConflictReturnsConflict(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.txt"), []byte("remote"))
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	body := strings.NewReader(`{"changes":[{"path":"a.txt","kind":"update","base_hash":"` + state.HashBytes([]byte("base")) + `","content":"bG9jYWw="}]}`)
+	resp, err := http.Post(srv.URL+"/apply?root="+url.QueryEscape(root), "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestApplyEndpointInvalidPathReturnsBadRequest(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	body := strings.NewReader(`{"changes":[{"path":"../escape","kind":"update","base_hash":"sha256:nope","content":"bG9jYWw="}]}`)
+	resp, err := http.Post(srv.URL+"/apply?root="+url.QueryEscape(root), "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 }
