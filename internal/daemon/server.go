@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 
+	"remork/internal/apply"
 	"remork/internal/manifest"
 	"remork/internal/paths"
 )
@@ -24,6 +26,7 @@ func NewServer(cfg Config) *Server {
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
 	s.mux.HandleFunc("/manifest", s.handleManifest)
 	s.mux.HandleFunc("/download", s.handleDownload)
+	s.mux.HandleFunc("/apply", s.handleApply)
 	return s
 }
 
@@ -84,6 +87,34 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+}
+
+func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	root := r.URL.Query().Get("root")
+	if !s.allowedRoot(root) {
+		http.Error(w, "root not allowed", http.StatusForbidden)
+		return
+	}
+	var cs apply.Changeset
+	if err := json.NewDecoder(r.Body).Decode(&cs); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	result, err := apply.Apply(root, cs)
+	if err != nil {
+		var buf bytes.Buffer
+		_ = json.NewEncoder(&buf).Encode(result)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write(buf.Bytes())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 func (s *Server) allowedRoot(root string) bool {

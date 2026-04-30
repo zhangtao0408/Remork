@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"remork/internal/apply"
 	"remork/internal/daemon"
+	"remork/internal/state"
 )
 
 func TestClientManifestAndDownload(t *testing.T) {
@@ -47,6 +49,25 @@ func TestClientDownloadRange(t *testing.T) {
 	}
 	if string(data) != "cde" {
 		t.Fatalf("data %q", data)
+	}
+}
+
+func TestClientApplyUpdate(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	c := New(srv.URL)
+	res, err := c.Apply(root, apply.Changeset{Changes: []apply.Change{
+		{Path: "a.txt", Kind: apply.ChangeUpdate, BaseHash: state.HashBytes([]byte("before")), Content: []byte("after")},
+	}})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !res.Applied {
+		t.Fatalf("not applied: %#v", res)
 	}
 }
 

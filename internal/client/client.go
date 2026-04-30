@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 
 	"remork/internal/api"
+	"remork/internal/apply"
 )
 
 type Client struct {
@@ -46,6 +48,30 @@ func (c Client) Download(root, path string) ([]byte, error) {
 
 func (c Client) DownloadRange(root, path string, start, end int64) ([]byte, error) {
 	return c.download(root, path, fmt.Sprintf("bytes=%d-%d", start, end))
+}
+
+func (c Client) Apply(root string, cs apply.Changeset) (apply.Result, error) {
+	u, _ := url.Parse(c.base + "/apply")
+	q := u.Query()
+	q.Set("root", root)
+	u.RawQuery = q.Encode()
+	data, err := json.Marshal(cs)
+	if err != nil {
+		return apply.Result{}, err
+	}
+	resp, err := c.http.Post(u.String(), "application/json", bytes.NewReader(data))
+	if err != nil {
+		return apply.Result{}, err
+	}
+	defer resp.Body.Close()
+	var result apply.Result
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return apply.Result{}, err
+	}
+	if resp.StatusCode >= 300 {
+		return result, &HTTPError{StatusCode: resp.StatusCode, Body: "apply failed"}
+	}
+	return result, nil
 }
 
 func (c Client) download(root, path, byteRange string) ([]byte, error) {
