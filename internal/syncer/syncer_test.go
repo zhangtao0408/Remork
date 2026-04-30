@@ -210,6 +210,50 @@ func TestSyncTargetDoesNotDeleteOutsideTarget(t *testing.T) {
 	}
 }
 
+func TestStatusReportsDirtyRemoteUpdatesConflictsAndLargePlaceholders(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(remote, "a.txt"), []byte("one\n"))
+	mustWriteFile(t, filepath.Join(remote, "big.bin"), []byte("12345678"))
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}, LargeThreshold: 4}).Handler())
+	defer srv.Close()
+
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   state.NewStore(filepath.Join(local, ".remork", "state")),
+		LocalRoot:    local,
+		WorkspaceRef: "lab:" + remote,
+		RemoteRoot:   remote,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(local, "a.txt"), []byte("local\n"))
+	mustWriteFile(t, filepath.Join(remote, "a.txt"), []byte("remote\n"))
+
+	status, err := runner.Status(context.Background())
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.LocalChanges != 1 {
+		t.Fatalf("LocalChanges = %d, want 1; status=%#v", status.LocalChanges, status)
+	}
+	if status.Conflicts != 1 {
+		t.Fatalf("Conflicts = %d, want 1; status=%#v", status.Conflicts, status)
+	}
+	if status.LargePlaceholders != 1 {
+		t.Fatalf("LargePlaceholders = %d, want 1; status=%#v", status.LargePlaceholders, status)
+	}
+	if !containsString(status.ChangedPaths, "a.txt") {
+		t.Fatalf("ChangedPaths = %#v, want a.txt", status.ChangedPaths)
+	}
+	if !containsString(status.ConflictPaths, "a.txt") {
+		t.Fatalf("ConflictPaths = %#v, want a.txt", status.ConflictPaths)
+	}
+}
+
 func mustWriteFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -218,4 +262,13 @@ func mustWriteFile(t *testing.T, path string, data []byte) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

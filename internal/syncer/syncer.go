@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"sort"
 
+	"remork/internal/api"
 	"remork/internal/client"
 	"remork/internal/manifest"
 	"remork/internal/planner"
@@ -42,6 +45,18 @@ type Result struct {
 	Conflicts   int `json:"conflicts"`
 }
 
+type Status struct {
+	Workspace         string   `json:"workspace"`
+	LocalRoot         string   `json:"local_root"`
+	Clean             int      `json:"clean"`
+	LocalChanges      int      `json:"local_changes"`
+	RemoteUpdates     int      `json:"remote_updates"`
+	Conflicts         int      `json:"conflicts"`
+	LargePlaceholders int      `json:"large_placeholders"`
+	ChangedPaths      []string `json:"changed_paths,omitempty"`
+	ConflictPaths     []string `json:"conflict_paths,omitempty"`
+}
+
 type Runner struct {
 	opts RunnerOptions
 }
@@ -50,22 +65,103 @@ func NewRunner(opts RunnerOptions) Runner {
 	return Runner{opts: opts}
 }
 
+func (r Runner) Status(ctx context.Context) (Status, error) {
+	if err := ctx.Err(); err != nil {
+		return Status{}, err
+	}
+	snap, err := r.loadSnapshot()
+	if err != nil {
+		return Status{}, err
+	}
+	dirty, err := state.DetectDirty(r.opts.LocalRoot, snap)
+	if err != nil {
+		return Status{}, err
+	}
+	man, err := r.opts.Client.Manifest(r.opts.RemoteRoot, ".")
+	if err != nil {
+		return Status{}, err
+	}
+
+	dirtyPaths := map[string]bool{}
+	changedPaths := make([]string, 0, len(dirty))
+	for _, change := range dirty {
+		if isStatusIgnoredDirtyPath(change.Path) {
+			continue
+		}
+		if !dirtyPaths[change.Path] {
+			changedPaths = append(changedPaths, change.Path)
+		}
+		dirtyPaths[change.Path] = true
+	}
+	sort.Strings(changedPaths)
+
+	remoteUpdates := map[string]bool{}
+	remotePaths := map[string]bool{}
+	for _, entry := range man.Entries {
+		remotePaths[entry.Path] = true
+		if entry.Type != api.FileTypeFile {
+			continue
+		}
+		tracked, ok := snap.Entries[entry.Path]
+		if !ok || !statusCurrent(tracked, entry) {
+			remoteUpdates[entry.Path] = true
+		}
+	}
+	for path, tracked := range snap.Entries {
+		if tracked.Path == "" || remotePaths[path] {
+			continue
+		}
+		remoteUpdates[path] = true
+	}
+
+	conflictPaths := make([]string, 0)
+	for path := range dirtyPaths {
+		if remoteUpdates[path] {
+			conflictPaths = append(conflictPaths, path)
+		}
+	}
+	sort.Strings(conflictPaths)
+
+	clean := 0
+	for path := range snap.Entries {
+		if !dirtyPaths[path] && !remoteUpdates[path] {
+			clean++
+		}
+	}
+
+	largePlaceholders := 0
+	for _, tracked := range snap.Entries {
+		if !tracked.Large || tracked.MetaPath == "" {
+			continue
+		}
+		metaPath := filepath.Join(r.opts.LocalRoot, filepath.FromSlash(tracked.MetaPath))
+		if _, err := os.Stat(metaPath); err == nil {
+			largePlaceholders++
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return Status{}, err
+		}
+	}
+
+	return Status{
+		Workspace:         r.opts.WorkspaceRef,
+		LocalRoot:         r.opts.LocalRoot,
+		Clean:             clean,
+		LocalChanges:      len(changedPaths),
+		RemoteUpdates:     len(remoteUpdates),
+		Conflicts:         len(conflictPaths),
+		LargePlaceholders: largePlaceholders,
+		ChangedPaths:      changedPaths,
+		ConflictPaths:     conflictPaths,
+	}, nil
+}
+
 func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
-	snap, err := r.opts.StateStore.Load(r.opts.WorkspaceRef)
+	snap, err := r.loadSnapshot()
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return Result{}, err
-		}
-		snap = state.Snapshot{WorkspaceRef: r.opts.WorkspaceRef, Entries: map[string]state.TrackedFile{}}
-	}
-	if snap.WorkspaceRef == "" {
-		snap.WorkspaceRef = r.opts.WorkspaceRef
-	}
-	if snap.Entries == nil {
-		snap.Entries = map[string]state.TrackedFile{}
+		return Result{}, err
 	}
 
 	dirty, err := state.DetectDirty(r.opts.LocalRoot, snap)
@@ -174,6 +270,37 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+func (r Runner) loadSnapshot() (state.Snapshot, error) {
+	snap, err := r.opts.StateStore.Load(r.opts.WorkspaceRef)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return state.Snapshot{}, err
+		}
+		snap = state.Snapshot{WorkspaceRef: r.opts.WorkspaceRef, Entries: map[string]state.TrackedFile{}}
+	}
+	if snap.WorkspaceRef == "" {
+		snap.WorkspaceRef = r.opts.WorkspaceRef
+	}
+	if snap.Entries == nil {
+		snap.Entries = map[string]state.TrackedFile{}
+	}
+	return snap, nil
+}
+
+func statusCurrent(tracked state.TrackedFile, entry api.FileEntry) bool {
+	if tracked.Revision != entry.Revision || tracked.Large != entry.Large {
+		return false
+	}
+	if entry.Large && tracked.MetaPath == "" {
+		return false
+	}
+	return true
+}
+
+func isStatusIgnoredDirtyPath(path string) bool {
+	return path == ".remork-local.json"
 }
 
 func removeIfExists(path string) error {

@@ -2,9 +2,11 @@ package e2e
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"remork/internal/cli"
@@ -42,6 +44,46 @@ func TestRemorkProductSyncJSONConflictDoesNotPrintSuccess(t *testing.T) {
 	}
 	if stdout != "" {
 		h.t.Fatalf("stdout = %q, want empty", stdout)
+	}
+}
+
+func TestRemorkProductStatusJSON(t *testing.T) {
+	h := newCLIHarness(t)
+	h.writeRemote("a.txt", "one\n")
+	h.bindAndSync()
+	h.writeLocal("a.txt", "local\n")
+
+	out := h.runInLocal("status", "--json")
+	var status struct {
+		LocalChanges int `json:"local_changes"`
+	}
+	if err := json.Unmarshal([]byte(out), &status); err != nil {
+		t.Fatalf("unmarshal status json: %v\noutput:\n%s", err, out)
+	}
+	if status.LocalChanges != 1 {
+		t.Fatalf("local_changes = %d, want 1; output=%s", status.LocalChanges, out)
+	}
+}
+
+func TestRemorkProductStatusTextSummary(t *testing.T) {
+	h := newCLIHarness(t)
+	h.writeRemote("a.txt", "one\n")
+	h.bindAndSync()
+
+	out := h.runInLocal("status")
+	for _, want := range []string{
+		"Workspace:",
+		"Local:",
+		"Clean:",
+		"Local changes:",
+		"Remote updates:",
+		"Conflicts:",
+		"Large placeholders:",
+		"Next:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status output missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -87,6 +129,13 @@ func (h *cliHarness) runInLocalExpectError(args ...string) (string, string, erro
 	cmd.SetArgs(args)
 	err := cmd.Execute()
 	return stdout.String(), stderr.String(), err
+}
+
+func (h *cliHarness) bindAndSync() {
+	h.t.Helper()
+	h.run("host", "add", "lab", "--url", h.serverURL)
+	h.runInLocal("init", "lab:"+h.remote)
+	h.runInLocal("sync")
 }
 
 func (h *cliHarness) runWithWorkingDir(workingDir string, args ...string) string {
