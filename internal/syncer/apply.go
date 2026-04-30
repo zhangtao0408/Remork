@@ -3,13 +3,14 @@ package syncer
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"remork/internal/api"
 	"remork/internal/apply"
 	"remork/internal/paths"
 	"remork/internal/state"
@@ -30,7 +31,7 @@ func BuildChangeset(localRoot string, snap state.Snapshot) (apply.Changeset, []S
 	if err != nil {
 		return apply.Changeset{}, nil, err
 	}
-	skipped, err := skippedPlaceholderChanges(localRoot)
+	skipped, err := skippedPlaceholderChanges(localRoot, snap)
 	if err != nil {
 		return apply.Changeset{}, nil, err
 	}
@@ -79,32 +80,51 @@ func BuildChangeset(localRoot string, snap state.Snapshot) (apply.Changeset, []S
 	return apply.Changeset{ID: changesetID(changes, skipped), Changes: changes}, skipped, nil
 }
 
-func skippedPlaceholderChanges(localRoot string) ([]SkippedChange, error) {
+func skippedPlaceholderChanges(localRoot string, snap state.Snapshot) ([]SkippedChange, error) {
 	var skipped []SkippedChange
-	err := filepath.WalkDir(localRoot, func(path string, d os.DirEntry, err error) error {
+	for _, tracked := range snap.Entries {
+		if !tracked.Large || tracked.MetaPath == "" {
+			continue
+		}
+		metaPath, err := transfer.LocalPath(localRoot, tracked.MetaPath)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == ".remork" {
-				return filepath.SkipDir
-			}
-			return nil
+		data, err := os.ReadFile(metaPath)
+		if os.IsNotExist(err) {
+			continue
 		}
-		rel, err := filepath.Rel(localRoot, path)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		rel = filepath.ToSlash(rel)
-		if skip, reason := shouldSkipApplyPath(rel); skip && strings.HasSuffix(rel, ".meta") {
-			if _, err := transfer.LocalPath(localRoot, rel); err != nil {
-				return err
-			}
-			skipped = append(skipped, SkippedChange{Path: rel, Reason: reason})
+		if !largeMetaMatchesSnapshot(data, snap.WorkspaceRef, tracked) {
+			skipped = append(skipped, SkippedChange{Path: tracked.MetaPath, Reason: "large file placeholder"})
 		}
-		return nil
-	})
-	return skipped, err
+	}
+	return skipped, nil
+}
+
+func largeMetaMatchesSnapshot(data []byte, workspaceRef string, tracked state.TrackedFile) bool {
+	var meta api.LargeFileMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return false
+	}
+	if meta.Kind != "remote-large-file" || meta.RemotePath != "/"+strings.TrimPrefix(tracked.Path, "/") || meta.Pulled {
+		return false
+	}
+	if tracked.Revision != "" && meta.Revision != tracked.Revision {
+		return false
+	}
+	if tracked.BaseHash != "" && meta.Hash != tracked.BaseHash {
+		return false
+	}
+	if workspaceRef != "" {
+		wantPull := "remork pull " + strings.TrimRight(workspaceRef, "/") + "/" + tracked.Path
+		if meta.PullCommand != wantPull {
+			return false
+		}
+	}
+	return true
 }
 
 func shouldSkipApplyPath(path string) (bool, string) {

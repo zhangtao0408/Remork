@@ -479,6 +479,31 @@ func TestBuildChangesetCreatesUpdatesDeletesAndSkipsLargeMeta(t *testing.T) {
 	}
 }
 
+func TestBuildChangesetDoesNotReportCleanLargeMetaAsSkipped(t *testing.T) {
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(local, "big.bin.meta"), []byte(`{
+  "kind": "remote-large-file",
+  "remote_path": "/big.bin",
+  "revision": "r3",
+  "pulled": false,
+  "pull_command": "remork pull lab:/remote/big.bin"
+}`))
+	snap := state.Snapshot{
+		WorkspaceRef: "lab:/remote",
+		Entries: map[string]state.TrackedFile{
+			"big.bin": {Path: "big.bin", Large: true, MetaPath: "big.bin.meta", Revision: "r3"},
+		},
+	}
+
+	changes, skipped, err := BuildChangeset(local, snap)
+	if err != nil {
+		t.Fatalf("BuildChangeset: %v", err)
+	}
+	if len(changes.Changes) != 0 || len(skipped) != 0 {
+		t.Fatalf("clean large placeholder should not be reported: changes=%#v skipped=%#v", changes.Changes, skipped)
+	}
+}
+
 func mustWriteFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
