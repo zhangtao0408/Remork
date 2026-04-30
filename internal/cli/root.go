@@ -94,6 +94,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	addStatusCommand(root, opts)
 	addDiffCommand(root, opts)
 	addRestoreCommand(root, opts)
+	addApplyCommand(root, opts)
 	addPlaceholderProductCommands(root)
 	return root
 }
@@ -158,7 +159,6 @@ func addVersionCommand(root *cobra.Command, version string) {
 
 func addPlaceholderProductCommands(root *cobra.Command) {
 	names := []string{
-		"apply",
 		"run",
 		"shell",
 		"pull",

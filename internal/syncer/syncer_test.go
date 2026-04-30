@@ -434,6 +434,51 @@ func TestStatusRejectsUnsafeLargeMetaPath(t *testing.T) {
 	}
 }
 
+func TestBuildChangesetCreatesUpdatesDeletesAndSkipsLargeMeta(t *testing.T) {
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(local, "updated.txt"), []byte("new\n"))
+	mustWriteFile(t, filepath.Join(local, "created.txt"), []byte("created\n"))
+	mustWriteFile(t, filepath.Join(local, "big.bin.meta"), []byte("{}"))
+	snap := state.Snapshot{
+		WorkspaceRef: "lab:/remote",
+		Entries: map[string]state.TrackedFile{
+			"updated.txt": {Path: "updated.txt", BaseHash: state.HashBytes([]byte("old\n")), Revision: "r1"},
+			"deleted.txt": {Path: "deleted.txt", BaseHash: state.HashBytes([]byte("gone\n")), Revision: "r2"},
+			"big.bin":     {Path: "big.bin", Large: true, MetaPath: "big.bin.meta", Revision: "r3"},
+		},
+	}
+
+	changes, skipped, err := BuildChangeset(local, snap)
+	if err != nil {
+		t.Fatalf("BuildChangeset: %v", err)
+	}
+	if changes.ID == "" {
+		t.Fatal("changeset ID is empty")
+	}
+	if len(changes.Changes) != 3 {
+		t.Fatalf("changes = %#v skipped=%#v", changes.Changes, skipped)
+	}
+	if !containsSkipped(skipped, "big.bin.meta") {
+		t.Fatalf("large meta edit not skipped: %#v", skipped)
+	}
+	want := []struct {
+		path string
+		kind string
+		base string
+		body string
+	}{
+		{"created.txt", "create", "", "created\n"},
+		{"deleted.txt", "delete", state.HashBytes([]byte("gone\n")), ""},
+		{"updated.txt", "update", state.HashBytes([]byte("old\n")), "new\n"},
+	}
+	for i, wantChange := range want {
+		got := changes.Changes[i]
+		if got.Path != wantChange.path || string(got.Kind) != wantChange.kind || got.BaseHash != wantChange.base || string(got.Content) != wantChange.body {
+			t.Fatalf("change[%d] = %#v, want path=%q kind=%q base=%q body=%q", i, got, wantChange.path, wantChange.kind, wantChange.base, wantChange.body)
+		}
+	}
+}
+
 func mustWriteFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -447,6 +492,15 @@ func mustWriteFile(t *testing.T, path string, data []byte) {
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSkipped(values []SkippedChange, want string) bool {
+	for _, value := range values {
+		if value.Path == want {
 			return true
 		}
 	}
