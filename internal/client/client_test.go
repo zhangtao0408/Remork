@@ -85,6 +85,23 @@ func TestClientExecRunsCommand(t *testing.T) {
 	}
 }
 
+func TestClientSendsClientIDAndReadsOperations(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	c := NewWithClientID(srv.URL, "codex-agent")
+	if _, err := c.Exec(root, root, []string{"sh", "-c", "echo hello"}, 0); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	entries, err := c.Operations(root, 10)
+	if err != nil {
+		t.Fatalf("operations: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ClientID != "codex-agent" || entries[0].Operation != "exec" {
+		t.Fatalf("bad entries: %#v", entries)
+	}
+}
+
 func TestClientReturnsHTTPErrorForUnavailableDaemon(t *testing.T) {
 	c := New("http://127.0.0.1:1")
 	_, err := c.Manifest("/tmp/missing", ".")

@@ -107,6 +107,7 @@ Responsibilities:
 - Execute non-interactive commands.
 - Start and manage interactive PTY sessions.
 - Watch workspace file changes and publish events.
+- Record local-client requests in an operation log.
 - Report daemon and workspace status.
 
 ### `remork` CLI
@@ -161,6 +162,37 @@ The state database records:
 - Dirty status.
 - Large-file placeholder status.
 - Last sync timestamp.
+
+### Operation Log
+
+The daemon records requests received from local clients. This log is separate from filesystem watch events.
+
+Primary purpose:
+
+- Identify which local machine or Agent sent an `apply`, `exec`, `download`, `shell`, or other daemon request.
+- Explain conflicts and remote-side changes caused by Remork-controlled operations.
+- Debug failed requests, timeouts, and repeated Agent behavior.
+
+Each client should send:
+
+```text
+X-Remork-Client-ID: <human-or-agent-readable-id>
+```
+
+MVP log fields:
+
+- Operation ID.
+- Start and end time.
+- Client ID.
+- Workspace root.
+- Operation kind: `manifest`, `download`, `apply`, `exec`, `shell`, `events`.
+- Request summary.
+- Result: `success`, `conflict`, `error`, `timeout`.
+- HTTP status code.
+- Changed paths when known.
+- Command, exit code, and timeout flag for `exec`.
+
+The log must not store file content, full apply payloads, shell transcript contents, or environment secrets. Apply summaries should keep path, kind, content size, and a shortened base hash only.
 
 ## API Surface
 
@@ -278,6 +310,14 @@ The daemon should support:
 - Idle timeout cleanup.
 
 First version session retention: keep detached sessions for a configurable timeout, with `30m` as the default.
+
+### Operations
+
+```text
+GET /operations?root=<workspace>&limit=<n>
+```
+
+Returns recent daemon request log entries for a workspace. The endpoint is for audit/debug/history, not for file synchronization correctness.
 
 ### Watch Events
 

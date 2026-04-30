@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -112,6 +113,142 @@ func TestApplyEndpointInvalidPathReturnsBadRequest(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestOperationsEndpointRecordsClientApplyWithoutContent(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.txt"), []byte("before\n"))
+	logPath := filepath.Join(t.TempDir(), "operations.jsonl")
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}, OperationLogPath: logPath}).Handler())
+	defer srv.Close()
+
+	body := strings.NewReader(`{"changes":[{"path":"a.txt","kind":"update","base_hash":"` + state.HashBytes([]byte("before\n")) + `","content":"YWZ0ZXIK"}]}`)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/apply?root="+url.QueryEscape(root), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Remork-Client-ID", "tao-macbook")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("apply status %d", resp.StatusCode)
+	}
+
+	opsResp, err := http.Get(srv.URL + "/operations?root=" + url.QueryEscape(root))
+	if err != nil {
+		t.Fatalf("operations: %v", err)
+	}
+	defer opsResp.Body.Close()
+	var decoded struct {
+		Entries []map[string]any `json:"entries"`
+	}
+	if err := json.NewDecoder(opsResp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(decoded.Entries) != 1 {
+		t.Fatalf("entries: %#v", decoded.Entries)
+	}
+	entry := decoded.Entries[0]
+	if entry["client_id"] != "tao-macbook" || entry["operation"] != "apply" || entry["result"] != "success" {
+		t.Fatalf("bad entry: %#v", entry)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if strings.Contains(string(raw), "YWZ0ZXIK") || strings.Contains(string(raw), "after") {
+		t.Fatalf("operation log leaked apply content: %s", raw)
+	}
+}
+
+func TestOperationsEndpointRecordsExecSummary(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/exec", strings.NewReader(`{"root":"`+root+`","cwd":"`+root+`","command":["sh","-c","echo ok"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Remork-Client-ID", "codex-agent")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	resp.Body.Close()
+
+	opsResp, err := http.Get(srv.URL + "/operations?root=" + url.QueryEscape(root))
+	if err != nil {
+		t.Fatalf("operations: %v", err)
+	}
+	defer opsResp.Body.Close()
+	var decoded struct {
+		Entries []struct {
+			ClientID   string         `json:"client_id"`
+			Operation  string         `json:"operation"`
+			Result     string         `json:"result"`
+			StatusCode int            `json:"status_code"`
+			Command    []string       `json:"command,omitempty"`
+			Summary    map[string]any `json:"request_summary"`
+		} `json:"entries"`
+	}
+	if err := json.NewDecoder(opsResp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(decoded.Entries) != 1 {
+		t.Fatalf("entries: %#v", decoded.Entries)
+	}
+	entry := decoded.Entries[0]
+	if entry.ClientID != "codex-agent" || entry.Operation != "exec" || entry.Result != "success" || entry.StatusCode != http.StatusOK {
+		t.Fatalf("bad entry: %#v", entry)
+	}
+	if len(entry.Command) != 3 || entry.Command[2] != "echo ok" {
+		t.Fatalf("command not recorded: %#v", entry)
+	}
+}
+
+func TestOperationLogRecordsRangeDownloadStatus(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.txt"), []byte("abcdef"))
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/download?root="+url.QueryEscape(root)+"&path=a.txt", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Range", "bytes=1-3")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("download status %d", resp.StatusCode)
+	}
+
+	opsResp, err := http.Get(srv.URL + "/operations?root=" + url.QueryEscape(root))
+	if err != nil {
+		t.Fatalf("operations: %v", err)
+	}
+	defer opsResp.Body.Close()
+	var decoded struct {
+		Entries []struct {
+			Operation  string `json:"operation"`
+			StatusCode int    `json:"status_code"`
+		} `json:"entries"`
+	}
+	if err := json.NewDecoder(opsResp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(decoded.Entries) != 1 || decoded.Entries[0].Operation != "download" || decoded.Entries[0].StatusCode != http.StatusPartialContent {
+		t.Fatalf("bad entries: %#v", decoded.Entries)
 	}
 }
 

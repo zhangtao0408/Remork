@@ -11,15 +11,21 @@ import (
 	"remork/internal/api"
 	"remork/internal/apply"
 	execx "remork/internal/exec"
+	"remork/internal/ops"
 )
 
 type Client struct {
-	base string
-	http *http.Client
+	base     string
+	http     *http.Client
+	clientID string
 }
 
 func New(base string) Client {
 	return Client{base: base, http: http.DefaultClient}
+}
+
+func NewWithClientID(base, clientID string) Client {
+	return Client{base: base, http: http.DefaultClient, clientID: clientID}
 }
 
 func (c Client) Manifest(root, path string) (api.ManifestResponse, error) {
@@ -29,7 +35,12 @@ func (c Client) Manifest(root, path string) (api.ManifestResponse, error) {
 	q.Set("path", path)
 	q.Set("recursive", "true")
 	u.RawQuery = q.Encode()
-	resp, err := c.http.Get(u.String())
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return api.ManifestResponse{}, err
+	}
+	c.addHeaders(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return api.ManifestResponse{}, err
 	}
@@ -60,7 +71,13 @@ func (c Client) Apply(root string, cs apply.Changeset) (apply.Result, error) {
 	if err != nil {
 		return apply.Result{}, err
 	}
-	resp, err := c.http.Post(u.String(), "application/json", bytes.NewReader(data))
+	req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(data))
+	if err != nil {
+		return apply.Result{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.addHeaders(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return apply.Result{}, err
 	}
@@ -82,7 +99,13 @@ func (c Client) Exec(root, cwd string, command []string, timeoutMillis int64) (e
 	if err != nil {
 		return execx.Result{}, err
 	}
-	resp, err := c.http.Post(u.String(), "application/json", bytes.NewReader(data))
+	req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(data))
+	if err != nil {
+		return execx.Result{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.addHeaders(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return execx.Result{}, err
 	}
@@ -94,6 +117,39 @@ func (c Client) Exec(root, cwd string, command []string, timeoutMillis int64) (e
 	var result execx.Result
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	return result, err
+}
+
+func (c Client) Operations(root string, limit int) ([]ops.Entry, error) {
+	u, _ := url.Parse(c.base + "/operations")
+	q := u.Query()
+	if root != "" {
+		q.Set("root", root)
+	}
+	if limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	c.addHeaders(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+	var out struct {
+		Entries []ops.Entry `json:"entries"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Entries, nil
 }
 
 func (c Client) download(root, path, byteRange string) ([]byte, error) {
@@ -109,6 +165,7 @@ func (c Client) download(root, path, byteRange string) ([]byte, error) {
 	if byteRange != "" {
 		req.Header.Set("Range", byteRange)
 	}
+	c.addHeaders(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -128,4 +185,10 @@ type HTTPError struct {
 
 func (e *HTTPError) Error() string {
 	return e.Body
+}
+
+func (c Client) addHeaders(req *http.Request) {
+	if c.clientID != "" {
+		req.Header.Set(api.HeaderClientID, c.clientID)
+	}
 }

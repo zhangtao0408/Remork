@@ -54,3 +54,5 @@ type ExecRequest struct {
 	Env           []string `json:"env,omitempty"`
 	TimeoutMillis int64    `json:"timeout_millis,omitempty"`
 }
+
+const HeaderClientID = "X-Remork-Client-ID"
