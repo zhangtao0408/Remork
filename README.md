@@ -84,6 +84,13 @@ Add a daemon endpoint:
 remork host add lab-a --url http://10.0.0.12:17731
 ```
 
+If your local shell has a proxy that cannot reach the VPN address, bypass it
+for this host:
+
+```bash
+remork host add lab-a --url http://10.0.0.12:17731 --no-proxy
+```
+
 Use a shared token without writing the secret into config:
 
 ```bash
@@ -321,22 +328,10 @@ Current limitations:
 
 ## Developer API notes
 
-The CLI uses these daemon APIs internally:
+Most users should stay on the CLI. Daemon API details and request shapes live in
+`docs/remork-api.md`.
 
-```text
-GET  /status
-GET  /manifest?root=<root>&path=<path>&recursive=true
-GET  /download?root=<root>&path=<path>
-POST /apply?root=<root>
-POST /exec
-GET  /operations?root=<root>&limit=<n>
-GET  /events?root=<root>
-GET  /shell?root=<root>
-```
-
-Clients may send `X-Remork-Client-ID` for operation log attribution. If the
-daemon was started with a shared token, clients must send
-`Authorization: Bearer <token>`.
+Agent-facing operating guidance lives in `skills/remork/SKILL.md`.
 
 Run the core validation suite:
 
