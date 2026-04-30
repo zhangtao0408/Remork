@@ -84,6 +84,96 @@ func TestSyncPreservesDirtyLocalFile(t *testing.T) {
 	}
 }
 
+func TestSyncNormalToLargeRemovesMaterializedFile(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(remote, "model.bin"), []byte("1234"))
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}, LargeThreshold: 4}).Handler())
+	defer srv.Close()
+
+	store := state.NewStore(filepath.Join(local, ".remork", "state"))
+	workspaceRef := "lab:" + remote
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   store,
+		LocalRoot:    local,
+		WorkspaceRef: workspaceRef,
+		RemoteRoot:   remote,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(local, "model.bin")); err != nil {
+		t.Fatalf("missing materialized file after initial sync: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(remote, "model.bin"), []byte("12345"))
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(local, "model.bin")); !os.IsNotExist(err) {
+		t.Fatalf("materialized file exists after normal to large transition: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(local, "model.bin.meta")); err != nil {
+		t.Fatalf("missing meta after normal to large transition: %v", err)
+	}
+	snap, err := store.Load(workspaceRef)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	entry := snap.Entries["model.bin"]
+	if !entry.Large {
+		t.Fatalf("snapshot Large = false, want true; entry=%#v", entry)
+	}
+}
+
+func TestSyncLargeToNormalRemovesMetaPlaceholder(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(remote, "model.bin"), []byte("12345"))
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}, LargeThreshold: 4}).Handler())
+	defer srv.Close()
+
+	store := state.NewStore(filepath.Join(local, ".remork", "state"))
+	workspaceRef := "lab:" + remote
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   store,
+		LocalRoot:    local,
+		WorkspaceRef: workspaceRef,
+		RemoteRoot:   remote,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(local, "model.bin.meta")); err != nil {
+		t.Fatalf("missing meta after initial sync: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(remote, "model.bin"), []byte("1234"))
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(local, "model.bin")); err != nil {
+		t.Fatalf("missing materialized file after large to normal transition: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(local, "model.bin.meta")); !os.IsNotExist(err) {
+		t.Fatalf("meta exists after large to normal transition: %v", err)
+	}
+	snap, err := store.Load(workspaceRef)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	entry := snap.Entries["model.bin"]
+	if entry.Large {
+		t.Fatalf("snapshot Large = true, want false; entry=%#v", entry)
+	}
+}
+
 func TestSyncTargetDoesNotDeleteOutsideTarget(t *testing.T) {
 	remote := t.TempDir()
 	local := t.TempDir()

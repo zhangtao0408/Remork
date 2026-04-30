@@ -95,12 +95,22 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 		}
 		switch op.Kind {
 		case planner.OpDownload:
+			previous := snap.Entries[op.Path]
 			data, err := r.opts.Client.Download(r.opts.RemoteRoot, op.Path)
 			if err != nil {
 				return result, err
 			}
 			if err := transfer.WriteFile(r.opts.LocalRoot, op.Path, data); err != nil {
 				return result, err
+			}
+			if previous.Large && previous.MetaPath != "" {
+				metaPath, err := transfer.LocalPath(r.opts.LocalRoot, previous.MetaPath)
+				if err != nil {
+					return result, err
+				}
+				if err := removeIfExists(metaPath); err != nil {
+					return result, err
+				}
 			}
 			hash := op.Entry.Hash
 			if hash == "" {
@@ -117,6 +127,13 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 		case planner.OpWriteMeta:
 			meta := manifest.BuildLargeMeta(r.opts.WorkspaceRef, op.Entry)
 			if err := transfer.WriteLargeMeta(r.opts.LocalRoot, op.Path, meta); err != nil {
+				return result, err
+			}
+			localPath, err := transfer.LocalPath(r.opts.LocalRoot, op.Path)
+			if err != nil {
+				return result, err
+			}
+			if err := removeIfExists(localPath); err != nil {
 				return result, err
 			}
 			snap.Entries[op.Path] = state.TrackedFile{
