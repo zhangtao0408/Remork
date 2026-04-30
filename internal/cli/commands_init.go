@@ -24,7 +24,10 @@ func addInitCommand(root *cobra.Command, opts Options) {
 			if err != nil {
 				return err
 			}
-			store := configStore(opts)
+			store, err := configStore(opts)
+			if err != nil {
+				return err
+			}
 			cfg, err := store.Load()
 			if err != nil {
 				return err
@@ -33,14 +36,12 @@ func addInitCommand(root *cobra.Command, opts Options) {
 			if !ok {
 				return fmt.Errorf("host %q is not configured", hostName)
 			}
-			if opts.DaemonProbe != nil {
-				status, err := opts.DaemonProbe.Status(context.Background(), host, cfg.ClientID)
-				if err != nil {
-					return err
-				}
-				if !containsRoot(status.Roots, remoteRoot) {
-					return fmt.Errorf("remote root %q is not advertised by host %q", remoteRoot, hostName)
-				}
+			status, err := opts.DaemonProbe.Status(context.Background(), host, cfg.ClientID)
+			if err != nil {
+				return err
+			}
+			if !containsRoot(status.Roots, remoteRoot) {
+				return fmt.Errorf("remote root %q is not advertised by host %q", remoteRoot, hostName)
 			}
 			localRoot, err := filepath.Abs(opts.WorkingDir)
 			if err != nil {

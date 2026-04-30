@@ -1,6 +1,11 @@
 package config
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestConfigRoundTripHostAndWorkspace(t *testing.T) {
 	dir := t.TempDir()
@@ -59,6 +64,64 @@ func TestDefaultConfigWhenMissing(t *testing.T) {
 	}
 	if got.Workspaces == nil {
 		t.Fatal("Workspaces map should be initialized")
+	}
+}
+
+func TestStorePreservesUnknownTopLevelFields(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	raw := []byte(`{
+  "client_id": "tao-macbook",
+  "future": {"enabled": true},
+  "hosts": {},
+  "workspaces": {}
+}`)
+	if err := os.WriteFile(configPath, raw, 0o644); err != nil {
+		t.Fatalf("write seed config: %v", err)
+	}
+
+	store := NewStore(dir)
+	cfg, err := store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	cfg.Hosts["lab"] = Host{Name: "lab", URL: "http://10.0.0.12:7731"}
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	saved, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(saved, &decoded); err != nil {
+		t.Fatalf("decode saved config: %v", err)
+	}
+	if _, ok := decoded["future"]; !ok {
+		t.Fatalf("future top-level field was not preserved: %s", saved)
+	}
+}
+
+func TestWriteFileAtomicWritesTargetAndCleansTemp(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "config.json")
+	if err := writeFileAtomic(target, []byte(`{"ok":true}`), 0o640); err != nil {
+		t.Fatalf("write atomic: %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(got) != `{"ok":true}` {
+		t.Fatalf("target content %q", got)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.json" {
+		t.Fatalf("unexpected temp files left behind: %#v", entries)
 	}
 }
 

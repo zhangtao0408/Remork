@@ -33,7 +33,10 @@ func addHostCommand(root *cobra.Command, opts Options) {
 			if err != nil {
 				return err
 			}
-			store := configStore(opts)
+			store, err := configStore(opts)
+			if err != nil {
+				return err
+			}
 			cfg, err := store.LoadOrDefault()
 			if err != nil {
 				return err

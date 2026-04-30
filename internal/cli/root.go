@@ -2,9 +2,14 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -70,6 +75,9 @@ func NewRootCommand(opts Options) *cobra.Command {
 			opts.WorkingDir = wd
 		}
 	}
+	if opts.DaemonProbe == nil {
+		opts.DaemonProbe = httpDaemonProbe{client: http.DefaultClient}
+	}
 
 	root := &cobra.Command{
 		Use:           "remork",
@@ -85,8 +93,45 @@ func NewRootCommand(opts Options) *cobra.Command {
 	return root
 }
 
-func configStore(opts Options) config.Store {
-	return config.NewStore(filepath.Join(opts.HomeDir, ".remork"))
+func configStore(opts Options) (config.Store, error) {
+	if opts.HomeDir == "" {
+		return config.Store{}, fmt.Errorf("home directory is required for remork config")
+	}
+	return config.NewStore(filepath.Join(opts.HomeDir, ".remork")), nil
+}
+
+type httpDaemonProbe struct {
+	client *http.Client
+}
+
+func (p httpDaemonProbe) Status(ctx context.Context, host config.Host, clientID string) (api.StatusResponse, error) {
+	u, err := url.Parse(host.URL)
+	if err != nil {
+		return api.StatusResponse{}, err
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + "/status"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return api.StatusResponse{}, err
+	}
+	if clientID == "" {
+		clientID = "remork-cli"
+	}
+	req.Header.Set(api.HeaderClientID, clientID)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return api.StatusResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return api.StatusResponse{}, fmt.Errorf("daemon status failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var status api.StatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return api.StatusResponse{}, err
+	}
+	return status, nil
 }
 
 func addVersionCommand(root *cobra.Command, version string) {

@@ -2,6 +2,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -112,6 +115,14 @@ func TestHostAddWritesConfig(t *testing.T) {
 	}
 }
 
+func TestConfigStoreRequiresHomeDir(t *testing.T) {
+	_, err := configStore(Options{})
+	if err == nil {
+		t.Fatal("configStore should fail when home dir is unavailable")
+	}
+	mustContain(t, err.Error(), "home directory")
+}
+
 func TestInitWritesLocalBinding(t *testing.T) {
 	home := t.TempDir()
 	local := t.TempDir()
@@ -143,5 +154,72 @@ func TestInitWritesLocalBinding(t *testing.T) {
 	}
 	if binding.Token != "" {
 		t.Fatal("binding should not contain token")
+	}
+}
+
+func TestInitUsesDefaultDaemonProbe(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	var statusRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		statusRequests++
+		if r.Header.Get(api.HeaderClientID) == "" {
+			t.Errorf("missing %s header", api.HeaderClientID)
+		}
+		if err := json.NewEncoder(w).Encode(api.StatusResponse{Roots: []string{"/data/project-a"}}); err != nil {
+			t.Errorf("encode status: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	cmd := NewRootCommand(Options{Version: "test", HomeDir: home, WorkingDir: local})
+	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", server.URL); err != nil {
+		t.Fatalf("host add: %v", err)
+	}
+	if _, err := executeCommand(cmd, "init", "lab-a:/data/project-a"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	if statusRequests != 1 {
+		t.Fatalf("status requests = %d, want 1", statusRequests)
+	}
+	if _, _, err := workspace.ResolveFrom(local); err != nil {
+		t.Fatalf("binding should be written after advertised root check: %v", err)
+	}
+}
+
+func TestInitDefaultProbeRejectsUnadvertisedRoot(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	var statusRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		statusRequests++
+		if err := json.NewEncoder(w).Encode(api.StatusResponse{Roots: []string{"/data/other"}}); err != nil {
+			t.Errorf("encode status: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	cmd := NewRootCommand(Options{Version: "test", HomeDir: home, WorkingDir: local})
+	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", server.URL); err != nil {
+		t.Fatalf("host add: %v", err)
+	}
+	if _, err := executeCommand(cmd, "init", "lab-a:/data/project-a"); err == nil {
+		t.Fatal("init should reject a root that is not advertised by the daemon")
+	}
+
+	if statusRequests != 1 {
+		t.Fatalf("status requests = %d, want 1", statusRequests)
+	}
+	if _, _, err := workspace.ResolveFrom(local); err == nil {
+		t.Fatal("binding should not be written when the daemon does not advertise the root")
 	}
 }
