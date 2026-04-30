@@ -86,23 +86,28 @@ func addPlaceholderProductCommands(root *cobra.Command) {
 		"debug",
 		"daemon",
 	}
+	var runCmd *cobra.Command
 	for _, name := range names {
 		name := name
-		root.AddCommand(&cobra.Command{
+		cmd := &cobra.Command{
 			Use:   name,
 			Short: placeholderShort(name),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("%s command is defined by the Product V1 plan and has no handler in this task", name)
 			},
-		})
+		}
+		if name == "run" {
+			runCmd = cmd
+		}
+		root.AddCommand(cmd)
 	}
 
 	root.AddCommand(&cobra.Command{
 		Use:    "exec",
 		Hidden: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("exec is a hidden alias for run and has no handler in this task")
-		},
+		Args:   runCmd.Args,
+		Run:    runCmd.Run,
+		RunE:   runCmd.RunE,
 	})
 }
 

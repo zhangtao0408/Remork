@@ -49,3 +49,21 @@ func TestRunIsVisibleAndExecIsAlias(t *testing.T) {
 		t.Fatalf("exec command should be hidden")
 	}
 }
+
+func TestExecAliasUsesRunPlaceholderHandler(t *testing.T) {
+	runCmd := NewRootCommand(Options{Version: "test"})
+	_, runErr := executeCommand(runCmd, "run")
+	if runErr == nil {
+		t.Fatal("run should return the product placeholder error")
+	}
+
+	execCmd := NewRootCommand(Options{Version: "test"})
+	_, execErr := executeCommand(execCmd, "exec")
+	if execErr == nil {
+		t.Fatal("exec should return the run placeholder error")
+	}
+
+	if execErr.Error() != runErr.Error() {
+		t.Fatalf("exec error %q, want run error %q", execErr.Error(), runErr.Error())
+	}
+}
