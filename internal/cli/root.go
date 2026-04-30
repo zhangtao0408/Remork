@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"remork/internal/api"
+	"remork/internal/auth"
 	"remork/internal/config"
 )
 
@@ -118,6 +119,13 @@ func (p httpDaemonProbe) Status(ctx context.Context, host config.Host, clientID 
 		clientID = "remork-cli"
 	}
 	req.Header.Set(api.HeaderClientID, clientID)
+	token, err := auth.TokenFromEnv(host.TokenEnv)
+	if err != nil {
+		return api.StatusResponse{}, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return api.StatusResponse{}, err

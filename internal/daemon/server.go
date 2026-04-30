@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"remork/internal/api"
 	"remork/internal/apply"
+	"remork/internal/auth"
 	execx "remork/internal/exec"
 	"remork/internal/manifest"
 	"remork/internal/ops"
@@ -24,8 +26,10 @@ import (
 )
 
 type Config struct {
+	Version        string
 	Roots          []string
 	LargeThreshold int64
+	Token          string
 }
 
 type Server struct {
@@ -41,18 +45,40 @@ func NewServer(cfg Config) *Server {
 		stores[root] = ops.NewJSONLStore(operationLogPath(root))
 	}
 	s := &Server{cfg: cfg, mux: http.NewServeMux(), ptyManager: ptysession.NewManager(30 * time.Minute), operationStores: stores}
-	s.mux.HandleFunc("/manifest", s.handleManifest)
-	s.mux.HandleFunc("/download", s.handleDownload)
-	s.mux.HandleFunc("/apply", s.handleApply)
-	s.mux.HandleFunc("/exec", s.handleExec)
-	s.mux.HandleFunc("/events", s.handleEvents)
-	s.mux.HandleFunc("/shell", s.handleShell)
-	s.mux.HandleFunc("/operations", s.handleOperations)
+	s.mux.HandleFunc("/status", s.withAuth(s.handleStatus))
+	s.mux.HandleFunc("/manifest", s.withAuth(s.handleManifest))
+	s.mux.HandleFunc("/download", s.withAuth(s.handleDownload))
+	s.mux.HandleFunc("/apply", s.withAuth(s.handleApply))
+	s.mux.HandleFunc("/exec", s.withAuth(s.handleExec))
+	s.mux.HandleFunc("/events", s.withAuth(s.handleEvents))
+	s.mux.HandleFunc("/shell", s.withAuth(s.handleShell))
+	s.mux.HandleFunc("/operations", s.withAuth(s.handleOperations))
 	return s
 }
 
 func (s *Server) Handler() http.Handler {
 	return s.mux
+}
+
+func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := auth.Authorize(r, s.cfg.Token); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(api.StatusResponse{
+		Version:        s.cfg.Version,
+		Roots:          append([]string(nil), s.cfg.Roots...),
+		Threshold:      s.cfg.LargeThreshold,
+		Platform:       runtime.GOOS + "/" + runtime.GOARCH,
+		WatchSupported: true,
+	})
 }
 
 func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {

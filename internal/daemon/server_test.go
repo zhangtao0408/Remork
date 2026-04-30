@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"remork/internal/api"
 	"remork/internal/state"
 	"remork/internal/watch"
 )
@@ -35,6 +36,80 @@ func TestManifestEndpointReturnsEntries(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "a.txt") {
 		t.Fatalf("body missing a.txt: %s", body)
+	}
+}
+
+func TestStatusReturnsVersionRootsAndThreshold(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Version: "test", Roots: []string{root}, LargeThreshold: 128 << 20}).Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/status")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var status api.StatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if status.Version != "test" || len(status.Roots) != 1 || status.Roots[0] != root || status.Threshold != 128<<20 {
+		t.Fatalf("bad status: %#v", status)
+	}
+	if status.Platform == "" {
+		t.Fatalf("platform should be populated: %#v", status)
+	}
+}
+
+func TestTokenProtectedManifestRejectsMissingToken(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}, Token: "secret"}).Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/manifest?root=" + url.QueryEscape(root) + "&path=.&recursive=true")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestTokenProtectedStatusRequiresBearerToken(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Version: "test", Roots: []string{root}, Token: "secret"}).Handler())
+	defer srv.Close()
+
+	for _, tc := range []struct {
+		name          string
+		authorization string
+		want          int
+	}{
+		{name: "missing", want: http.StatusUnauthorized},
+		{name: "wrong", authorization: "Bearer wrong", want: http.StatusUnauthorized},
+		{name: "correct", authorization: "Bearer secret", want: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/status", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.authorization != "" {
+				req.Header.Set("Authorization", tc.authorization)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.want {
+				t.Fatalf("status %d, want %d", resp.StatusCode, tc.want)
+			}
+		})
 	}
 }
 
@@ -346,6 +421,7 @@ func TestEventsEndpointStreamsWorkspaceChanges(t *testing.T) {
 	if ev.Path != "watched.txt" {
 		t.Fatalf("event %#v", ev)
 	}
+	_ = conn.Close()
 }
 
 func TestShellEndpointRunsInteractiveCommand(t *testing.T) {
@@ -371,6 +447,8 @@ func TestShellEndpointRunsInteractiveCommand(t *testing.T) {
 		}
 		out.Write(msg)
 		if strings.Contains(out.String(), "shell-ok") {
+			_ = conn.Close()
+			waitForOperationLogContaining(t, root, `"operation":"shell"`)
 			return
 		}
 	}
@@ -418,4 +496,19 @@ func mustWrite(t *testing.T, path string, data []byte) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func waitForOperationLogContaining(t *testing.T, root, marker string) {
+	t.Helper()
+	path := filepath.Join(root, ".remork", "log", "operations.jsonl")
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(path)
+		if err == nil && strings.Contains(string(raw), marker) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	raw, _ := os.ReadFile(path)
+	t.Fatalf("operation log %s missing marker %q; content: %s", path, marker, raw)
 }

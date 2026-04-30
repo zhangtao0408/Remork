@@ -1,11 +1,14 @@
 package client
 
 import (
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"remork/internal/api"
 	"remork/internal/apply"
 	"remork/internal/daemon"
 	"remork/internal/state"
@@ -99,6 +102,39 @@ func TestClientSendsClientIDAndReadsOperations(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].ClientID != "codex-agent" || entries[0].Operation != "exec" {
 		t.Fatalf("bad entries: %#v", entries)
+	}
+}
+
+func TestClientSendsClientIDAndBearerToken(t *testing.T) {
+	var sawStatus bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		sawStatus = true
+		if got := r.Header.Get(api.HeaderClientID); got != "tao-macbook" {
+			t.Errorf("%s = %q, want tao-macbook", api.HeaderClientID, got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer abc123" {
+			t.Errorf("Authorization = %q, want Bearer abc123", got)
+		}
+		if err := json.NewEncoder(w).Encode(api.StatusResponse{Version: "test"}); err != nil {
+			t.Errorf("encode: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewWithOptions(Options{BaseURL: srv.URL, ClientID: "tao-macbook", Token: "abc123"})
+	status, err := c.Status()
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !sawStatus {
+		t.Fatal("status endpoint was not called")
+	}
+	if status.Version != "test" {
+		t.Fatalf("status: %#v", status)
 	}
 }
 

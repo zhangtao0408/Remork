@@ -192,6 +192,69 @@ func TestInitUsesDefaultDaemonProbe(t *testing.T) {
 	}
 }
 
+func TestInitDefaultProbeSendsTokenFromHostEnv(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	t.Setenv("REMORK_TOKEN", "abc123")
+	var statusRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		statusRequests++
+		if got := r.Header.Get(api.HeaderClientID); got == "" {
+			t.Errorf("missing %s header", api.HeaderClientID)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer abc123" {
+			http.Error(w, "missing bearer token", http.StatusUnauthorized)
+			return
+		}
+		if err := json.NewEncoder(w).Encode(api.StatusResponse{Roots: []string{"/data/project-a"}}); err != nil {
+			t.Errorf("encode status: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	cmd := NewRootCommand(Options{Version: "test", HomeDir: home, WorkingDir: local})
+	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", server.URL, "--token-env", "REMORK_TOKEN"); err != nil {
+		t.Fatalf("host add: %v", err)
+	}
+	if _, err := executeCommand(cmd, "init", "lab-a:/data/project-a"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	if statusRequests != 1 {
+		t.Fatalf("status requests = %d, want 1", statusRequests)
+	}
+	if _, _, err := workspace.ResolveFrom(local); err != nil {
+		t.Fatalf("binding should be written after authenticated status check: %v", err)
+	}
+}
+
+func TestInitDefaultProbeMissingTokenEnvDoesNotWriteBinding(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("status should not be requested when token env is missing")
+	}))
+	t.Cleanup(server.Close)
+
+	cmd := NewRootCommand(Options{Version: "test", HomeDir: home, WorkingDir: local})
+	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", server.URL, "--token-env", "REMORK_TOKEN_MISSING"); err != nil {
+		t.Fatalf("host add: %v", err)
+	}
+	if _, err := executeCommand(cmd, "init", "lab-a:/data/project-a"); err == nil {
+		t.Fatal("init should fail when token env is missing")
+	} else if !strings.Contains(err.Error(), "REMORK_TOKEN_MISSING") {
+		t.Fatalf("error %q should mention missing token env", err.Error())
+	}
+
+	if _, _, err := workspace.ResolveFrom(local); err == nil {
+		t.Fatal("binding should not be written when token env is missing")
+	}
+}
+
 func TestInitDefaultProbeRejectsUnadvertisedRoot(t *testing.T) {
 	home := t.TempDir()
 	local := t.TempDir()

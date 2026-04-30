@@ -18,14 +18,51 @@ type Client struct {
 	base     string
 	http     *http.Client
 	clientID string
+	token    string
+}
+
+type Options struct {
+	BaseURL  string
+	ClientID string
+	Token    string
+	HTTP     *http.Client
 }
 
 func New(base string) Client {
-	return Client{base: base, http: http.DefaultClient}
+	return NewWithOptions(Options{BaseURL: base})
 }
 
 func NewWithClientID(base, clientID string) Client {
-	return Client{base: base, http: http.DefaultClient, clientID: clientID}
+	return NewWithOptions(Options{BaseURL: base, ClientID: clientID})
+}
+
+func NewWithOptions(opts Options) Client {
+	httpClient := opts.HTTP
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	return Client{base: opts.BaseURL, http: httpClient, clientID: opts.ClientID, token: opts.Token}
+}
+
+func (c Client) Status() (api.StatusResponse, error) {
+	u, _ := url.Parse(c.base + "/status")
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return api.StatusResponse{}, err
+	}
+	c.addHeaders(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return api.StatusResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return api.StatusResponse{}, &HTTPError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+	var out api.StatusResponse
+	err = json.NewDecoder(resp.Body).Decode(&out)
+	return out, err
 }
 
 func (c Client) Manifest(root, path string) (api.ManifestResponse, error) {
@@ -190,5 +227,8 @@ func (e *HTTPError) Error() string {
 func (c Client) addHeaders(req *http.Request) {
 	if c.clientID != "" {
 		req.Header.Set(api.HeaderClientID, c.clientID)
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 }
