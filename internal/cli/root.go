@@ -15,6 +15,7 @@ import (
 
 	"remork/internal/api"
 	"remork/internal/auth"
+	remorkclient "remork/internal/client"
 	"remork/internal/config"
 )
 
@@ -77,7 +78,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 		}
 	}
 	if opts.DaemonProbe == nil {
-		opts.DaemonProbe = httpDaemonProbe{client: http.DefaultClient}
+		opts.DaemonProbe = httpDaemonProbe{}
 	}
 
 	root := &cobra.Command{
@@ -139,7 +140,11 @@ func (p httpDaemonProbe) Status(ctx context.Context, host config.Host, clientID 
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	resp, err := p.client.Do(req)
+	httpClient := p.client
+	if httpClient == nil {
+		httpClient = remorkclient.NewHTTPClient(host.NoProxy)
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return api.StatusResponse{}, err
 	}
@@ -153,6 +158,15 @@ func (p httpDaemonProbe) Status(ctx context.Context, host config.Host, clientID 
 		return api.StatusResponse{}, err
 	}
 	return status, nil
+}
+
+func clientForHost(host config.Host, cfg config.Config, token string) remorkclient.Client {
+	return remorkclient.NewWithOptions(remorkclient.Options{
+		BaseURL:  host.URL,
+		ClientID: cfg.ClientID,
+		Token:    token,
+		NoProxy:  host.NoProxy,
+	})
 }
 
 func addVersionCommand(root *cobra.Command, version string) {

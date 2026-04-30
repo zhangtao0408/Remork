@@ -7,7 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"remork/internal/auth"
-	"remork/internal/client"
 	"remork/internal/output"
 	"remork/internal/state"
 	"remork/internal/syncer"
@@ -50,7 +49,7 @@ func addSyncCommand(root *cobra.Command, opts Options) {
 			}
 			workspaceRef := binding.Host + ":" + binding.RemoteRoot
 			runner := syncer.NewRunner(syncer.RunnerOptions{
-				Client:       client.NewWithOptions(client.Options{BaseURL: host.URL, ClientID: cfg.ClientID, Token: token}),
+				Client:       clientForHost(host, cfg, token),
 				StateStore:   state.NewStore(binding.StateDir),
 				LocalRoot:    localRoot,
 				WorkspaceRef: workspaceRef,

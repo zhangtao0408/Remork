@@ -87,7 +87,11 @@ func streamWorkspaceEvents(ctx context.Context, runCtx runContext, handle func(w
 	if runCtx.token != "" {
 		headers.Set("Authorization", "Bearer "+runCtx.token)
 	}
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, headers)
+	dialer := *websocket.DefaultDialer
+	if runCtx.noProxy {
+		dialer.Proxy = nil
+	}
+	conn, _, err := dialer.DialContext(ctx, wsURL, headers)
 	if err != nil {
 		return err
 	}

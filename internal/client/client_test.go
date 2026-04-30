@@ -162,6 +162,29 @@ func TestClientTrimsTrailingSlashFromBaseURL(t *testing.T) {
 	}
 }
 
+func TestClientNoProxyDisablesProxyFromEnvironment(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:9")
+	c := NewWithOptions(Options{BaseURL: "http://example.test", NoProxy: true})
+
+	transport, ok := c.http.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", c.http.Transport)
+	}
+	if transport.Proxy != nil {
+		req, err := http.NewRequest(http.MethodGet, "http://example.test/status", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		proxyURL, err := transport.Proxy(req)
+		if err != nil {
+			t.Fatalf("proxy lookup: %v", err)
+		}
+		if proxyURL != nil {
+			t.Fatalf("proxy = %v, want nil", proxyURL)
+		}
+	}
+}
+
 func TestClientReturnsHTTPErrorForUnavailableDaemon(t *testing.T) {
 	c := New("http://127.0.0.1:1")
 	_, err := c.Manifest("/tmp/missing", ".")

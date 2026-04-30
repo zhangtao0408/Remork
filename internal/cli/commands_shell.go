@@ -72,6 +72,7 @@ func addShellCommand(root *cobra.Command, opts Options) {
 				Root:     runCtx.binding.RemoteRoot,
 				ClientID: runCtx.clientID,
 				Token:    runCtx.token,
+				NoProxy:  runCtx.noProxy,
 				Stdin:    cmd.InOrStdin(),
 				Stdout:   cmd.OutOrStdout(),
 			})

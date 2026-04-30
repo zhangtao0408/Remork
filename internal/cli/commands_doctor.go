@@ -70,7 +70,7 @@ func runDoctor(opts Options) *doctorFailure {
 			code:   exitcode.InvalidUsageOrConfig,
 		}
 	}
-	c := client.NewWithOptions(client.Options{BaseURL: host.URL, ClientID: cfg.ClientID, Token: token})
+	c := clientForHost(host, cfg, token)
 	status, err := c.Status()
 	if err != nil {
 		return networkDoctorFailure(err, "start remorkd and check remork host add URL")

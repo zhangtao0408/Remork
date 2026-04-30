@@ -25,6 +25,7 @@ type Options struct {
 	Root     string
 	ClientID string
 	Token    string
+	NoProxy  bool
 	Stdin    io.Reader
 	Stdout   io.Writer
 	Rows     int
@@ -74,7 +75,7 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	dialer := opts.Dialer
 	if dialer == nil {
-		dialer = websocket.DefaultDialer
+		dialer = NewDialer(opts.NoProxy)
 	}
 	wsURL, err := BuildURL(opts.BaseURL, opts.Root)
 	if err != nil {
@@ -130,6 +131,14 @@ func Run(ctx context.Context, opts Options) error {
 			return result.err
 		}
 	}
+}
+
+func NewDialer(noProxy bool) *websocket.Dialer {
+	dialer := *websocket.DefaultDialer
+	if noProxy {
+		dialer.Proxy = nil
+	}
+	return &dialer
 }
 
 func initialSize(opts Options) (int, int) {

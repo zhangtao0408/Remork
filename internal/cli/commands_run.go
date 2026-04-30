@@ -116,6 +116,7 @@ type runContext struct {
 	baseURL  string
 	clientID string
 	token    string
+	noProxy  bool
 }
 
 func newRunContext(opts Options) (runContext, error) {
@@ -139,7 +140,7 @@ func newRunContext(opts Options) (runContext, error) {
 	if err != nil {
 		return runContext{}, err
 	}
-	c := client.NewWithOptions(client.Options{BaseURL: host.URL, ClientID: cfg.ClientID, Token: token})
+	c := clientForHost(host, cfg, token)
 	workspaceRef := binding.Host + ":" + binding.RemoteRoot
 	runner := syncer.NewRunner(syncer.RunnerOptions{
 		Client:       c,
@@ -148,5 +149,5 @@ func newRunContext(opts Options) (runContext, error) {
 		WorkspaceRef: workspaceRef,
 		RemoteRoot:   binding.RemoteRoot,
 	})
-	return runContext{binding: binding, client: c, runner: runner, baseURL: host.URL, clientID: cfg.ClientID, token: token}, nil
+	return runContext{binding: binding, client: c, runner: runner, baseURL: host.URL, clientID: cfg.ClientID, token: token, noProxy: host.NoProxy}, nil
 }

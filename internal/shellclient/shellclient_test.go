@@ -45,6 +45,24 @@ func TestBuildShellURLIncludesRootAndUsesWebSocketScheme(t *testing.T) {
 	}
 }
 
+func TestNewDialerNoProxyDisablesProxyFromEnvironment(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:9")
+	dialer := NewDialer(true)
+	if dialer.Proxy != nil {
+		req, err := http.NewRequest(http.MethodGet, "http://example.test/shell", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		proxyURL, err := dialer.Proxy(req)
+		if err != nil {
+			t.Fatalf("proxy lookup: %v", err)
+		}
+		if proxyURL != nil {
+			t.Fatalf("proxy = %v, want nil", proxyURL)
+		}
+	}
+}
+
 func TestRunWaitsForSocketOutputAfterStdinEOF(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

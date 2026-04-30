@@ -27,6 +27,7 @@ type Options struct {
 	ClientID string
 	Token    string
 	HTTP     *http.Client
+	NoProxy  bool
 }
 
 func New(base string) Client {
@@ -40,9 +41,18 @@ func NewWithClientID(base, clientID string) Client {
 func NewWithOptions(opts Options) Client {
 	httpClient := opts.HTTP
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = NewHTTPClient(opts.NoProxy)
 	}
 	return Client{base: opts.BaseURL, http: httpClient, clientID: opts.ClientID, token: opts.Token}
+}
+
+func NewHTTPClient(noProxy bool) *http.Client {
+	if !noProxy {
+		return http.DefaultClient
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return &http.Client{Transport: transport}
 }
 
 func (c Client) endpoint(path string) string {
