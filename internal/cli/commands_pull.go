@@ -4,13 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	"remork/internal/config"
 	"remork/internal/exitcode"
 	"remork/internal/output"
 	"remork/internal/prompt"
 	"remork/internal/syncer"
+	"remork/internal/workspace"
 )
 
 func addPullCommand(root *cobra.Command, opts Options) {
@@ -24,11 +28,19 @@ func addPullCommand(root *cobra.Command, opts Options) {
 		Short: "Fetch a specific file or directory",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			binding, _, err := workspace.ResolveFrom(opts.WorkingDir)
+			if err != nil {
+				return fmt.Errorf("current directory is not bound to a remork workspace: %w", err)
+			}
+			target, err := normalizePullTarget(args[0], binding)
+			if err != nil {
+				return err
+			}
 			runner, err := newBoundSyncRunner(opts)
 			if err != nil {
 				return err
 			}
-			result, err := runner.Pull(context.Background(), args[0], syncer.PullOptions{
+			result, err := runner.Pull(context.Background(), target, syncer.PullOptions{
 				Force:        force,
 				Quiet:        quiet,
 				IncludeLarge: includeLarge,
@@ -59,4 +71,37 @@ func addPullCommand(root *cobra.Command, opts Options) {
 	cmd.Flags().BoolVar(&includeLarge, "include-large", false, "Download large files instead of placeholders")
 	_ = cmd.Flags().MarkHidden("include-large")
 	root.AddCommand(cmd)
+}
+
+func normalizePullTarget(target string, binding workspace.Binding) (string, error) {
+	if !strings.Contains(target, ":/") {
+		return target, nil
+	}
+	host, remotePath, err := config.ParseWorkspaceRef(target)
+	if err != nil {
+		return "", err
+	}
+	if host != binding.Host {
+		return "", fmt.Errorf("pull target host %q does not match bound host %q", host, binding.Host)
+	}
+	root := path.Clean(binding.RemoteRoot)
+	if !strings.HasPrefix(root, "/") {
+		root = "/" + root
+	}
+	remotePath = path.Clean(remotePath)
+	if root == "/" {
+		rel := strings.TrimPrefix(remotePath, "/")
+		if rel == "" {
+			return ".", nil
+		}
+		return rel, nil
+	}
+	if remotePath == root {
+		return ".", nil
+	}
+	prefix := strings.TrimRight(root, "/") + "/"
+	if !strings.HasPrefix(remotePath, prefix) {
+		return "", fmt.Errorf("pull target %q is outside bound remote root %q", remotePath, root)
+	}
+	return strings.TrimPrefix(remotePath, prefix), nil
 }

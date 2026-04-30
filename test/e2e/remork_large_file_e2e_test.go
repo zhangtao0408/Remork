@@ -2,11 +2,14 @@ package e2e
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"remork/internal/api"
 	"remork/internal/daemon"
 )
 
@@ -17,6 +20,18 @@ func TestRemorkProductLargeFilePullPolicies(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(h.local, "model.tar.gz.meta")); err != nil {
 		t.Fatalf("missing meta: %v", err)
 	}
+	metaData, err := os.ReadFile(filepath.Join(h.local, "model.tar.gz.meta"))
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	var meta api.LargeFileMeta
+	if err := json.Unmarshal(metaData, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	fullRefTarget := strings.TrimPrefix(meta.PullCommand, "remork pull ")
+	if fullRefTarget == meta.PullCommand {
+		t.Fatalf("pull command %q does not start with remork pull", meta.PullCommand)
+	}
 
 	out, code := h.runInLocalExpectCode(7, "pull", "--quiet", "model.tar.gz")
 	mustContain(t, out, "confirmation required")
@@ -24,7 +39,7 @@ func TestRemorkProductLargeFilePullPolicies(t *testing.T) {
 		t.Fatalf("exit code = %d", code)
 	}
 
-	h.runInLocal("pull", "--force", "model.tar.gz")
+	h.runInLocal("pull", "--force", fullRefTarget)
 	got, err := os.ReadFile(filepath.Join(h.local, "model.tar.gz"))
 	if err != nil {
 		t.Fatalf("read pulled: %v", err)
