@@ -10,6 +10,7 @@ import (
 
 	"remork/internal/api"
 	"remork/internal/apply"
+	execx "remork/internal/exec"
 )
 
 type Client struct {
@@ -72,6 +73,27 @@ func (c Client) Apply(root string, cs apply.Changeset) (apply.Result, error) {
 		return result, &HTTPError{StatusCode: resp.StatusCode, Body: "apply failed"}
 	}
 	return result, nil
+}
+
+func (c Client) Exec(root, cwd string, command []string, timeoutMillis int64) (execx.Result, error) {
+	u, _ := url.Parse(c.base + "/exec")
+	reqBody := api.ExecRequest{Root: root, Cwd: cwd, Command: command, TimeoutMillis: timeoutMillis}
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return execx.Result{}, err
+	}
+	resp, err := c.http.Post(u.String(), "application/json", bytes.NewReader(data))
+	if err != nil {
+		return execx.Result{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return execx.Result{}, &HTTPError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+	var result execx.Result
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	return result, err
 }
 
 func (c Client) download(root, path, byteRange string) ([]byte, error) {

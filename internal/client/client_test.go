@@ -71,6 +71,20 @@ func TestClientApplyUpdate(t *testing.T) {
 	}
 }
 
+func TestClientExecRunsCommand(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	c := New(srv.URL)
+	res, err := c.Exec(root, root, []string{"sh", "-c", "echo hello"}, 0)
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if res.ExitCode != 0 || res.Stdout != "hello\n" {
+		t.Fatalf("bad result: %#v", res)
+	}
+}
+
 func TestClientReturnsHTTPErrorForUnavailableDaemon(t *testing.T) {
 	c := New("http://127.0.0.1:1")
 	_, err := c.Manifest("/tmp/missing", ".")
