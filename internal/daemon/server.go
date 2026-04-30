@@ -1,0 +1,96 @@
+package daemon
+
+import (
+	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
+
+	"remork/internal/manifest"
+	"remork/internal/paths"
+)
+
+type Config struct {
+	Roots          []string
+	LargeThreshold int64
+}
+
+type Server struct {
+	cfg Config
+	mux *http.ServeMux
+}
+
+func NewServer(cfg Config) *Server {
+	s := &Server{cfg: cfg, mux: http.NewServeMux()}
+	s.mux.HandleFunc("/manifest", s.handleManifest)
+	s.mux.HandleFunc("/download", s.handleDownload)
+	return s
+}
+
+func (s *Server) Handler() http.Handler {
+	return s.mux
+}
+
+func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	if !s.allowedRoot(root) {
+		http.Error(w, "root not allowed", http.StatusForbidden)
+		return
+	}
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		path = "."
+	}
+	if path != "." {
+		if _, err := paths.ResolveInsideWorkspace(root, path); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	resp, err := manifest.Scan(root, filepath.Clean(path), manifest.Options{LargeThreshold: s.cfg.LargeThreshold})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	if !s.allowedRoot(root) {
+		http.Error(w, "root not allowed", http.StatusForbidden)
+		return
+	}
+	path := r.URL.Query().Get("path")
+	full, err := paths.ResolveExistingInsideWorkspace(root, path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if info.IsDir() {
+		http.Error(w, "cannot download directory", http.StatusBadRequest)
+		return
+	}
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+}
+
+func (s *Server) allowedRoot(root string) bool {
+	for _, r := range s.cfg.Roots {
+		if r == root {
+			return true
+		}
+	}
+	return false
+}
