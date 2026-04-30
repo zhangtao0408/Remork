@@ -271,6 +271,8 @@ func TestShellAcceptsResizeFrame(t *testing.T) {
 		}
 		transcript.Write(msg)
 	}
+	_ = conn.Close()
+	waitForOperationLogContaining(t, root, `"operation":"shell"`)
 }
 
 func TestShellDropsUnknownJSONFrame(t *testing.T) {
@@ -305,6 +307,8 @@ func TestShellDropsUnknownJSONFrame(t *testing.T) {
 	if strings.Contains(transcript.String(), "leaked") {
 		t.Fatalf("unknown JSON frame was written into shell:\n%s", transcript.String())
 	}
+	_ = conn.Close()
+	waitForOperationLogContaining(t, root, `"operation":"shell"`)
 }
 
 func TestOperationLogsAreScopedPerWorkspaceRoot(t *testing.T) {
