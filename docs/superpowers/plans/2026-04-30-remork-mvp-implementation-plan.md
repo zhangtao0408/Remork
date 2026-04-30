@@ -14,6 +14,26 @@
 
 The approved spec covers several subsystems: daemon, CLI, sync/pull, local state, apply, exec, PTY shell, and watch/events. This plan keeps them in one MVP because each subsystem is needed to validate the core workflow, but tasks are ordered as vertical slices with explicit test boundaries. Each task must end with tests passing and a commit.
 
+## Remote Validation Targets
+
+Use these real hosts for final offline-daemon validation after local tests pass:
+
+```text
+Alias: z00879328_docker
+SSH: root@175.100.2.7:22022
+Platform probe: Linux aarch64
+Release artifact: dist/remorkd-linux-arm64
+Notes: SSH config includes ControlMaster and RemoteForward for proxy, but remork daemon transport must still be tested through direct VPN HTTP, not SSH tunnel.
+
+Alias: z00879328_docker_2.6
+SSH: root@175.100.2.6:2226
+Platform probe: Linux aarch64
+Release artifact: dist/remorkd-linux-arm64
+Notes: Minimal environment; `hostname` was not available during probe. Do not assume common convenience tools beyond POSIX shell basics.
+```
+
+Remote validation must not run `go build`, `go get`, `brew`, `apt`, `npm`, or any internet-dependent setup on these hosts. The only expected remote install action is copying a prebuilt `remorkd-linux-arm64` binary and a small test workspace under `/tmp`.
+
 ## Repository Structure
 
 Create this structure:
@@ -3523,6 +3543,120 @@ git add docs
 git commit -m "docs: align remork spec with implementation"
 ```
 
+## Task 15: Real Remote Offline Daemon Validation
+
+**Files:**
+- Modify: `docs/superpowers/specs/2026-04-30-remote-workspace-agent-design.md` only if behavior changed during remote validation
+- Modify: `docs/superpowers/plans/2026-04-30-remork-mvp-implementation-plan.md` only if validation commands need correction
+
+- [ ] **Step 1: Confirm SSH aliases still resolve**
+
+Run:
+
+```bash
+ssh -G z00879328_docker | awk '/^(hostname|user|port|identityfile) / {print}'
+ssh -G z00879328_docker_2.6 | awk '/^(hostname|user|port|identityfile) / {print}'
+```
+
+Expected:
+
+```text
+hostname 175.100.2.7
+user root
+port 22022
+identityfile ~/.ssh/id_ed25519
+hostname 175.100.2.6
+user root
+port 2226
+identityfile ~/.ssh/id_ed25519
+```
+
+- [ ] **Step 2: Confirm remote platforms without changing files**
+
+Run:
+
+```bash
+ssh -o BatchMode=yes -o ConnectTimeout=8 z00879328_docker 'printf "user=%s\n" "$(whoami)"; printf "os=%s\n" "$(uname -s)"; printf "arch=%s\n" "$(uname -m)"'
+ssh -o BatchMode=yes -o ConnectTimeout=8 z00879328_docker_2.6 'printf "user=%s\n" "$(whoami)"; printf "os=%s\n" "$(uname -s)"; printf "arch=%s\n" "$(uname -m)"'
+```
+
+Expected for both hosts:
+
+```text
+user=root
+os=Linux
+arch=aarch64
+```
+
+- [ ] **Step 3: Build the offline Linux arm64 daemon locally**
+
+Run:
+
+```bash
+scripts/build-release.sh dev
+test -x dist/remorkd-linux-arm64
+shasum -a 256 dist/remorkd-linux-arm64
+```
+
+Expected: all commands pass locally. Do not build on the remote hosts.
+
+- [ ] **Step 4: Copy binary and create isolated remote test workspaces**
+
+Run:
+
+```bash
+for host in z00879328_docker z00879328_docker_2.6; do
+  scp dist/remorkd-linux-arm64 "$host:/tmp/remorkd"
+  ssh "$host" 'chmod +x /tmp/remorkd && rm -rf /tmp/remork-e2e && mkdir -p /tmp/remork-e2e && printf "hello\n" > /tmp/remork-e2e/a.txt && /tmp/remorkd --version'
+done
+```
+
+Expected: each host prints `remorkd dev`. No compiler, package manager, or internet access is used remotely.
+
+- [ ] **Step 5: Start daemon on each remote and verify locally on the remote host**
+
+Run:
+
+```bash
+for host in z00879328_docker z00879328_docker_2.6; do
+  ssh "$host" 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; nohup /tmp/remorkd --root /tmp/remork-e2e --addr 0.0.0.0:17731 >/tmp/remorkd.log 2>&1 & echo $! > /tmp/remorkd.pid; sleep 1; curl -fsS "http://127.0.0.1:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true"'
+done
+```
+
+Expected: each remote-side curl returns manifest JSON containing `a.txt`. If this passes but local direct curl fails, the issue is VPN/firewall exposure rather than daemon startup.
+
+- [ ] **Step 6: Verify direct VPN HTTP access from local machine**
+
+Run:
+
+```bash
+curl -fsS 'http://175.100.2.7:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true'
+curl -fsS 'http://175.100.2.6:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true'
+```
+
+Expected: both local curls return manifest JSON containing `a.txt`. This validates the intended daemon transport path without SSH tunnels.
+
+- [ ] **Step 7: Cleanup remote test processes and files**
+
+Run:
+
+```bash
+for host in z00879328_docker z00879328_docker_2.6; do
+  ssh "$host" 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; rm -f /tmp/remorkd.pid /tmp/remorkd.log /tmp/remorkd; rm -rf /tmp/remork-e2e'
+done
+```
+
+Expected: cleanup succeeds on both hosts.
+
+- [ ] **Step 8: Record any environment-specific findings**
+
+If validation reveals a real host constraint, update the plan or spec with a concrete note and commit it:
+
+```bash
+git add docs
+git commit -m "docs: record remork remote validation findings"
+```
+
 ## Self-Review
 
 Spec coverage:
@@ -3534,7 +3668,7 @@ Spec coverage:
 - Remote command execution: Task 8, Task 13.
 - Interactive PTY shell: Task 9, Task 13.
 - Watch/events with manifest fallback: Task 10, Task 13.
-- Offline remote deployment with prebuilt daemon binary: Task 0, Task 14.
+- Offline remote deployment with prebuilt daemon binary: Task 0, Task 14, Task 15.
 - No target Git pollution: Task 2 skips `.git`, Task 3 skips `.git`, Task 13 adds regression coverage.
 - Edge cases and TDD: every implementation task starts with failing tests, then minimal code, then verification.
 
