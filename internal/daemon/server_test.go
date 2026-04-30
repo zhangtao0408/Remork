@@ -77,6 +77,22 @@ func TestManifestUnknownRootReturnsForbidden(t *testing.T) {
 	}
 }
 
+func TestExecEndpointRunsCommand(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	body := strings.NewReader(`{"root":"` + root + `","cwd":"` + root + `","command":["sh","-c","pwd"]}`)
+	resp, err := http.Post(srv.URL+"/exec", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(data), root) {
+		t.Fatalf("body: %s", data)
+	}
+}
+
 func TestDownloadEncodedTraversalReturnsBadRequest(t *testing.T) {
 	root := t.TempDir()
 	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())

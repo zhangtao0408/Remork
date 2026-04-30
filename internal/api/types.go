@@ -46,3 +46,11 @@ type StatusResponse struct {
 	Platform       string   `json:"platform"`
 	WatchSupported bool     `json:"watch_supported"`
 }
+
+type ExecRequest struct {
+	Root          string   `json:"root"`
+	Cwd           string   `json:"cwd"`
+	Command       []string `json:"command"`
+	Env           []string `json:"env,omitempty"`
+	TimeoutMillis int64    `json:"timeout_millis,omitempty"`
+}

@@ -6,8 +6,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
+	"remork/internal/api"
 	"remork/internal/apply"
+	execx "remork/internal/exec"
 	"remork/internal/manifest"
 	"remork/internal/paths"
 )
@@ -27,6 +31,7 @@ func NewServer(cfg Config) *Server {
 	s.mux.HandleFunc("/manifest", s.handleManifest)
 	s.mux.HandleFunc("/download", s.handleDownload)
 	s.mux.HandleFunc("/apply", s.handleApply)
+	s.mux.HandleFunc("/exec", s.handleExec)
 	return s
 }
 
@@ -112,6 +117,39 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)
 		_, _ = w.Write(buf.Bytes())
 		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req api.ExecRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !s.allowedRoot(req.Root) {
+		http.Error(w, "root not allowed", http.StatusForbidden)
+		return
+	}
+	cwd := req.Root
+	if req.Cwd != "" && req.Cwd != req.Root {
+		rel := strings.TrimPrefix(req.Cwd, req.Root+string(os.PathSeparator))
+		resolved, err := paths.ResolveInsideWorkspace(req.Root, rel)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		cwd = resolved
+	}
+	timeout := time.Duration(req.TimeoutMillis) * time.Millisecond
+	result, runErr := execx.Run(execx.Options{Cwd: cwd, Command: req.Command, Env: req.Env, Timeout: timeout})
+	if runErr != nil && !result.TimedOut && result.ExitCode == 0 {
+		result.ExitCode = 1
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
