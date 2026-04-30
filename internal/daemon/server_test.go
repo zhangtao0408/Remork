@@ -4,10 +4,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gorilla/websocket"
+
+	"remork/internal/watch"
 )
 
 func TestManifestEndpointReturnsEntries(t *testing.T) {
@@ -90,6 +95,26 @@ func TestExecEndpointRunsCommand(t *testing.T) {
 	data, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(data), root) {
 		t.Fatalf("body: %s", data)
+	}
+}
+
+func TestEventsEndpointStreamsWorkspaceChanges(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/events?root=" + url.QueryEscape(root)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	mustWrite(t, filepath.Join(root, "watched.txt"), []byte("hello"))
+	var ev watch.Event
+	if err := conn.ReadJSON(&ev); err != nil {
+		t.Fatalf("read event: %v", err)
+	}
+	if ev.Path != "watched.txt" {
+		t.Fatalf("event %#v", ev)
 	}
 }
 

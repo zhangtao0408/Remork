@@ -9,11 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"remork/internal/api"
 	"remork/internal/apply"
 	execx "remork/internal/exec"
 	"remork/internal/manifest"
 	"remork/internal/paths"
+	"remork/internal/watch"
 )
 
 type Config struct {
@@ -32,6 +35,7 @@ func NewServer(cfg Config) *Server {
 	s.mux.HandleFunc("/download", s.handleDownload)
 	s.mux.HandleFunc("/apply", s.handleApply)
 	s.mux.HandleFunc("/exec", s.handleExec)
+	s.mux.HandleFunc("/events", s.handleEvents)
 	return s
 }
 
@@ -153,6 +157,41 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
+}
+
+var wsUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	if !s.allowedRoot(root) {
+		http.Error(w, "root not allowed", http.StatusForbidden)
+		return
+	}
+	watcher, err := watch.New(root)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer watcher.Close()
+	if err := watcher.Start(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	for {
+		select {
+		case ev := <-watcher.Events():
+			if err := conn.WriteJSON(ev); err != nil {
+				return
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 func (s *Server) allowedRoot(root string) bool {
