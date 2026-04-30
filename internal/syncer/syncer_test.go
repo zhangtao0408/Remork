@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"remork/internal/client"
 	"remork/internal/daemon"
+	"remork/internal/prompt"
 	"remork/internal/state"
 )
 
@@ -63,6 +65,82 @@ func TestSyncMaterializesSmallFilesAndLargeMeta(t *testing.T) {
 	}
 	if _, err := os.Stat(largeBasePath); !os.IsNotExist(err) {
 		t.Fatalf("large file base cache exists or unexpected stat error: %v", err)
+	}
+}
+
+func TestPullQuietLargeFileReturnsPromptRequired(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(remote, "model.bin"), []byte("12345"))
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}, LargeThreshold: 4}).Handler())
+	defer srv.Close()
+
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   state.NewStore(filepath.Join(local, ".remork", "state")),
+		LocalRoot:    local,
+		WorkspaceRef: "lab:" + remote,
+		RemoteRoot:   remote,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	_, err := runner.Pull(context.Background(), "model.bin", PullOptions{Quiet: true})
+	if !errors.Is(err, prompt.ErrPromptRequired) {
+		t.Fatalf("err = %v, want ErrPromptRequired", err)
+	}
+}
+
+func TestPullForceLargeFileMaterializesAndClearsMeta(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(remote, "model.bin"), []byte("12345"))
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}, LargeThreshold: 4}).Handler())
+	defer srv.Close()
+
+	store := state.NewStore(filepath.Join(local, ".remork", "state"))
+	workspaceRef := "lab:" + remote
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   store,
+		LocalRoot:    local,
+		WorkspaceRef: workspaceRef,
+		RemoteRoot:   remote,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(local, "model.bin.meta")); err != nil {
+		t.Fatalf("missing meta before pull: %v", err)
+	}
+
+	result, err := runner.Pull(context.Background(), "model.bin", PullOptions{Force: true})
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if result.Downloaded != 1 {
+		t.Fatalf("downloaded = %d, want 1", result.Downloaded)
+	}
+	got, err := os.ReadFile(filepath.Join(local, "model.bin"))
+	if err != nil {
+		t.Fatalf("read pulled file: %v", err)
+	}
+	if string(got) != "12345" {
+		t.Fatalf("pulled file = %q, want 12345", got)
+	}
+	if _, err := os.Stat(filepath.Join(local, "model.bin.meta")); !os.IsNotExist(err) {
+		t.Fatalf("meta still exists after pull: %v", err)
+	}
+	snap, err := store.Load(workspaceRef)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	entry := snap.Entries["model.bin"]
+	if entry.Large || entry.MetaPath != "" {
+		t.Fatalf("snapshot entry = %#v, want materialized non-large", entry)
 	}
 }
 

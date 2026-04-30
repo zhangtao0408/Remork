@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"remork/internal/client"
 	"remork/internal/manifest"
 	"remork/internal/planner"
+	"remork/internal/prompt"
 	"remork/internal/state"
 	"remork/internal/transfer"
 )
@@ -35,6 +37,14 @@ type SyncOptions struct {
 	IncludeLarge bool
 	Force        bool
 	Quiet        bool
+}
+
+type PullOptions struct {
+	Force        bool
+	Quiet        bool
+	IncludeLarge bool
+	In           io.Reader
+	Out          io.Writer
 }
 
 type Result struct {
@@ -186,7 +196,8 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	plan := planner.PlanSync(filterManifestLocalOnly(man), filterSnapshotLocalOnly(snap), planner.Options{
+	filteredSnap := filterSnapshotLocalOnly(snap)
+	plan := planner.PlanSync(normalizePulledLargeManifest(filterManifestLocalOnly(man), filteredSnap), filteredSnap, planner.Options{
 		WorkspaceRef: r.opts.WorkspaceRef,
 		TargetPath:   opts.TargetPath,
 		IncludeLarge: opts.IncludeLarge,
@@ -289,6 +300,77 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	return result, nil
 }
 
+func (r Runner) Pull(ctx context.Context, target string, opts PullOptions) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	snap, err := r.loadSnapshot()
+	if err != nil {
+		return Result{}, err
+	}
+	dirty, err := state.DetectDirty(r.opts.LocalRoot, snap)
+	if err != nil {
+		return Result{}, err
+	}
+	dirty = filterDirtyLocalOnly(dirty)
+	man, err := r.opts.Client.Manifest(r.opts.RemoteRoot, target)
+	if err != nil {
+		return Result{}, err
+	}
+	plan := planner.PlanPull(filterManifestLocalOnly(man), filterSnapshotLocalOnly(snap), planner.Options{
+		WorkspaceRef: r.opts.WorkspaceRef,
+		TargetPath:   target,
+		IncludeLarge: true,
+		Force:        opts.Force,
+		Dirty:        dirty,
+	})
+
+	if needsLargeConfirmation(plan) {
+		ok, err := prompt.Confirm(prompt.Options{
+			Force: opts.Force,
+			Quiet: opts.Quiet,
+			In:    opts.In,
+			Out:   opts.Out,
+		}, "download large file "+target+"?")
+		if err != nil {
+			return Result{}, err
+		}
+		if !ok {
+			return Result{Skipped: len(plan.Operations)}, nil
+		}
+	}
+
+	dirtyPaths := dirtySet(dirty)
+	var result Result
+	for _, op := range plan.Operations {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		if dirtyPaths[op.Path] && !opts.Force {
+			result.Conflicts++
+			continue
+		}
+		switch op.Kind {
+		case planner.OpDownload:
+			if err := r.downloadFile(op, &snap); err != nil {
+				return result, err
+			}
+			result.Downloaded++
+		case planner.OpWriteMeta:
+			if err := r.writeLargeMeta(op, &snap); err != nil {
+				return result, err
+			}
+			result.MetaWritten++
+		case planner.OpSkip:
+			result.Skipped++
+		}
+	}
+	if err := r.opts.StateStore.Save(snap); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
 func (r Runner) loadSnapshot() (state.Snapshot, error) {
 	snap, err := r.opts.StateStore.Load(r.opts.WorkspaceRef)
 	if err != nil {
@@ -307,7 +389,13 @@ func (r Runner) loadSnapshot() (state.Snapshot, error) {
 }
 
 func statusCurrent(tracked state.TrackedFile, entry api.FileEntry) bool {
-	if tracked.Revision != entry.Revision || tracked.Large != entry.Large {
+	if tracked.Revision != entry.Revision {
+		return false
+	}
+	if entry.Large && !tracked.Large && tracked.MetaPath == "" {
+		return true
+	}
+	if tracked.Large != entry.Large {
 		return false
 	}
 	if entry.Large && tracked.MetaPath == "" {
@@ -353,6 +441,100 @@ func filterDirtyLocalOnly(dirty []state.DirtyChange) []state.DirtyChange {
 		filtered = append(filtered, change)
 	}
 	return filtered
+}
+
+func dirtySet(changes []state.DirtyChange) map[string]bool {
+	out := map[string]bool{}
+	for _, change := range changes {
+		out[change.Path] = true
+	}
+	return out
+}
+
+func normalizePulledLargeManifest(man api.ManifestResponse, snap state.Snapshot) api.ManifestResponse {
+	normalized := man
+	normalized.Entries = make([]api.FileEntry, 0, len(man.Entries))
+	for _, entry := range man.Entries {
+		if entry.Large {
+			if tracked, ok := snap.Entries[entry.Path]; ok && !tracked.Large && tracked.MetaPath == "" && tracked.Revision == entry.Revision {
+				entry.Large = false
+				entry.Hash = tracked.BaseHash
+			}
+		}
+		normalized.Entries = append(normalized.Entries, entry)
+	}
+	return normalized
+}
+
+func needsLargeConfirmation(plan planner.Plan) bool {
+	for _, op := range plan.Operations {
+		if op.Kind == planner.OpDownload && op.Entry.Large {
+			return true
+		}
+	}
+	return false
+}
+
+func (r Runner) downloadFile(op planner.Operation, snap *state.Snapshot) error {
+	previous := snap.Entries[op.Path]
+	data, err := r.opts.Client.Download(r.opts.RemoteRoot, op.Path)
+	if err != nil {
+		return err
+	}
+	if err := transfer.WriteFile(r.opts.LocalRoot, op.Path, data); err != nil {
+		return err
+	}
+	basePath, err := r.opts.StateStore.BasePath(op.Path)
+	if err != nil {
+		return err
+	}
+	if err := writeExactFile(basePath, data); err != nil {
+		return err
+	}
+	if previous.Large && previous.MetaPath != "" {
+		metaPath, err := transfer.LocalPath(r.opts.LocalRoot, previous.MetaPath)
+		if err != nil {
+			return err
+		}
+		if err := removeIfExists(metaPath); err != nil {
+			return err
+		}
+	}
+	hash := op.Entry.Hash
+	if hash == "" {
+		hash = state.HashBytes(data)
+	}
+	snap.Entries[op.Path] = state.TrackedFile{
+		Path:     op.Path,
+		Type:     op.Entry.Type,
+		BaseHash: hash,
+		Revision: op.Entry.Revision,
+		Large:    false,
+	}
+	return nil
+}
+
+func (r Runner) writeLargeMeta(op planner.Operation, snap *state.Snapshot) error {
+	meta := manifest.BuildLargeMeta(r.opts.WorkspaceRef, op.Entry)
+	if err := transfer.WriteLargeMeta(r.opts.LocalRoot, op.Path, meta); err != nil {
+		return err
+	}
+	localPath, err := transfer.LocalPath(r.opts.LocalRoot, op.Path)
+	if err != nil {
+		return err
+	}
+	if err := removeIfExists(localPath); err != nil {
+		return err
+	}
+	snap.Entries[op.Path] = state.TrackedFile{
+		Path:     op.Path,
+		MetaPath: op.Path + ".meta",
+		Type:     op.Entry.Type,
+		BaseHash: op.Entry.Hash,
+		Revision: op.Entry.Revision,
+		Large:    true,
+	}
+	return nil
 }
 
 func removeIfExists(path string) error {
