@@ -34,6 +34,88 @@ func TestRemorkProductSyncFromBoundDirectory(t *testing.T) {
 	h.assertLocal("src/main.txt", "hello from remote")
 }
 
+func TestRemorkProductFullWorkflow(t *testing.T) {
+	h := newProductHarnessWithThreshold(t, 32)
+	h.writeRemote("src/main.txt", "hello from remote\n")
+	h.writeRemoteBytes("model.tar.gz", bytes.Repeat([]byte("x"), 64))
+
+	out := h.run("host", "add", "lab", "--url", h.serverURL)
+	if out != "" {
+		t.Fatalf("host add output = %q, want empty", out)
+	}
+	h.runInLocal("init", "lab:"+h.remote)
+
+	syncOut := h.runInLocal("sync")
+	mustContain(t, syncOut, "downloaded 1")
+	mustContain(t, syncOut, "meta 1")
+	h.assertLocal("src/main.txt", "hello from remote\n")
+	if _, err := os.Stat(filepath.Join(h.local, "model.tar.gz.meta")); err != nil {
+		t.Fatalf("missing large-file placeholder: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(h.local, "model.tar.gz")); !os.IsNotExist(err) {
+		t.Fatalf("large file materialized during sync: %v", err)
+	}
+
+	h.writeLocal("src/main.txt", "hello from local\n")
+	statusOut := h.runInLocal("status")
+	mustContain(t, statusOut, "Local changes: 1")
+	mustContain(t, statusOut, "Large placeholders: 1")
+
+	diffOut := h.runInLocal("diff")
+	mustContain(t, diffOut, "-hello from remote")
+	mustContain(t, diffOut, "+hello from local")
+
+	applyOut := h.runInLocal("apply")
+	mustContain(t, applyOut, "applied 1")
+	h.assertRemote("src/main.txt", "hello from local\n")
+
+	runOut := h.runInLocal("run", "cat src/main.txt")
+	mustContain(t, runOut, "hello from local")
+
+	pullOut := h.runInLocal("pull", "--force", "model.tar.gz")
+	mustContain(t, pullOut, "downloaded 1")
+	modelData, err := os.ReadFile(filepath.Join(h.local, "model.tar.gz"))
+	if err != nil {
+		t.Fatalf("read pulled large file: %v", err)
+	}
+	if len(modelData) != 64 {
+		t.Fatalf("pulled large file size = %d, want 64", len(modelData))
+	}
+	if _, err := os.Stat(filepath.Join(h.local, "model.tar.gz.meta")); !os.IsNotExist(err) {
+		t.Fatalf("large-file placeholder still exists after force pull: %v", err)
+	}
+
+	logOut := h.runInLocal("log", "--limit", "20")
+	mustContain(t, logOut, "operation")
+	mustContain(t, logOut, "apply")
+	mustContain(t, logOut, "run")
+
+	logJSON := h.runInLocal("log", "--limit", "20", "--json")
+	var entries []map[string]any
+	if err := json.Unmarshal([]byte(logJSON), &entries); err != nil {
+		t.Fatalf("unmarshal log json: %v\noutput:\n%s", err, logJSON)
+	}
+	var sawApply, sawExec bool
+	for _, entry := range entries {
+		switch entry["operation"] {
+		case "apply":
+			sawApply = true
+		case "exec":
+			sawExec = true
+		}
+	}
+	if !sawApply || !sawExec {
+		t.Fatalf("operation log missing apply/exec entries: %#v", entries)
+	}
+
+	rawLog, err := os.ReadFile(filepath.Join(h.remote, ".remork", "log", "operations.jsonl"))
+	if err != nil {
+		t.Fatalf("read remote operation log: %v", err)
+	}
+	mustContain(t, string(rawLog), `"operation":"apply"`)
+	mustContain(t, string(rawLog), `"operation":"exec"`)
+}
+
 func TestRemorkProductSyncJSONConflictDoesNotPrintSuccess(t *testing.T) {
 	h := newCLIHarness(t)
 	h.writeRemote("a.txt", "base")
