@@ -23,7 +23,46 @@ func TestRemorkProductShellRemoteOnlySmoke(t *testing.T) {
 	mustContain(t, out, "Remote-only shell")
 }
 
+func TestRemorkProductShellReturnsRemoteExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty shell is not supported on windows")
+	}
+	h := newProductHarness(t)
+	h.bindAndSync()
+
+	out, code := h.runShellScriptExpectCode(7, "shell", "--remote-only", "printf 'exit 7\\n'")
+	mustContain(t, out, "Remote-only shell")
+	if code != 7 {
+		t.Fatalf("exit code = %d, want 7", code)
+	}
+}
+
 func (h *cliHarness) runShellScript(args ...string) string {
+	h.t.Helper()
+	out, err := h.runShellScriptRaw(args...)
+	if err != nil && err != io.EOF {
+		h.t.Fatalf("remork %v: %v\noutput:\n%s", args[:len(args)-1], err, out)
+	}
+	return out
+}
+
+func (h *cliHarness) runShellScriptExpectCode(want int, args ...string) (string, int) {
+	h.t.Helper()
+	out, err := h.runShellScriptRaw(args...)
+	if err == nil {
+		h.t.Fatalf("remork %v succeeded, want exit code %d\noutput:\n%s", args[:len(args)-1], want, out)
+	}
+	code := 1
+	if coded, ok := err.(interface{ ExitCode() int }); ok {
+		code = coded.ExitCode()
+	}
+	if code != want {
+		h.t.Fatalf("remork %v exit code = %d, want %d\nerror: %v\noutput:\n%s", args[:len(args)-1], code, want, err, out)
+	}
+	return out + err.Error(), code
+}
+
+func (h *cliHarness) runShellScriptRaw(args ...string) (string, error) {
 	h.t.Helper()
 	if len(args) < 2 {
 		h.t.Fatalf("runShellScript requires command args and a script command")
@@ -52,8 +91,6 @@ func (h *cliHarness) runShellScript(args ...string) string {
 	root.SetErr(&out)
 	root.SetIn(stdin)
 	root.SetArgs(cmdArgs)
-	if err := root.Execute(); err != nil && err != io.EOF {
-		h.t.Fatalf("remork %v: %v\noutput:\n%s", cmdArgs, err, out.String())
-	}
-	return out.String()
+	err = root.Execute()
+	return out.String(), err
 }

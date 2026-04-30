@@ -311,6 +311,45 @@ func TestShellDropsUnknownJSONFrame(t *testing.T) {
 	waitForOperationLogContaining(t, root, `"operation":"shell"`)
 }
 
+func TestShellSendsExitFrame(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty shell is not supported on windows")
+	}
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/shell?root=" + url.QueryEscape(root)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("exit 7\n")); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		messageType, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read shell output: %v", err)
+		}
+		if messageType != websocket.TextMessage {
+			continue
+		}
+		var frame api.ShellFrame
+		if err := json.Unmarshal(msg, &frame); err != nil || frame.Type != "exit" {
+			continue
+		}
+		if frame.ExitCode != 7 {
+			t.Fatalf("exit code = %d, want 7", frame.ExitCode)
+		}
+		_ = conn.Close()
+		waitForOperationLogContaining(t, root, `"operation":"shell"`)
+		return
+	}
+}
+
 func TestOperationLogsAreScopedPerWorkspaceRoot(t *testing.T) {
 	rootA := t.TempDir()
 	rootB := t.TempDir()

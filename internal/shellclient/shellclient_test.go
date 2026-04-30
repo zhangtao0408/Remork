@@ -2,13 +2,17 @@ package shellclient
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"remork/internal/api"
 )
 
 func TestBuildShellURLIncludesRootAndUsesWebSocketScheme(t *testing.T) {
@@ -109,5 +113,62 @@ func TestRunSendsEOTAfterStdinEOF(t *testing.T) {
 		Stdout:  &out,
 	}); err != nil {
 		t.Fatalf("run: %v", err)
+	}
+}
+
+func TestRunReturnsRemoteShellExitCode(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		for i := 0; i < 3; i++ {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				t.Errorf("read message %d: %v", i, err)
+				return
+			}
+		}
+		if err := conn.WriteJSON(api.ShellFrame{Type: "exit", ExitCode: 7}); err != nil {
+			t.Errorf("write exit frame: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	err := Run(t.Context(), Options{
+		BaseURL: server.URL,
+		Root:    "/data/project",
+		Stdin:   strings.NewReader("exit 7\n"),
+		Stdout:  &bytes.Buffer{},
+	})
+	var exitErr ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("err = %v, want ExitError", err)
+	}
+	if exitErr.ExitCode() != 7 {
+		t.Fatalf("exit code = %d, want 7", exitErr.ExitCode())
+	}
+}
+
+func TestForwardInterruptWritesETX(t *testing.T) {
+	signals := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	written := make(chan []byte, 1)
+	forwardInterrupts(signals, done, func(data []byte) error {
+		written <- append([]byte(nil), data...)
+		return nil
+	})
+	signals <- os.Interrupt
+	var got []byte
+	select {
+	case got = <-written:
+	case <-time.After(time.Second):
+		t.Fatal("interrupt was not forwarded")
+	}
+	close(done)
+	if !bytes.Equal(got, []byte{3}) {
+		t.Fatalf("forwarded = %#v, want ETX", got)
 	}
 }

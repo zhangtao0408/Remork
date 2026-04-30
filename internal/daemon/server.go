@@ -307,11 +307,15 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.ptyManager.CloseSession(session)
-	defer s.finishOperation(op, http.StatusOK, "success", "")
+	statusCode := http.StatusOK
+	resultName := "success"
+	errorMessage := ""
+	defer func() {
+		s.finishOperation(op, statusCode, resultName, errorMessage)
+	}()
 
-	done := make(chan struct{})
+	done := make(chan ptysession.ExitStatus, 1)
 	go func() {
-		defer close(done)
 		defer conn.Close()
 		buf := make([]byte, 4096)
 		for {
@@ -322,13 +326,23 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if err != nil {
+				status := session.Wait()
+				_ = conn.WriteJSON(api.ShellFrame{Type: "exit", ExitCode: status.ExitCode})
+				done <- status
 				return
 			}
 		}
 	}()
 	for {
 		select {
-		case <-done:
+		case status := <-done:
+			op.ExitCode = status.ExitCode
+			if status.ExitCode != 0 {
+				resultName = "error"
+				if status.Err != nil {
+					errorMessage = status.Err.Error()
+				}
+			}
 			return
 		default:
 		}

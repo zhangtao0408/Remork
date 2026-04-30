@@ -45,6 +45,20 @@ func TestCloseUnknownSessionIsNoop(t *testing.T) {
 	}
 }
 
+func TestSessionWaitReturnsExitCode(t *testing.T) {
+	skipPTYIfRequested(t)
+	m := NewManager(time.Second)
+	s, err := m.Start(StartOptions{Command: []string{"sh", "-c", "exit 7"}, Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer m.CloseSession(s)
+	status := s.Wait()
+	if status.ExitCode != 7 {
+		t.Fatalf("exit code = %d, want 7; err=%v", status.ExitCode, status.Err)
+	}
+}
+
 func skipPTYIfRequested(t *testing.T) {
 	t.Helper()
 	if os.Getenv("REMORK_SKIP_PTY_TESTS") == "1" {

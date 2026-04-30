@@ -26,6 +26,13 @@ type Session struct {
 	mu         sync.Mutex
 	cmd        *exec.Cmd
 	file       *os.File
+	waitDone   chan struct{}
+	exitStatus ExitStatus
+}
+
+type ExitStatus struct {
+	ExitCode int
+	Err      error
 }
 
 func (s *Session) Read(p []byte) (int, error) {
@@ -44,6 +51,13 @@ func (s *Session) Resize(rows, cols int) error {
 	}
 	s.touch()
 	return pty.Setsize(s.file, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+}
+
+func (s *Session) Wait() ExitStatus {
+	<-s.waitDone
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exitStatus
 }
 
 func (s *Session) snapshot() Session {
@@ -86,11 +100,26 @@ func (m *Manager) Start(opts StartOptions) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{ID: randomID(), Command: opts.Command, LastActive: time.Now(), cmd: cmd, file: f}
+	s := &Session{ID: randomID(), Command: opts.Command, LastActive: time.Now(), cmd: cmd, file: f, waitDone: make(chan struct{})}
+	go s.wait()
 	m.mu.Lock()
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
 	return s, nil
+}
+
+func (s *Session) wait() {
+	err := s.cmd.Wait()
+	status := ExitStatus{Err: err}
+	if s.cmd.ProcessState != nil {
+		status.ExitCode = s.cmd.ProcessState.ExitCode()
+	} else if err != nil {
+		status.ExitCode = 1
+	}
+	s.mu.Lock()
+	s.exitStatus = status
+	s.mu.Unlock()
+	close(s.waitDone)
 }
 
 func (m *Manager) List() []Session {

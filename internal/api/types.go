@@ -56,10 +56,11 @@ type ExecRequest struct {
 }
 
 type ShellFrame struct {
-	Type string `json:"type"`
-	Data []byte `json:"data,omitempty"`
-	Rows int    `json:"rows,omitempty"`
-	Cols int    `json:"cols,omitempty"`
+	Type     string `json:"type"`
+	Data     []byte `json:"data,omitempty"`
+	Rows     int    `json:"rows,omitempty"`
+	Cols     int    `json:"cols,omitempty"`
+	ExitCode int    `json:"exit_code,omitempty"`
 }
 
 const HeaderClientID = "X-Remork-Client-ID"

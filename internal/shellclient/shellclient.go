@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -28,6 +30,18 @@ type Options struct {
 	Rows     int
 	Cols     int
 	Dialer   *websocket.Dialer
+}
+
+type ExitError struct {
+	Code int
+}
+
+func (e ExitError) Error() string {
+	return "remote shell exited with code " + strconv.Itoa(e.Code)
+}
+
+func (e ExitError) ExitCode() int {
+	return e.Code
 }
 
 func BuildURL(baseURL, root string) (string, error) {
@@ -86,6 +100,8 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	stopResize := watchResize(ctx, opts.Stdin, conn, &writeMu)
 	defer stopResize()
+	stopInterrupt := watchInterrupt(ctx, conn, &writeMu)
+	defer stopInterrupt()
 
 	type copyResult struct {
 		stream string
@@ -170,6 +186,15 @@ func copyOutput(out io.Writer, conn *websocket.Conn) error {
 		if err != nil {
 			return err
 		}
+		if messageType == websocket.TextMessage {
+			var frame api.ShellFrame
+			if err := json.Unmarshal(msg, &frame); err == nil && frame.Type == "exit" {
+				if frame.ExitCode != 0 {
+					return ExitError{Code: frame.ExitCode}
+				}
+				return nil
+			}
+		}
 		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
 			if _, err := out.Write(msg); err != nil {
 				return err
@@ -190,6 +215,40 @@ func writeMessage(writeMu *sync.Mutex, conn *websocket.Conn, typ int, data []byt
 	writeMu.Lock()
 	defer writeMu.Unlock()
 	return conn.WriteMessage(typ, data)
+}
+
+func watchInterrupt(ctx context.Context, conn *websocket.Conn, writeMu *sync.Mutex) func() {
+	signals := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() { close(done) })
+	}
+	signal.Notify(signals, os.Interrupt)
+	forwardInterrupts(signals, done, func(data []byte) error {
+		return writeMessage(writeMu, conn, websocket.BinaryMessage, data)
+	})
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return func() {
+		signal.Stop(signals)
+		stop()
+	}
+}
+
+func forwardInterrupts(signals <-chan os.Signal, done <-chan struct{}, write func([]byte) error) {
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-signals:
+				_ = write([]byte{3})
+			}
+		}
+	}()
 }
 
 func isSocketClosed(err error) bool {
