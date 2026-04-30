@@ -53,6 +53,13 @@ func TestSyncDirtyRemoteDeleteBecomesConflict(t *testing.T) {
 	assertOp(t, plan, "deleted.txt", OpConflict)
 }
 
+func TestSyncCleanRemoteDeletePlansDelete(t *testing.T) {
+	plan := PlanRemoteDeletes(state.Snapshot{Entries: map[string]state.TrackedFile{
+		"deleted.txt": {Path: "deleted.txt", Revision: "rev-old"},
+	}}, Options{})
+	assertOp(t, plan, "deleted.txt", OpDelete)
+}
+
 func assertOp(t *testing.T, plan Plan, path string, kind OperationKind) {
 	t.Helper()
 	for _, op := range plan.Operations {

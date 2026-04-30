@@ -16,6 +16,7 @@ import (
 	execx "remork/internal/exec"
 	"remork/internal/manifest"
 	"remork/internal/paths"
+	ptysession "remork/internal/pty"
 	"remork/internal/watch"
 )
 
@@ -25,17 +26,19 @@ type Config struct {
 }
 
 type Server struct {
-	cfg Config
-	mux *http.ServeMux
+	cfg        Config
+	mux        *http.ServeMux
+	ptyManager *ptysession.Manager
 }
 
 func NewServer(cfg Config) *Server {
-	s := &Server{cfg: cfg, mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, mux: http.NewServeMux(), ptyManager: ptysession.NewManager(30 * time.Minute)}
 	s.mux.HandleFunc("/manifest", s.handleManifest)
 	s.mux.HandleFunc("/download", s.handleDownload)
 	s.mux.HandleFunc("/apply", s.handleApply)
 	s.mux.HandleFunc("/exec", s.handleExec)
 	s.mux.HandleFunc("/events", s.handleEvents)
+	s.mux.HandleFunc("/shell", s.handleShell)
 	return s
 }
 
@@ -190,6 +193,58 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		case <-r.Context().Done():
 			return
+		}
+	}
+}
+
+func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	if !s.allowedRoot(root) {
+		http.Error(w, "root not allowed", http.StatusForbidden)
+		return
+	}
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	session, err := s.ptyManager.Start(ptysession.StartOptions{Command: []string{"sh"}, Cwd: root, Rows: 24, Cols: 80})
+	if err != nil {
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
+		return
+	}
+	defer s.ptyManager.CloseSession(session)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := session.Read(buf)
+			if n > 0 {
+				if writeErr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		messageType, msg, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
+			if _, err := session.Write(msg); err != nil {
+				return
+			}
 		}
 	}
 }

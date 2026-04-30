@@ -108,6 +108,43 @@ func TestApplyRejectsWholeChangesetWhenOneChangeConflicts(t *testing.T) {
 	}
 }
 
+func TestApplyRetrySameChangesetIsConflictWithoutChangingAppliedContent(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.txt"), []byte("before"))
+	change := Change{Path: "a.txt", Kind: ChangeUpdate, BaseHash: state.HashBytes([]byte("before")), Content: []byte("after")}
+	if _, err := Apply(root, Changeset{Changes: []Change{change}}); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	result, err := Apply(root, Changeset{Changes: []Change{change}})
+	if err == nil {
+		t.Fatal("expected retry conflict")
+	}
+	if result.Applied {
+		t.Fatal("retry must not apply again")
+	}
+	data, _ := os.ReadFile(filepath.Join(root, "a.txt"))
+	if string(data) != "after" {
+		t.Fatalf("content changed on retry: %q", data)
+	}
+}
+
+func TestApplyBinaryUpdate(t *testing.T) {
+	root := t.TempDir()
+	before := []byte{0, 1, 2, 3}
+	after := []byte{0, 9, 8, 7}
+	mustWrite(t, filepath.Join(root, "blob.bin"), before)
+	_, err := Apply(root, Changeset{Changes: []Change{
+		{Path: "blob.bin", Kind: ChangeUpdate, BaseHash: state.HashBytes(before), Content: after},
+	}})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(root, "blob.bin"))
+	if string(data) != string(after) {
+		t.Fatalf("binary content %#v", data)
+	}
+}
+
 func mustWrite(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

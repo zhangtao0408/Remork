@@ -2,8 +2,10 @@ package transfer
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"remork/internal/api"
@@ -50,5 +52,19 @@ func TestWriteFileUsesTempThenFinalName(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "a.txt.remork-tmp")); !os.IsNotExist(err) {
 		t.Fatalf("temp file should not remain: %v", err)
+	}
+}
+
+func TestWriteFileFailureDoesNotCreateFinalFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "blocked"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := WriteFile(root, "blocked/a.txt", []byte("hello"))
+	if err == nil {
+		t.Fatal("expected write failure")
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "blocked", "a.txt")); !os.IsNotExist(statErr) && !errors.Is(statErr, syscall.ENOTDIR) {
+		t.Fatalf("final file should not exist: %v", statErr)
 	}
 }

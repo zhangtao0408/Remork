@@ -23,8 +23,31 @@ type Session struct {
 	ID         string
 	Command    []string
 	LastActive time.Time
+	mu         sync.Mutex
 	cmd        *exec.Cmd
 	file       *os.File
+}
+
+func (s *Session) Read(p []byte) (int, error) {
+	s.touch()
+	return s.file.Read(p)
+}
+
+func (s *Session) Write(p []byte) (int, error) {
+	s.touch()
+	return s.file.Write(p)
+}
+
+func (s *Session) snapshot() Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return Session{ID: s.ID, Command: append([]string(nil), s.Command...), LastActive: s.LastActive}
+}
+
+func (s *Session) touch() {
+	s.mu.Lock()
+	s.LastActive = time.Now()
+	s.mu.Unlock()
 }
 
 type Manager struct {
@@ -67,7 +90,7 @@ func (m *Manager) List() []Session {
 	defer m.mu.Unlock()
 	out := make([]Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		out = append(out, Session{ID: s.ID, Command: s.Command, LastActive: s.LastActive})
+		out = append(out, s.snapshot())
 	}
 	return out
 }
@@ -85,6 +108,13 @@ func (m *Manager) Close(id string) error {
 		_ = s.cmd.Process.Kill()
 	}
 	return nil
+}
+
+func (m *Manager) CloseSession(s *Session) error {
+	if s == nil {
+		return nil
+	}
+	return m.Close(s.ID)
 }
 
 func (m *Manager) ReapIdle() {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -98,6 +99,22 @@ func TestExecEndpointRunsCommand(t *testing.T) {
 	}
 }
 
+func TestExecEndpointRejectsCwdEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	body := strings.NewReader(`{"root":"` + root + `","cwd":"` + outside + `","command":["sh","-c","pwd"]}`)
+	resp, err := http.Post(srv.URL+"/exec", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
 func TestEventsEndpointStreamsWorkspaceChanges(t *testing.T) {
 	root := t.TempDir()
 	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
@@ -116,6 +133,35 @@ func TestEventsEndpointStreamsWorkspaceChanges(t *testing.T) {
 	if ev.Path != "watched.txt" {
 		t.Fatalf("event %#v", ev)
 	}
+}
+
+func TestShellEndpointRunsInteractiveCommand(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/shell?root=" + url.QueryEscape(root)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("echo shell-ok\nexit\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	var out strings.Builder
+	for time.Now().Before(deadline) {
+		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			continue
+		}
+		out.Write(msg)
+		if strings.Contains(out.String(), "shell-ok") {
+			return
+		}
+	}
+	t.Fatalf("shell output missing marker: %q", out.String())
 }
 
 func TestDownloadEncodedTraversalReturnsBadRequest(t *testing.T) {

@@ -44,6 +44,29 @@ func TestOverflowRequiresManifestReconcile(t *testing.T) {
 	}
 }
 
+func TestWatcherEmitsDelete(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "gone.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := New(root)
+	if err != nil {
+		t.Fatalf("watcher: %v", err)
+	}
+	defer w.Close()
+	if err := w.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	ev := waitEvent(t, w.Events(), "gone.txt")
+	if ev.Kind != EventDelete {
+		t.Fatalf("kind %s", ev.Kind)
+	}
+}
+
 func waitEvent(t *testing.T, events <-chan Event, path string) Event {
 	t.Helper()
 	deadline := time.After(2 * time.Second)
