@@ -103,6 +103,38 @@ func TestSyncPreservesDirtyLocalFile(t *testing.T) {
 	}
 }
 
+func TestSyncRejectsSymlinkBaseCacheRoot(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(remote, "a.txt"), []byte("remote"))
+
+	stateDir := filepath.Join(local, ".remork", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(stateDir, "base")); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}, LargeThreshold: 1024}).Handler())
+	defer srv.Close()
+
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   state.NewStore(stateDir),
+		LocalRoot:    local,
+		WorkspaceRef: "lab:" + remote,
+		RemoteRoot:   remote,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err == nil {
+		t.Fatal("sync succeeded with symlink base cache root, want error")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "a.txt")); !os.IsNotExist(err) {
+		t.Fatalf("outside base cache file exists or unexpected stat error: %v", err)
+	}
+}
+
 func TestSyncNormalToLargeRemovesMaterializedFile(t *testing.T) {
 	remote := t.TempDir()
 	local := t.TempDir()

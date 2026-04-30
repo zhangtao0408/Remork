@@ -209,11 +209,11 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 			if err := transfer.WriteFile(r.opts.LocalRoot, op.Path, data); err != nil {
 				return result, err
 			}
-			baseRoot := filepath.Join(r.opts.StateStore.Dir(), "base")
-			if err := os.MkdirAll(baseRoot, 0o755); err != nil {
+			basePath, err := r.opts.StateStore.BasePath(op.Path)
+			if err != nil {
 				return result, err
 			}
-			if err := transfer.WriteFile(baseRoot, op.Path, data); err != nil {
+			if err := writeExactFile(basePath, data); err != nil {
 				return result, err
 			}
 			if previous.Large && previous.MetaPath != "" {
@@ -359,5 +359,35 @@ func removeIfExists(path string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	return nil
+}
+
+func writeExactFile(path string, data []byte) error {
+	parent := filepath.Dir(path)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(parent, ".remork-base-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	cleanup = false
 	return nil
 }

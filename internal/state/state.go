@@ -50,10 +50,6 @@ func NewStore(dir string) Store {
 	return Store{dir: dir}
 }
 
-func (s Store) Dir() string {
-	return s.dir
-}
-
 func (s Store) BasePath(remotePath string) (string, error) {
 	return BasePath(s.dir, remotePath)
 }
