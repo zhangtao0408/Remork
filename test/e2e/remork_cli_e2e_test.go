@@ -172,6 +172,25 @@ func TestRemorkProductRestoreAllKeepsBindingMarker(t *testing.T) {
 	}
 }
 
+func TestRemorkProductRunSafeMode(t *testing.T) {
+	h := newProductHarness(t)
+	h.writeRemote("a.txt", "remote\n")
+	h.bindAndSync()
+	out := h.runInLocal("run", "cat a.txt")
+	mustContain(t, out, "remote")
+
+	h.writeLocal("a.txt", "local\n")
+	blocked, code := h.runInLocalExpectCode(4, "run", "cat a.txt")
+	mustContain(t, blocked, "Local changes exist")
+	if code != 4 {
+		t.Fatalf("exit code = %d", code)
+	}
+
+	remoteOnly := h.runInLocal("run", "--remote-only", "cat a.txt")
+	mustContain(t, remoteOnly, "remote")
+	mustContain(t, remoteOnly, "local pending changes are ignored")
+}
+
 type cliHarness struct {
 	t         *testing.T
 	home      string

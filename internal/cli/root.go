@@ -96,6 +96,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	addRestoreCommand(root, opts)
 	addApplyCommand(root, opts)
 	addPullCommand(root, opts)
+	addRunCommand(root, opts)
 	addPlaceholderProductCommands(root)
 	return root
 }
@@ -160,7 +161,6 @@ func addVersionCommand(root *cobra.Command, version string) {
 
 func addPlaceholderProductCommands(root *cobra.Command) {
 	names := []string{
-		"run",
 		"shell",
 		"log",
 		"watch",
@@ -169,7 +169,6 @@ func addPlaceholderProductCommands(root *cobra.Command) {
 		"debug",
 		"daemon",
 	}
-	var runCmd *cobra.Command
 	for _, name := range names {
 		name := name
 		cmd := &cobra.Command{
@@ -179,19 +178,8 @@ func addPlaceholderProductCommands(root *cobra.Command) {
 				return fmt.Errorf("%s command is defined by the Product V1 plan and has no handler in this task", name)
 			},
 		}
-		if name == "run" {
-			runCmd = cmd
-		}
 		root.AddCommand(cmd)
 	}
-
-	root.AddCommand(&cobra.Command{
-		Use:    "exec",
-		Hidden: true,
-		Args:   runCmd.Args,
-		Run:    runCmd.Run,
-		RunE:   runCmd.RunE,
-	})
 }
 
 func placeholderShort(name string) string {
