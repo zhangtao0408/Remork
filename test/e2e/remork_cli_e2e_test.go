@@ -10,10 +10,13 @@ import (
 	"testing"
 
 	"remork/internal/cli"
+	"remork/internal/config"
 	"remork/internal/daemon"
 	"remork/internal/state"
 	"remork/internal/workspace"
 )
+
+const productTestClientID = "tao-test"
 
 func TestRemorkProductSyncFromBoundDirectory(t *testing.T) {
 	h := newCLIHarness(t)
@@ -202,6 +205,28 @@ func TestRemorkProductRunSyncsCleanStaleWorkspace(t *testing.T) {
 	h.assertLocal("a.txt", "remote-two\n")
 }
 
+func TestRemorkProductLogShowsWorkspaceOperations(t *testing.T) {
+	h := newProductHarness(t)
+	h.writeRemote("a.txt", "one\n")
+	h.bindAndSync()
+	h.runInLocal("run", "cat a.txt")
+
+	out := h.runInLocal("log", "--limit", "5")
+
+	mustContain(t, out, "run")
+	mustContain(t, out, productTestClientID)
+}
+
+func TestRemorkProductDoctorReportsReady(t *testing.T) {
+	h := newProductHarness(t)
+	h.writeRemote("a.txt", "one\n")
+	h.bindAndSync()
+
+	out := h.runInLocal("doctor")
+
+	mustContain(t, out, "OK: workspace is ready")
+}
+
 type cliHarness struct {
 	t         *testing.T
 	home      string
@@ -221,6 +246,14 @@ func newCLIHarness(t *testing.T) *cliHarness {
 	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{h.remote}}).Handler())
 	t.Cleanup(srv.Close)
 	h.serverURL = srv.URL
+	store := config.NewStore(filepath.Join(h.home, ".remork"))
+	if err := store.Save(config.Config{
+		ClientID:   productTestClientID,
+		Hosts:      map[string]config.Host{},
+		Workspaces: map[string]config.Workspace{},
+	}); err != nil {
+		t.Fatalf("seed test config: %v", err)
+	}
 	return h
 }
 

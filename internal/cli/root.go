@@ -98,6 +98,10 @@ func NewRootCommand(opts Options) *cobra.Command {
 	addPullCommand(root, opts)
 	addRunCommand(root, opts)
 	addShellCommand(root, opts)
+	addLogCommand(root, opts)
+	addWatchCommand(root, opts)
+	addDoctorCommand(root, opts)
+	addDebugCommand(root, opts)
 	addPlaceholderProductCommands(root)
 	return root
 }
@@ -162,11 +166,7 @@ func addVersionCommand(root *cobra.Command, version string) {
 
 func addPlaceholderProductCommands(root *cobra.Command) {
 	names := []string{
-		"log",
-		"watch",
 		"workspace",
-		"doctor",
-		"debug",
 		"daemon",
 	}
 	for _, name := range names {
