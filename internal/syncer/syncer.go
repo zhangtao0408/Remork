@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"sort"
 
 	"remork/internal/api"
@@ -206,6 +207,13 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 				return result, err
 			}
 			if err := transfer.WriteFile(r.opts.LocalRoot, op.Path, data); err != nil {
+				return result, err
+			}
+			baseRoot := filepath.Join(r.opts.StateStore.Dir(), "base")
+			if err := os.MkdirAll(baseRoot, 0o755); err != nil {
+				return result, err
+			}
+			if err := transfer.WriteFile(baseRoot, op.Path, data); err != nil {
 				return result, err
 			}
 			if previous.Large && previous.MetaPath != "" {

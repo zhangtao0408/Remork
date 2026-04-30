@@ -21,9 +21,10 @@ func TestSyncMaterializesSmallFilesAndLargeMeta(t *testing.T) {
 	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}, LargeThreshold: 4}).Handler())
 	defer srv.Close()
 
+	stateDir := filepath.Join(local, ".remork", "state")
 	runner := NewRunner(RunnerOptions{
 		Client:       client.New(srv.URL),
-		StateStore:   state.NewStore(filepath.Join(local, ".remork", "state")),
+		StateStore:   state.NewStore(stateDir),
 		LocalRoot:    local,
 		WorkspaceRef: "lab:" + remote,
 		RemoteRoot:   remote,
@@ -42,8 +43,26 @@ func TestSyncMaterializesSmallFilesAndLargeMeta(t *testing.T) {
 	if string(got) != "hey" {
 		t.Fatalf("local file = %q, want hey", got)
 	}
+	basePath, err := state.BasePath(stateDir, "src/main.txt")
+	if err != nil {
+		t.Fatalf("base path: %v", err)
+	}
+	base, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatalf("read base cache: %v", err)
+	}
+	if string(base) != "hey" {
+		t.Fatalf("base cache = %q, want hey", base)
+	}
 	if _, err := os.Stat(filepath.Join(local, "model.tar.gz.meta")); err != nil {
 		t.Fatalf("missing large meta: %v", err)
+	}
+	largeBasePath, err := state.BasePath(stateDir, "model.tar.gz")
+	if err != nil {
+		t.Fatalf("large base path: %v", err)
+	}
+	if _, err := os.Stat(largeBasePath); !os.IsNotExist(err) {
+		t.Fatalf("large file base cache exists or unexpected stat error: %v", err)
 	}
 }
 
@@ -107,6 +126,13 @@ func TestSyncNormalToLargeRemovesMaterializedFile(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(local, "model.bin")); err != nil {
 		t.Fatalf("missing materialized file after initial sync: %v", err)
 	}
+	basePath, err := state.BasePath(filepath.Join(local, ".remork", "state"), "model.bin")
+	if err != nil {
+		t.Fatalf("base path: %v", err)
+	}
+	if _, err := os.Stat(basePath); err != nil {
+		t.Fatalf("missing base cache after normal sync: %v", err)
+	}
 
 	mustWriteFile(t, filepath.Join(remote, "model.bin"), []byte("12345"))
 	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
@@ -126,6 +152,9 @@ func TestSyncNormalToLargeRemovesMaterializedFile(t *testing.T) {
 	entry := snap.Entries["model.bin"]
 	if !entry.Large {
 		t.Fatalf("snapshot Large = false, want true; entry=%#v", entry)
+	}
+	if _, err := os.Stat(basePath); err != nil {
+		t.Fatalf("normal base cache should remain after transition to large: %v", err)
 	}
 }
 
@@ -160,6 +189,17 @@ func TestSyncLargeToNormalRemovesMetaPlaceholder(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(local, "model.bin")); err != nil {
 		t.Fatalf("missing materialized file after large to normal transition: %v", err)
+	}
+	basePath, err := state.BasePath(filepath.Join(local, ".remork", "state"), "model.bin")
+	if err != nil {
+		t.Fatalf("base path: %v", err)
+	}
+	base, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatalf("missing base cache after large to normal transition: %v", err)
+	}
+	if string(base) != "1234" {
+		t.Fatalf("base cache = %q, want 1234", base)
 	}
 	if _, err := os.Stat(filepath.Join(local, "model.bin.meta")); !os.IsNotExist(err) {
 		t.Fatalf("meta exists after large to normal transition: %v", err)

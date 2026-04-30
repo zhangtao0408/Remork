@@ -92,6 +92,8 @@ func NewRootCommand(opts Options) *cobra.Command {
 	addInitCommand(root, opts)
 	addSyncCommand(root, opts)
 	addStatusCommand(root, opts)
+	addDiffCommand(root, opts)
+	addRestoreCommand(root, opts)
 	addPlaceholderProductCommands(root)
 	return root
 }
@@ -160,8 +162,6 @@ func addPlaceholderProductCommands(root *cobra.Command) {
 		"run",
 		"shell",
 		"pull",
-		"diff",
-		"restore",
 		"log",
 		"watch",
 		"workspace",

@@ -26,6 +26,25 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBasePathNestedPath(t *testing.T) {
+	stateDir := t.TempDir()
+	got, err := BasePath(stateDir, "src/main.txt")
+	if err != nil {
+		t.Fatalf("BasePath: %v", err)
+	}
+	want := filepath.Join(stateDir, "base", "src", "main.txt")
+	if got != want {
+		t.Fatalf("BasePath = %q, want %q", got, want)
+	}
+}
+
+func TestBasePathRejectsEscape(t *testing.T) {
+	stateDir := t.TempDir()
+	if _, err := BasePath(stateDir, "../escape.txt"); err == nil {
+		t.Fatal("BasePath accepted path escape, want error")
+	}
+}
+
 func TestDirtyDetectionFindsModifyCreateDelete(t *testing.T) {
 	local := t.TempDir()
 	mustWrite(t, filepath.Join(local, "changed.txt"), []byte("after"))

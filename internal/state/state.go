@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"remork/internal/api"
+	"remork/internal/transfer"
 )
 
 type ChangeKind string
@@ -46,6 +47,22 @@ type Store struct {
 
 func NewStore(dir string) Store {
 	return Store{dir: dir}
+}
+
+func (s Store) Dir() string {
+	return s.dir
+}
+
+func (s Store) BasePath(remotePath string) (string, error) {
+	return BasePath(s.dir, remotePath)
+}
+
+func BasePath(stateDir, remotePath string) (string, error) {
+	baseDir := filepath.Join(stateDir, "base")
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return "", err
+	}
+	return transfer.LocalPath(baseDir, remotePath)
 }
 
 func (s Store) Save(snapshot Snapshot) error {

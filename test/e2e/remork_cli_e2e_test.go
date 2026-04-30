@@ -11,6 +11,8 @@ import (
 
 	"remork/internal/cli"
 	"remork/internal/daemon"
+	"remork/internal/state"
+	"remork/internal/workspace"
 )
 
 func TestRemorkProductSyncFromBoundDirectory(t *testing.T) {
@@ -105,6 +107,49 @@ func TestRemorkProductStatusTextSummary(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("status output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestRemorkProductDiffAndRestore(t *testing.T) {
+	h := newCLIHarness(t)
+	h.writeRemote("a.txt", "one\n")
+	h.bindAndSync()
+	h.writeLocal("a.txt", "two\n")
+
+	diffOut := h.runInLocal("diff")
+	for _, want := range []string{"-one", "+two"} {
+		if !strings.Contains(diffOut, want) {
+			t.Fatalf("diff output missing %q:\n%s", want, diffOut)
+		}
+	}
+
+	h.runInLocal("restore", "a.txt")
+	h.assertLocal("a.txt", "one\n")
+}
+
+func TestRemorkProductRestoreMissingBaseCacheSuggestsForceSync(t *testing.T) {
+	h := newCLIHarness(t)
+	h.writeRemote("a.txt", "one\n")
+	h.bindAndSync()
+	h.writeLocal("a.txt", "two\n")
+	binding, _, err := workspace.ResolveFrom(h.local)
+	if err != nil {
+		t.Fatalf("resolve binding: %v", err)
+	}
+	basePath, err := state.BasePath(binding.StateDir, "a.txt")
+	if err != nil {
+		t.Fatalf("base path: %v", err)
+	}
+	if err := os.Remove(basePath); err != nil {
+		t.Fatalf("remove base cache: %v", err)
+	}
+
+	_, _, err = h.runInLocalExpectError("restore", "a.txt")
+	if err == nil {
+		h.t.Fatal("expected restore to fail without base cache")
+	}
+	if !strings.Contains(err.Error(), "remork sync --force") {
+		h.t.Fatalf("restore error = %v, want remork sync --force suggestion", err)
 	}
 }
 
