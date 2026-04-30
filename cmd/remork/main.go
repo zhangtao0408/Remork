@@ -1,18 +1,17 @@
 package main
 
 import (
-	"flag"
 	"fmt"
+	"os"
+
+	"remork/internal/cli"
 )
 
 var version = "dev"
 
 func main() {
-	showVersion := flag.Bool("version", false, "print version")
-	flag.Parse()
-	if *showVersion {
-		fmt.Println("remork " + version)
-		return
+	if err := cli.NewRootCommand(version).Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-	fmt.Println("remork")
 }
