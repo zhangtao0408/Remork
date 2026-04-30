@@ -365,7 +365,7 @@ func handleShellFrame(session *ptysession.Session, msg []byte) (bool, error) {
 		_, err := session.Write(frame.Data)
 		return true, err
 	default:
-		return false, nil
+		return true, nil
 	}
 }
 

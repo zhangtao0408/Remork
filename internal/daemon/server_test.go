@@ -273,6 +273,40 @@ func TestShellAcceptsResizeFrame(t *testing.T) {
 	}
 }
 
+func TestShellDropsUnknownJSONFrame(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty shell is not supported on windows")
+	}
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/shell?root=" + url.QueryEscape(root)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(api.ShellFrame{Type: "bogus", Data: []byte("echo leaked\n")}); err != nil {
+		t.Fatalf("unknown frame: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("printf 'done\\n'; exit\n")); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var transcript strings.Builder
+	for !strings.Contains(transcript.String(), "done") {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read shell output: %v\ntranscript:\n%s", err, transcript.String())
+		}
+		transcript.Write(msg)
+	}
+	if strings.Contains(transcript.String(), "leaked") {
+		t.Fatalf("unknown JSON frame was written into shell:\n%s", transcript.String())
+	}
+}
+
 func TestOperationLogsAreScopedPerWorkspaceRoot(t *testing.T) {
 	rootA := t.TempDir()
 	rootB := t.TempDir()

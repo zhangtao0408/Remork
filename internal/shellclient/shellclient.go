@@ -154,6 +154,9 @@ func copyInput(ctx context.Context, in io.Reader, conn *websocket.Conn, writeMu 
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				if writeErr := writeMessage(writeMu, conn, websocket.BinaryMessage, []byte{4}); writeErr != nil {
+					return writeErr
+				}
 				return nil
 			}
 			return err
