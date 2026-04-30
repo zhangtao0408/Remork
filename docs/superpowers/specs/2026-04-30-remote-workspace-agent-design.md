@@ -66,15 +66,15 @@ The `.meta` file is JSON and contains enough information for humans and Agents t
   "hash": "sha256:...",
   "revision": "rev-...",
   "pulled": false,
-  "pull_command": "xxx pull host:/workspace/checkpoints/model.tar.gz"
+  "pull_command": "rws pull host:/workspace/checkpoints/model.tar.gz"
 }
 ```
 
 ## Components
 
-### `remoted`
+### `rwsd`
 
-`remoted` runs on each remote server. It is a lightweight daemon, not a full Agent. It owns remote workspace inspection, file transfer, safe writes, command execution, PTY shell sessions, and file events.
+`rwsd` runs on each remote server. It is a lightweight daemon, not a full Agent. It owns remote workspace inspection, file transfer, safe writes, command execution, PTY shell sessions, and file events.
 
 Responsibilities:
 
@@ -86,9 +86,9 @@ Responsibilities:
 - Watch workspace file changes and publish events.
 - Report daemon and workspace status.
 
-### `xxx` CLI
+### `rws` CLI
 
-`xxx` runs locally. It is the interface used by humans, scripts, and Agents.
+`rws` runs locally. It is the interface used by humans, scripts, and Agents. The name stands for Remote Workspace Sync/System and keeps the command short enough for frequent terminal use.
 
 Responsibilities:
 
@@ -106,9 +106,9 @@ The local working copy is a real directory that can be searched, opened in an ed
 It is not treated as read-only. Instead, it has explicit write-back semantics:
 
 - Local edits create dirty state.
-- `xxx diff` shows local changes against the last synced base.
-- `xxx apply` writes changes to the remote daemon after conflict checks.
-- `xxx sync` never silently overwrites dirty local files.
+- `rws diff` shows local changes against the last synced base.
+- `rws apply` writes changes to the remote daemon after conflict checks.
+- `rws sync` never silently overwrites dirty local files.
 
 ### Tool State
 
@@ -117,7 +117,7 @@ Tool state must not pollute the remote project or depend on the project's own `.
 Recommended state location:
 
 ```text
-~/.xxx/state/<host-id>/<workspace-id>/
+~/.rws/state/<host-id>/<workspace-id>/
   manifest.sqlite
   base/
   patches/
@@ -288,19 +288,19 @@ Watch events are an acceleration path, not the only consistency mechanism. The C
 ### Configure
 
 ```bash
-xxx host add lab-a --url http://10.0.0.12:7731
-xxx workspace add lab-a:/data/project --local ~/remote/lab-a/project
-xxx status lab-a:/data/project
+rws host add lab-a --url http://10.0.0.12:7731
+rws workspace add lab-a:/data/project --local ~/remote/lab-a/project
+rws status lab-a:/data/project
 ```
 
 ### Sync
 
 ```bash
-xxx sync lab-a:/data/project
-xxx sync --watch lab-a:/data/project
-xxx sync --force lab-a:/data/project
-xxx sync --quiet lab-a:/data/project
-xxx sync --dry-run lab-a:/data/project
+rws sync lab-a:/data/project
+rws sync --watch lab-a:/data/project
+rws sync --force lab-a:/data/project
+rws sync --quiet lab-a:/data/project
+rws sync --dry-run lab-a:/data/project
 ```
 
 Default `sync` behavior:
@@ -318,11 +318,11 @@ Default `sync` behavior:
 ### Pull
 
 ```bash
-xxx pull lab-a:/data/project/checkpoints/model.tar.gz
-xxx pull lab-a:/data/project/checkpoints/
-xxx pull --include-large lab-a:/data/project/checkpoints/
-xxx pull --force lab-a:/data/project/checkpoints/
-xxx pull --quiet lab-a:/data/project/checkpoints/
+rws pull lab-a:/data/project/checkpoints/model.tar.gz
+rws pull lab-a:/data/project/checkpoints/
+rws pull --include-large lab-a:/data/project/checkpoints/
+rws pull --force lab-a:/data/project/checkpoints/
+rws pull --quiet lab-a:/data/project/checkpoints/
 ```
 
 `pull` uses the same manifest, diff, and transfer engine as `sync`. The difference is policy:
@@ -335,7 +335,7 @@ xxx pull --quiet lab-a:/data/project/checkpoints/
 ### Status
 
 ```bash
-xxx status lab-a:/data/project
+rws status lab-a:/data/project
 ```
 
 Shows:
@@ -351,8 +351,8 @@ Shows:
 ### Diff
 
 ```bash
-xxx diff lab-a:/data/project
-xxx diff lab-a:/data/project/src/main.py
+rws diff lab-a:/data/project
+rws diff lab-a:/data/project/src/main.py
 ```
 
 Shows local working-copy changes relative to the base from the last sync or pull.
@@ -362,9 +362,9 @@ For text files, show unified diff. For binary or large files, show metadata and 
 ### Apply
 
 ```bash
-xxx apply lab-a:/data/project
-xxx apply --dry-run lab-a:/data/project
-xxx apply --force lab-a:/data/project
+rws apply lab-a:/data/project
+rws apply --dry-run lab-a:/data/project
+rws apply --force lab-a:/data/project
 ```
 
 Default apply behavior:
@@ -381,8 +381,8 @@ Default apply behavior:
 ### Restore
 
 ```bash
-xxx restore lab-a:/data/project/src/main.py
-xxx restore --all lab-a:/data/project
+rws restore lab-a:/data/project/src/main.py
+rws restore --all lab-a:/data/project
 ```
 
 Discards local dirty changes and restores files from local base or remote if the base content is not cached locally.
@@ -390,9 +390,9 @@ Discards local dirty changes and restores files from local base or remote if the
 ### Exec
 
 ```bash
-xxx exec lab-a:/data/project -- pytest -q
-xxx exec --remote-only lab-a:/data/project -- nvidia-smi
-xxx exec --no-sync-check lab-a:/data/project -- df -h
+rws exec lab-a:/data/project -- pytest -q
+rws exec --remote-only lab-a:/data/project -- nvidia-smi
+rws exec --no-sync-check lab-a:/data/project -- df -h
 ```
 
 Default `exec` uses safe mode:
@@ -410,10 +410,10 @@ Default `exec` uses safe mode:
 ### Shell
 
 ```bash
-xxx shell lab-a:/data/project
-xxx shell --remote-only lab-a:/data/project
-xxx shell --list lab-a
-xxx shell --attach <session-id>
+rws shell lab-a:/data/project
+rws shell --remote-only lab-a:/data/project
+rws shell --list lab-a
+rws shell --attach <session-id>
 ```
 
 Default shell uses safe mode, like `exec`. It refuses to enter a workspace shell when local dirty changes exist or the local base is stale in a way that could mislead the user or Agent.
@@ -458,9 +458,9 @@ Large-file placeholders are not directly editable content. Applying a `.meta` ch
 
 To replace a large file:
 
-1. Run `xxx pull` to materialize the file locally, or create a new local large file.
+1. Run `rws pull` to materialize the file locally, or create a new local large file.
 2. Edit or replace it locally.
-3. Run `xxx apply`.
+3. Run `rws apply`.
 4. CLI uploads content in chunks.
 5. Daemon verifies base and atomically replaces the remote file.
 
@@ -597,7 +597,7 @@ Later versions can add:
 
 These are not unresolved requirements; they are implementation details to decide during planning:
 
-- HTTP framework and language for `remoted`.
+- HTTP framework and language for `rwsd`.
 - Local state database format, likely SQLite.
 - Exact hash policy for large files.
 - Exact patch format for text files.
