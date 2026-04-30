@@ -1,9 +1,23 @@
 package cli
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"remork/internal/api"
+	"remork/internal/config"
+	"remork/internal/workspace"
 )
+
+type fakeDaemonProbe struct {
+	Roots []string
+}
+
+func (p fakeDaemonProbe) Status(ctx context.Context, host config.Host, clientID string) (api.StatusResponse, error) {
+	return api.StatusResponse{Roots: p.Roots}, nil
+}
 
 func TestVersionCommandPrintsVersion(t *testing.T) {
 	cmd := NewRootCommand(Options{Version: "test-version"})
@@ -77,5 +91,57 @@ func TestRootCommandSilencesCobraErrorPrinting(t *testing.T) {
 
 	if out.String() != "" {
 		t.Fatalf("expected cobra to leave error output empty, got %q", out.String())
+	}
+}
+
+func TestHostAddWritesConfig(t *testing.T) {
+	home := t.TempDir()
+	cmd := NewRootCommand(Options{Version: "test", HomeDir: home})
+	_, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://10.0.0.12:17731", "--token-env", "REMORK_TOKEN", "--no-proxy")
+	if err != nil {
+		t.Fatalf("host add: %v", err)
+	}
+
+	cfg, err := config.NewStore(filepath.Join(home, ".remork")).Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	host := cfg.Hosts["lab-a"]
+	if host.Name != "lab-a" || host.URL != "http://10.0.0.12:17731" || host.TokenEnv != "REMORK_TOKEN" || !host.NoProxy {
+		t.Fatalf("bad host config: %#v", host)
+	}
+}
+
+func TestInitWritesLocalBinding(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	cmd := NewRootCommand(Options{
+		Version:     "test",
+		HomeDir:     home,
+		WorkingDir:  local,
+		DaemonProbe: fakeDaemonProbe{Roots: []string{"/data/project-a"}},
+	})
+	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://10.0.0.12:17731"); err != nil {
+		t.Fatalf("host add: %v", err)
+	}
+	if _, err := executeCommand(cmd, "init", "lab-a:/data/project-a"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	binding, root, err := workspace.ResolveFrom(local)
+	if err != nil {
+		t.Fatalf("resolve binding: %v", err)
+	}
+	if root != local {
+		t.Fatalf("root %q, want %q", root, local)
+	}
+	if binding.Host != "lab-a" || binding.RemoteRoot != "/data/project-a" {
+		t.Fatalf("bad binding: %#v", binding)
+	}
+	if !filepath.IsAbs(binding.StateDir) {
+		t.Fatalf("state dir should be absolute: %q", binding.StateDir)
+	}
+	if binding.Token != "" {
+		t.Fatal("binding should not contain token")
 	}
 }

@@ -9,8 +9,10 @@ import (
 )
 
 type Host struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
+	Name     string `json:"name"`
+	URL      string `json:"url"`
+	TokenEnv string `json:"token_env,omitempty"`
+	NoProxy  bool   `json:"no_proxy,omitempty"`
 }
 
 type Workspace struct {
@@ -20,6 +22,7 @@ type Workspace struct {
 }
 
 type Config struct {
+	ClientID   string               `json:"client_id,omitempty"`
 	Hosts      map[string]Host      `json:"hosts"`
 	Workspaces map[string]Workspace `json:"workspaces"`
 }
@@ -65,6 +68,20 @@ func (s Store) Load() (Config, error) {
 		cfg.Workspaces = map[string]Workspace{}
 	}
 	return cfg, nil
+}
+
+func (s Store) LoadOrDefault() (Config, error) {
+	cfg, err := s.Load()
+	if err == nil {
+		return cfg, nil
+	}
+	if !os.IsNotExist(err) {
+		return Config{}, err
+	}
+	return Config{
+		Hosts:      map[string]Host{},
+		Workspaces: map[string]Workspace{},
+	}, nil
 }
 
 func ParseWorkspaceRef(ref string) (string, string, error) {

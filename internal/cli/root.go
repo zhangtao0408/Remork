@@ -1,13 +1,26 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"remork/internal/api"
+	"remork/internal/config"
 )
 
 type Options struct {
-	Version string
+	Version     string
+	HomeDir     string
+	WorkingDir  string
+	DaemonProbe DaemonProbe
+}
+
+type DaemonProbe interface {
+	Status(ctx context.Context, host config.Host, clientID string) (api.StatusResponse, error)
 }
 
 const productHelpTemplate = `{{.Short}}
@@ -45,6 +58,18 @@ func NewRootCommand(opts Options) *cobra.Command {
 	if opts.Version == "" {
 		opts.Version = "dev"
 	}
+	if opts.HomeDir == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			opts.HomeDir = home
+		}
+	}
+	if opts.WorkingDir == "" {
+		wd, err := os.Getwd()
+		if err == nil {
+			opts.WorkingDir = wd
+		}
+	}
 
 	root := &cobra.Command{
 		Use:           "remork",
@@ -54,8 +79,14 @@ func NewRootCommand(opts Options) *cobra.Command {
 	}
 	root.SetHelpTemplate(productHelpTemplate)
 	addVersionCommand(root, opts.Version)
+	addHostCommand(root, opts)
+	addInitCommand(root, opts)
 	addPlaceholderProductCommands(root)
 	return root
+}
+
+func configStore(opts Options) config.Store {
+	return config.NewStore(filepath.Join(opts.HomeDir, ".remork"))
 }
 
 func addVersionCommand(root *cobra.Command, version string) {
@@ -70,7 +101,6 @@ func addVersionCommand(root *cobra.Command, version string) {
 
 func addPlaceholderProductCommands(root *cobra.Command) {
 	names := []string{
-		"init",
 		"sync",
 		"status",
 		"apply",
@@ -81,7 +111,6 @@ func addPlaceholderProductCommands(root *cobra.Command) {
 		"restore",
 		"log",
 		"watch",
-		"host",
 		"workspace",
 		"doctor",
 		"debug",

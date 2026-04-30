@@ -20,6 +20,48 @@ func TestConfigRoundTripHostAndWorkspace(t *testing.T) {
 	}
 }
 
+func TestHostConfigStoresTokenReferenceAndNoProxy(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	cfg := Config{
+		ClientID: "tao-macbook",
+		Hosts: map[string]Host{"lab-a": {
+			Name:     "lab-a",
+			URL:      "http://10.0.0.12:17731",
+			TokenEnv: "REMORK_LAB_A_TOKEN",
+			NoProxy:  true,
+		}},
+	}
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	got, err := store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.ClientID != "tao-macbook" {
+		t.Fatalf("client id %q", got.ClientID)
+	}
+	host := got.Hosts["lab-a"]
+	if host.Name != "lab-a" || host.URL != "http://10.0.0.12:17731" || host.TokenEnv != "REMORK_LAB_A_TOKEN" || !host.NoProxy {
+		t.Fatalf("bad host: %#v", host)
+	}
+}
+
+func TestDefaultConfigWhenMissing(t *testing.T) {
+	got, err := NewStore(t.TempDir()).LoadOrDefault()
+	if err != nil {
+		t.Fatalf("load default: %v", err)
+	}
+	if got.Hosts == nil {
+		t.Fatal("Hosts map should be initialized")
+	}
+	if got.Workspaces == nil {
+		t.Fatal("Workspaces map should be initialized")
+	}
+}
+
 func TestParseWorkspaceRef(t *testing.T) {
 	host, root, err := ParseWorkspaceRef("lab:/data/project")
 	if err != nil {
