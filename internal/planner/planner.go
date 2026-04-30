@@ -1,7 +1,9 @@
 package planner
 
 import (
+	"path"
 	"sort"
+	"strings"
 
 	"remork/internal/api"
 	"remork/internal/state"
@@ -50,7 +52,7 @@ func PlanSync(manifest api.ManifestResponse, snap state.Snapshot, opts Options) 
 			continue
 		}
 		tracked, exists := snap.Entries[entry.Path]
-		if exists && tracked.Revision == entry.Revision && !opts.Force {
+		if exists && isCurrent(tracked, entry) && !opts.Force {
 			ops = append(ops, Operation{Path: entry.Path, Kind: OpSkip, Reason: "current", Entry: entry})
 			continue
 		}
@@ -96,6 +98,9 @@ func remoteDeleteOps(snap state.Snapshot, remotePaths map[string]bool, opts Opti
 		if tracked.Path == "" || remotePaths[path] {
 			continue
 		}
+		if !inTargetScope(path, opts.TargetPath) {
+			continue
+		}
 		if dirty[path] && !opts.Force {
 			ops = append(ops, Operation{Path: path, Kind: OpConflict, Reason: "remote deleted local dirty file"})
 		} else {
@@ -103,6 +108,28 @@ func remoteDeleteOps(snap state.Snapshot, remotePaths map[string]bool, opts Opti
 		}
 	}
 	return ops
+}
+
+func isCurrent(tracked state.TrackedFile, entry api.FileEntry) bool {
+	if tracked.Revision != entry.Revision || tracked.Large != entry.Large {
+		return false
+	}
+	if entry.Large && tracked.MetaPath == "" {
+		return false
+	}
+	return true
+}
+
+func inTargetScope(filePath, targetPath string) bool {
+	if targetPath == "" || targetPath == "." {
+		return true
+	}
+	target := strings.Trim(path.Clean(targetPath), "/")
+	if target == "" || target == "." {
+		return true
+	}
+	cleanPath := strings.Trim(path.Clean(filePath), "/")
+	return cleanPath == target || strings.HasPrefix(cleanPath, target+"/")
 }
 
 func dirtySet(changes []state.DirtyChange) map[string]bool {

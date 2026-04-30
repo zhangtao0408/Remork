@@ -84,6 +84,42 @@ func TestSyncPreservesDirtyLocalFile(t *testing.T) {
 	}
 }
 
+func TestSyncTargetDoesNotDeleteOutsideTarget(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(remote, "src", "a.txt"), []byte("a"))
+	mustWriteFile(t, filepath.Join(remote, "README.md"), []byte("readme"))
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}, LargeThreshold: 1024}).Handler())
+	defer srv.Close()
+
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   state.NewStore(filepath.Join(local, ".remork", "state")),
+		LocalRoot:    local,
+		WorkspaceRef: "lab:" + remote,
+		RemoteRoot:   remote,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+
+	result, err := runner.Sync(context.Background(), SyncOptions{TargetPath: "src"})
+	if err != nil {
+		t.Fatalf("target sync: %v", err)
+	}
+	if result.Deleted != 0 {
+		t.Fatalf("deleted = %d, want 0; result=%#v", result.Deleted, result)
+	}
+	got, err := os.ReadFile(filepath.Join(local, "README.md"))
+	if err != nil {
+		t.Fatalf("README should remain: %v", err)
+	}
+	if string(got) != "readme" {
+		t.Fatalf("README = %q, want readme", got)
+	}
+}
+
 func mustWriteFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

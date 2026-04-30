@@ -45,6 +45,38 @@ func TestWriteLargeMetaUsesOriginalNamePlusMeta(t *testing.T) {
 	}
 }
 
+func TestWriteFileRejectsPathEscape(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := WriteFile(root, "../escape.txt", []byte("escape"))
+	if err == nil {
+		t.Fatal("expected path escape error")
+	}
+	if _, statErr := os.Stat(filepath.Join(parent, "escape.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside file should not exist: %v", statErr)
+	}
+}
+
+func TestWriteLargeMetaRejectsPathEscape(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := WriteLargeMeta(root, "../escape.txt", api.LargeFileMeta{Kind: "remote-large-file"})
+	if err == nil {
+		t.Fatal("expected path escape error")
+	}
+	if _, statErr := os.Stat(filepath.Join(parent, "escape.txt.meta")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside meta file should not exist: %v", statErr)
+	}
+}
+
 func TestWriteFileUsesTempThenFinalName(t *testing.T) {
 	root := t.TempDir()
 	if err := WriteFile(root, "a.txt", []byte("hello")); err != nil {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 
 	"remork/internal/client"
 	"remork/internal/manifest"
@@ -130,11 +129,19 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 			}
 			result.MetaWritten++
 		case planner.OpDelete:
-			if err := removeIfExists(filepath.Join(r.opts.LocalRoot, filepath.FromSlash(op.Path))); err != nil {
+			localPath, err := transfer.LocalPath(r.opts.LocalRoot, op.Path)
+			if err != nil {
+				return result, err
+			}
+			if err := removeIfExists(localPath); err != nil {
 				return result, err
 			}
 			if tracked, ok := snap.Entries[op.Path]; ok && tracked.MetaPath != "" {
-				if err := removeIfExists(filepath.Join(r.opts.LocalRoot, filepath.FromSlash(tracked.MetaPath))); err != nil {
+				metaPath, err := transfer.LocalPath(r.opts.LocalRoot, tracked.MetaPath)
+				if err != nil {
+					return result, err
+				}
+				if err := removeIfExists(metaPath); err != nil {
 					return result, err
 				}
 			}

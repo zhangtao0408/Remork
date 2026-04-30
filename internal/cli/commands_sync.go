@@ -61,18 +61,18 @@ func addSyncCommand(root *cobra.Command, opts Options) {
 				Force:      force,
 				Quiet:      quiet,
 			})
-			if jsonOut {
-				if writeErr := output.WriteJSON(cmd.OutOrStdout(), result); writeErr != nil && err == nil {
-					err = writeErr
-				}
-			} else if !quiet {
-				fmt.Fprintf(cmd.OutOrStdout(), "sync complete: downloaded %d, meta %d, deleted %d, conflicts %d\n", result.Downloaded, result.MetaWritten, result.Deleted, result.Conflicts)
-			}
 			if err != nil {
 				return err
 			}
 			if result.Conflicts > 0 {
 				return fmt.Errorf("sync completed with %d conflicts", result.Conflicts)
+			}
+			if jsonOut {
+				if writeErr := output.WriteJSON(cmd.OutOrStdout(), result); writeErr != nil {
+					return writeErr
+				}
+			} else if !quiet {
+				fmt.Fprintf(cmd.OutOrStdout(), "sync complete: downloaded %d, meta %d, deleted %d, conflicts %d\n", result.Downloaded, result.MetaWritten, result.Deleted, result.Conflicts)
 			}
 			return nil
 		},

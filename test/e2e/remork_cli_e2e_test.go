@@ -27,6 +27,24 @@ func TestRemorkProductSyncFromBoundDirectory(t *testing.T) {
 	h.assertLocal("src/main.txt", "hello from remote")
 }
 
+func TestRemorkProductSyncJSONConflictDoesNotPrintSuccess(t *testing.T) {
+	h := newCLIHarness(t)
+	h.writeRemote("a.txt", "base")
+	h.run("host", "add", "lab", "--url", h.serverURL)
+	h.runInLocal("init", "lab:"+h.remote)
+	h.runInLocal("sync")
+	h.writeLocal("a.txt", "local-dirty")
+	h.writeRemote("a.txt", "remote-new")
+
+	stdout, _, err := h.runInLocalExpectError("sync", "--json")
+	if err == nil {
+		h.t.Fatal("expected sync conflict error")
+	}
+	if stdout != "" {
+		h.t.Fatalf("stdout = %q, want empty", stdout)
+	}
+}
+
 type cliHarness struct {
 	t         *testing.T
 	home      string
@@ -59,6 +77,18 @@ func (h *cliHarness) runInLocal(args ...string) string {
 	return h.runWithWorkingDir(h.local, args...)
 }
 
+func (h *cliHarness) runInLocalExpectError(args ...string) (string, string, error) {
+	h.t.Helper()
+	cmd := cli.NewRootCommand(cli.Options{Version: "test", HomeDir: h.home, WorkingDir: h.local})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return stdout.String(), stderr.String(), err
+}
+
 func (h *cliHarness) runWithWorkingDir(workingDir string, args ...string) string {
 	h.t.Helper()
 	cmd := cli.NewRootCommand(cli.Options{Version: "test", HomeDir: h.home, WorkingDir: workingDir})
@@ -75,6 +105,11 @@ func (h *cliHarness) runWithWorkingDir(workingDir string, args ...string) string
 func (h *cliHarness) writeRemote(path, content string) {
 	h.t.Helper()
 	mustWrite(h.t, filepath.Join(h.remote, path), []byte(content))
+}
+
+func (h *cliHarness) writeLocal(path, content string) {
+	h.t.Helper()
+	mustWrite(h.t, filepath.Join(h.local, path), []byte(content))
 }
 
 func (h *cliHarness) assertLocal(path, want string) {

@@ -46,6 +46,32 @@ func TestPullLargePolicySwitchesBetweenMetaAndDownload(t *testing.T) {
 	assertOp(t, downloadPlan, "big.bin", OpDownload)
 }
 
+func TestSyncSameRevisionLargeToNormalDownloadsFile(t *testing.T) {
+	manifest := api.ManifestResponse{Entries: []api.FileEntry{
+		{Path: "model.bin", Type: api.FileTypeFile, Large: false, Size: 200, Revision: "same"},
+	}}
+	snap := state.Snapshot{Entries: map[string]state.TrackedFile{
+		"model.bin": {Path: "model.bin", MetaPath: "model.bin.meta", Type: api.FileTypeFile, Revision: "same", Large: true},
+	}}
+
+	plan := PlanSync(manifest, snap, Options{})
+
+	assertOp(t, plan, "model.bin", OpDownload)
+}
+
+func TestSyncSameRevisionNormalToLargeWritesMeta(t *testing.T) {
+	manifest := api.ManifestResponse{Entries: []api.FileEntry{
+		{Path: "model.bin", Type: api.FileTypeFile, Large: true, Size: 200, Revision: "same"},
+	}}
+	snap := state.Snapshot{Entries: map[string]state.TrackedFile{
+		"model.bin": {Path: "model.bin", Type: api.FileTypeFile, Revision: "same", Large: false},
+	}}
+
+	plan := PlanSync(manifest, snap, Options{})
+
+	assertOp(t, plan, "model.bin", OpWriteMeta)
+}
+
 func TestSyncDirtyRemoteDeleteBecomesConflict(t *testing.T) {
 	plan := PlanRemoteDeletes(state.Snapshot{Entries: map[string]state.TrackedFile{
 		"deleted.txt": {Path: "deleted.txt", Revision: "rev-old"},
