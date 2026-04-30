@@ -90,6 +90,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	addVersionCommand(root, opts.Version)
 	addHostCommand(root, opts)
 	addInitCommand(root, opts)
+	addSyncCommand(root, opts)
 	addPlaceholderProductCommands(root)
 	return root
 }
@@ -154,7 +155,6 @@ func addVersionCommand(root *cobra.Command, version string) {
 
 func addPlaceholderProductCommands(root *cobra.Command) {
 	names := []string{
-		"sync",
 		"status",
 		"apply",
 		"run",
