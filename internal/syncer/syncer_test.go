@@ -254,6 +254,114 @@ func TestStatusReportsDirtyRemoteUpdatesConflictsAndLargePlaceholders(t *testing
 	}
 }
 
+func TestStatusIgnoresLocalBindingMarkerFromRemoteManifest(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(remote, ".remork-local.json"), []byte(`{"remote":true}`))
+	mustWriteFile(t, filepath.Join(remote, "a.txt"), []byte("remote\n"))
+	mustWriteFile(t, filepath.Join(local, ".remork-local.json"), []byte(`{"local":true}`))
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}, LargeThreshold: 1024}).Handler())
+	defer srv.Close()
+
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   state.NewStore(filepath.Join(local, ".remork", "state")),
+		LocalRoot:    local,
+		WorkspaceRef: "lab:" + remote,
+		RemoteRoot:   remote,
+	})
+
+	status, err := runner.Status(context.Background())
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.RemoteUpdates != 1 {
+		t.Fatalf("RemoteUpdates = %d, want 1 for a.txt only; status=%#v", status.RemoteUpdates, status)
+	}
+	if status.Conflicts != 0 {
+		t.Fatalf("Conflicts = %d, want 0; status=%#v", status.Conflicts, status)
+	}
+	if containsString(status.ChangedPaths, ".remork-local.json") {
+		t.Fatalf("ChangedPaths includes local marker: %#v", status.ChangedPaths)
+	}
+	if containsString(status.ConflictPaths, ".remork-local.json") {
+		t.Fatalf("ConflictPaths includes local marker: %#v", status.ConflictPaths)
+	}
+}
+
+func TestSyncIgnoresLocalBindingMarkerFromRemoteManifest(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	localMarker := []byte(`{"workspace":"local"}`)
+	mustWriteFile(t, filepath.Join(remote, ".remork-local.json"), []byte(`{"workspace":"remote"}`))
+	mustWriteFile(t, filepath.Join(local, ".remork-local.json"), localMarker)
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}, LargeThreshold: 1024}).Handler())
+	defer srv.Close()
+
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   state.NewStore(filepath.Join(local, ".remork", "state")),
+		LocalRoot:    local,
+		WorkspaceRef: "lab:" + remote,
+		RemoteRoot:   remote,
+	})
+
+	result, err := runner.Sync(context.Background(), SyncOptions{})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if result.Conflicts != 0 {
+		t.Fatalf("Conflicts = %d, want 0; result=%#v", result.Conflicts, result)
+	}
+	got, err := os.ReadFile(filepath.Join(local, ".remork-local.json"))
+	if err != nil {
+		t.Fatalf("read local marker: %v", err)
+	}
+	if string(got) != string(localMarker) {
+		t.Fatalf("local marker overwritten: got %q want %q", got, localMarker)
+	}
+}
+
+func TestStatusRejectsUnsafeLargeMetaPath(t *testing.T) {
+	parent := t.TempDir()
+	remote := filepath.Join(parent, "remote")
+	local := filepath.Join(parent, "local")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(parent, "outside.meta"), []byte("outside"))
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}, LargeThreshold: 1024}).Handler())
+	defer srv.Close()
+
+	workspaceRef := "lab:" + remote
+	store := state.NewStore(filepath.Join(local, ".remork", "state"))
+	if err := store.Save(state.Snapshot{
+		WorkspaceRef: workspaceRef,
+		Entries: map[string]state.TrackedFile{
+			"big.bin": {Path: "big.bin", MetaPath: "../outside.meta", Type: "file", Large: true, Revision: "rev-big"},
+		},
+	}); err != nil {
+		t.Fatalf("save snapshot: %v", err)
+	}
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   store,
+		LocalRoot:    local,
+		WorkspaceRef: workspaceRef,
+		RemoteRoot:   remote,
+	})
+
+	if _, err := runner.Status(context.Background()); err == nil {
+		t.Fatal("Status succeeded with unsafe large meta path, want error")
+	}
+}
+
 func mustWriteFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

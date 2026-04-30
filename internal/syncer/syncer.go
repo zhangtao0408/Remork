@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"remork/internal/api"
@@ -85,7 +84,7 @@ func (r Runner) Status(ctx context.Context) (Status, error) {
 	dirtyPaths := map[string]bool{}
 	changedPaths := make([]string, 0, len(dirty))
 	for _, change := range dirty {
-		if isStatusIgnoredDirtyPath(change.Path) {
+		if isLocalOnlyPath(change.Path) {
 			continue
 		}
 		if !dirtyPaths[change.Path] {
@@ -98,6 +97,9 @@ func (r Runner) Status(ctx context.Context) (Status, error) {
 	remoteUpdates := map[string]bool{}
 	remotePaths := map[string]bool{}
 	for _, entry := range man.Entries {
+		if isLocalOnlyPath(entry.Path) {
+			continue
+		}
 		remotePaths[entry.Path] = true
 		if entry.Type != api.FileTypeFile {
 			continue
@@ -108,7 +110,7 @@ func (r Runner) Status(ctx context.Context) (Status, error) {
 		}
 	}
 	for path, tracked := range snap.Entries {
-		if tracked.Path == "" || remotePaths[path] {
+		if tracked.Path == "" || remotePaths[path] || isLocalOnlyPath(path) {
 			continue
 		}
 		remoteUpdates[path] = true
@@ -124,6 +126,9 @@ func (r Runner) Status(ctx context.Context) (Status, error) {
 
 	clean := 0
 	for path := range snap.Entries {
+		if isLocalOnlyPath(path) {
+			continue
+		}
 		if !dirtyPaths[path] && !remoteUpdates[path] {
 			clean++
 		}
@@ -131,10 +136,13 @@ func (r Runner) Status(ctx context.Context) (Status, error) {
 
 	largePlaceholders := 0
 	for _, tracked := range snap.Entries {
-		if !tracked.Large || tracked.MetaPath == "" {
+		if isLocalOnlyPath(tracked.Path) || !tracked.Large || tracked.MetaPath == "" {
 			continue
 		}
-		metaPath := filepath.Join(r.opts.LocalRoot, filepath.FromSlash(tracked.MetaPath))
+		metaPath, err := transfer.LocalPath(r.opts.LocalRoot, tracked.MetaPath)
+		if err != nil {
+			return Status{}, err
+		}
 		if _, err := os.Stat(metaPath); err == nil {
 			largePlaceholders++
 		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -168,6 +176,7 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	dirty = filterDirtyLocalOnly(dirty)
 	target := opts.TargetPath
 	if target == "" {
 		target = "."
@@ -176,7 +185,7 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	plan := planner.PlanSync(man, snap, planner.Options{
+	plan := planner.PlanSync(filterManifestLocalOnly(man), filterSnapshotLocalOnly(snap), planner.Options{
 		WorkspaceRef: r.opts.WorkspaceRef,
 		TargetPath:   opts.TargetPath,
 		IncludeLarge: opts.IncludeLarge,
@@ -299,8 +308,43 @@ func statusCurrent(tracked state.TrackedFile, entry api.FileEntry) bool {
 	return true
 }
 
-func isStatusIgnoredDirtyPath(path string) bool {
+func isLocalOnlyPath(path string) bool {
 	return path == ".remork-local.json"
+}
+
+func filterManifestLocalOnly(man api.ManifestResponse) api.ManifestResponse {
+	filtered := man
+	filtered.Entries = make([]api.FileEntry, 0, len(man.Entries))
+	for _, entry := range man.Entries {
+		if isLocalOnlyPath(entry.Path) {
+			continue
+		}
+		filtered.Entries = append(filtered.Entries, entry)
+	}
+	return filtered
+}
+
+func filterSnapshotLocalOnly(snap state.Snapshot) state.Snapshot {
+	filtered := snap
+	filtered.Entries = make(map[string]state.TrackedFile, len(snap.Entries))
+	for path, tracked := range snap.Entries {
+		if isLocalOnlyPath(path) || isLocalOnlyPath(tracked.Path) {
+			continue
+		}
+		filtered.Entries[path] = tracked
+	}
+	return filtered
+}
+
+func filterDirtyLocalOnly(dirty []state.DirtyChange) []state.DirtyChange {
+	filtered := make([]state.DirtyChange, 0, len(dirty))
+	for _, change := range dirty {
+		if isLocalOnlyPath(change.Path) {
+			continue
+		}
+		filtered = append(filtered, change)
+	}
+	return filtered
 }
 
 func removeIfExists(path string) error {
