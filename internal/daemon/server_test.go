@@ -346,6 +346,8 @@ func TestShellSendsExitFrame(t *testing.T) {
 		}
 		_ = conn.Close()
 		waitForOperationLogContaining(t, root, `"operation":"shell"`)
+		waitForOperationLogContaining(t, root, `"result":"error"`)
+		waitForOperationLogContaining(t, root, `"exit_code":7`)
 		return
 	}
 }

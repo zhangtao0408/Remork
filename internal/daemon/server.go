@@ -310,6 +310,15 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 	statusCode := http.StatusOK
 	resultName := "success"
 	errorMessage := ""
+	applyShellStatus := func(status ptysession.ExitStatus) {
+		op.ExitCode = status.ExitCode
+		if status.ExitCode != 0 {
+			resultName = "error"
+			if status.Err != nil {
+				errorMessage = status.Err.Error()
+			}
+		}
+	}
 	defer func() {
 		s.finishOperation(op, statusCode, resultName, errorMessage)
 	}()
@@ -336,18 +345,17 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case status := <-done:
-			op.ExitCode = status.ExitCode
-			if status.ExitCode != 0 {
-				resultName = "error"
-				if status.Err != nil {
-					errorMessage = status.Err.Error()
-				}
-			}
+			applyShellStatus(status)
 			return
 		default:
 		}
 		messageType, msg, err := conn.ReadMessage()
 		if err != nil {
+			select {
+			case status := <-done:
+				applyShellStatus(status)
+			default:
+			}
 			return
 		}
 		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
