@@ -24,24 +24,23 @@ import (
 )
 
 type Config struct {
-	Roots            []string
-	LargeThreshold   int64
-	OperationLogPath string
+	Roots          []string
+	LargeThreshold int64
 }
 
 type Server struct {
-	cfg            Config
-	mux            *http.ServeMux
-	ptyManager     *ptysession.Manager
-	operationStore ops.Store
+	cfg             Config
+	mux             *http.ServeMux
+	ptyManager      *ptysession.Manager
+	operationStores map[string]ops.Store
 }
 
 func NewServer(cfg Config) *Server {
-	store := ops.Store(ops.NewMemoryStore())
-	if cfg.OperationLogPath != "" {
-		store = ops.NewJSONLStore(cfg.OperationLogPath)
+	stores := map[string]ops.Store{}
+	for _, root := range cfg.Roots {
+		stores[root] = ops.NewJSONLStore(operationLogPath(root))
 	}
-	s := &Server{cfg: cfg, mux: http.NewServeMux(), ptyManager: ptysession.NewManager(30 * time.Minute), operationStore: store}
+	s := &Server{cfg: cfg, mux: http.NewServeMux(), ptyManager: ptysession.NewManager(30 * time.Minute), operationStores: stores}
 	s.mux.HandleFunc("/manifest", s.handleManifest)
 	s.mux.HandleFunc("/download", s.handleDownload)
 	s.mux.HandleFunc("/apply", s.handleApply)
@@ -320,7 +319,11 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 	root := r.URL.Query().Get("root")
-	if root != "" && !s.allowedRoot(root) {
+	if root == "" {
+		http.Error(w, "root is required", http.StatusBadRequest)
+		return
+	}
+	if !s.allowedRoot(root) {
 		http.Error(w, "root not allowed", http.StatusForbidden)
 		return
 	}
@@ -330,7 +333,12 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 			limit = parsed
 		}
 	}
-	entries, err := s.operationStore.List(ops.Filter{Root: root, Limit: limit})
+	store := s.operationStore(root)
+	if store == nil {
+		http.Error(w, "root not allowed", http.StatusForbidden)
+		return
+	}
+	entries, err := store.List(ops.Filter{Root: root, Limit: limit})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -369,7 +377,15 @@ func (s *Server) finishOperation(entry ops.Entry, statusCode int, result string,
 	entry.StatusCode = statusCode
 	entry.Result = result
 	entry.ErrorMessage = errMsg
-	_ = s.operationStore.Append(entry)
+	store := s.operationStore(entry.Root)
+	if store == nil {
+		return
+	}
+	_ = store.Append(entry)
+}
+
+func (s *Server) operationStore(root string) ops.Store {
+	return s.operationStores[root]
 }
 
 func summarizeChanges(cs apply.Changeset) map[string]any {
@@ -421,4 +437,8 @@ func statusResult(status int) string {
 		return "conflict"
 	}
 	return "error"
+}
+
+func operationLogPath(root string) string {
+	return filepath.Join(root, ".remork", "log", "operations.jsonl")
 }

@@ -107,8 +107,7 @@ printf 'hello\n' > "$tmp_remote/a.txt"
 
 dist/remorkd-$(go env GOOS)-$(go env GOARCH) \
   --root "$tmp_remote" \
-  --addr 127.0.0.1:7731 \
-  --operation-log /tmp/remorkd-operations.jsonl
+  --addr 127.0.0.1:7731
 ```
 
 远端离线部署示例，以 Linux arm64 为例：
@@ -117,10 +116,16 @@ dist/remorkd-$(go env GOOS)-$(go env GOARCH) \
 scripts/build-release.sh dev
 scp dist/remorkd-linux-arm64 host:/tmp/remorkd
 ssh host 'chmod +x /tmp/remorkd && /tmp/remorkd --version'
-ssh host 'nohup /tmp/remorkd --root /path/to/workspace --addr 0.0.0.0:17731 --operation-log /tmp/remorkd-operations.jsonl </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
+ssh host 'nohup /tmp/remorkd --root /path/to/workspace --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
 ```
 
-`--operation-log` 是 daemon request log 的 JSONL 文件路径。默认 CLI entrypoint 使用 `/tmp/remorkd-operations.jsonl`；生产环境建议换成更持久的位置。
+daemon request log 默认写在每个 workspace 自己的目录里：
+
+```text
+<workspace>/.remork/log/operations.jsonl
+```
+
+这样同一台服务器上不同远端文件夹之间的 Remork 状态是解耦的。`.remork` 会被 manifest 扫描跳过，不会同步回本地 working copy。
 
 如果本机有 HTTP proxy，直连 VPN IP 验证时建议加 `--noproxy '*'`，否则请求可能被代理截获：
 
@@ -132,13 +137,19 @@ curl --noproxy '*' -fsS \
 清理远端测试 daemon：
 
 ```bash
-ssh host 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; rm -f /tmp/remorkd.pid /tmp/remorkd.log /tmp/remorkd /tmp/remorkd-operations.jsonl'
+ssh host 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; rm -f /tmp/remorkd.pid /tmp/remorkd.log /tmp/remorkd'
 ```
 
 如果你按 smoke test 创建了 `/tmp/remork-e2e`，也一起清理：
 
 ```bash
 ssh host 'rm -rf /tmp/remork-e2e'
+```
+
+如果要连 operation log 一起清理：
+
+```bash
+ssh host 'rm -rf /tmp/remork-e2e/.remork'
 ```
 
 ## API 快速试用
@@ -290,6 +301,14 @@ exec 命令是什么，exit code 是多少？
 curl -fsS "$REMORKD/operations?root=$ROOT&limit=20"
 ```
 
+日志文件在远端：
+
+```text
+$ROOT/.remork/log/operations.jsonl
+```
+
+每个 `--root` 都有自己的 `.remork/log`，不会和同一台服务器上的其它 workspace 混在一起。
+
 典型返回：
 
 ```json
@@ -384,9 +403,9 @@ daemon="dist/remorkd-$(go env GOOS)-$(go env GOARCH)"
 root="$(mktemp -d)"
 printf 'hello\n' > "$root/a.txt"
 
-"$daemon" --root "$root" --addr 127.0.0.1:7731 --operation-log /tmp/remorkd-operations.jsonl >/tmp/remorkd-local.log 2>&1 &
+"$daemon" --root "$root" --addr 127.0.0.1:7731 >/tmp/remorkd-local.log 2>&1 &
 pid=$!
-trap 'kill "$pid" 2>/dev/null || true; rm -rf "$root" /tmp/remorkd-local.log /tmp/remorkd-operations.jsonl /tmp/remork-apply.json /tmp/remork-base-a.txt /tmp/remork-new-a.txt /tmp/remork-manifest.json' EXIT
+trap 'kill "$pid" 2>/dev/null || true; rm -rf "$root" /tmp/remorkd-local.log /tmp/remork-apply.json /tmp/remork-base-a.txt /tmp/remork-new-a.txt /tmp/remork-manifest.json' EXIT
 sleep 1
 
 REMORKD=http://127.0.0.1:7731

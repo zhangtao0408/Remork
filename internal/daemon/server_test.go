@@ -119,8 +119,7 @@ func TestApplyEndpointInvalidPathReturnsBadRequest(t *testing.T) {
 func TestOperationsEndpointRecordsClientApplyWithoutContent(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "a.txt"), []byte("before\n"))
-	logPath := filepath.Join(t.TempDir(), "operations.jsonl")
-	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}, OperationLogPath: logPath}).Handler())
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
 	defer srv.Close()
 
 	body := strings.NewReader(`{"changes":[{"path":"a.txt","kind":"update","base_hash":"` + state.HashBytes([]byte("before\n")) + `","content":"YWZ0ZXIK"}]}`)
@@ -157,12 +156,57 @@ func TestOperationsEndpointRecordsClientApplyWithoutContent(t *testing.T) {
 	if entry["client_id"] != "tao-macbook" || entry["operation"] != "apply" || entry["result"] != "success" {
 		t.Fatalf("bad entry: %#v", entry)
 	}
-	raw, err := os.ReadFile(logPath)
+	raw, err := os.ReadFile(filepath.Join(root, ".remork", "log", "operations.jsonl"))
 	if err != nil {
 		t.Fatalf("read log: %v", err)
 	}
 	if strings.Contains(string(raw), "YWZ0ZXIK") || strings.Contains(string(raw), "after") {
 		t.Fatalf("operation log leaked apply content: %s", raw)
+	}
+}
+
+func TestOperationLogsAreScopedPerWorkspaceRoot(t *testing.T) {
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{rootA, rootB}}).Handler())
+	defer srv.Close()
+
+	for _, tc := range []struct {
+		root     string
+		clientID string
+	}{
+		{root: rootA, clientID: "client-a"},
+		{root: rootB, clientID: "client-b"},
+	} {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/exec", strings.NewReader(`{"root":"`+tc.root+`","cwd":"`+tc.root+`","command":["sh","-c","pwd"]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Remork-Client-ID", tc.clientID)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("exec: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status %d", resp.StatusCode)
+		}
+	}
+
+	rawA, err := os.ReadFile(filepath.Join(rootA, ".remork", "log", "operations.jsonl"))
+	if err != nil {
+		t.Fatalf("read rootA log: %v", err)
+	}
+	rawB, err := os.ReadFile(filepath.Join(rootB, ".remork", "log", "operations.jsonl"))
+	if err != nil {
+		t.Fatalf("read rootB log: %v", err)
+	}
+	if !strings.Contains(string(rawA), "client-a") || strings.Contains(string(rawA), "client-b") {
+		t.Fatalf("rootA log not isolated: %s", rawA)
+	}
+	if !strings.Contains(string(rawB), "client-b") || strings.Contains(string(rawB), "client-a") {
+		t.Fatalf("rootB log not isolated: %s", rawB)
 	}
 }
 

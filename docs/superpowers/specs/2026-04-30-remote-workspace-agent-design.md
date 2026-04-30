@@ -167,6 +167,14 @@ The state database records:
 
 The daemon records requests received from local clients. This log is separate from filesystem watch events.
 
+The log is scoped to each remote workspace root and lives under the remote folder itself:
+
+```text
+<workspace-root>/.remork/log/operations.jsonl
+```
+
+This keeps multiple workspaces on the same server decoupled. The `.remork` directory is tool-owned metadata and should be skipped by manifest/sync just like `.git`.
+
 Primary purpose:
 
 - Identify which local machine or Agent sent an `apply`, `exec`, `download`, `shell`, or other daemon request.
