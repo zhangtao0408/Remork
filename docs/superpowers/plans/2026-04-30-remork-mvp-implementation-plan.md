@@ -3875,11 +3875,13 @@ Expected: each remote-side curl returns manifest JSON containing `a.txt`. If thi
 Run:
 
 ```bash
-curl -fsS 'http://175.100.2.7:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true'
-curl -fsS 'http://175.100.2.6:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true'
+curl --noproxy '*' -fsS 'http://175.100.2.7:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true'
+curl --noproxy '*' -fsS 'http://175.100.2.6:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true'
 ```
 
 Expected: both local curls return manifest JSON containing `a.txt`. This validates the intended daemon transport path without SSH tunnels.
+
+Validation note from 2026-04-30: plain local `curl` returned HTTP 502 on this machine because the request was intercepted by the local proxy. `curl --noproxy '*'` reached both daemons directly over VPN and returned the expected manifests, so use `--noproxy '*'` when classifying direct VPN transport.
 
 - [ ] **Step 7: Cleanup remote test processes and files**
 
