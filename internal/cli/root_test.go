@@ -80,6 +80,19 @@ func TestDebugCommandsAreRegistered(t *testing.T) {
 	}
 }
 
+func TestDaemonCommandsAreRegistered(t *testing.T) {
+	cmd := NewRootCommand(Options{Version: "test"})
+	for _, args := range [][]string{{"daemon", "install"}, {"daemon", "upgrade"}, {"daemon", "status"}} {
+		found, _, err := cmd.Find(args)
+		if err != nil || found == nil {
+			t.Fatalf("command %v not registered: %v", args, err)
+		}
+		if found.Name() != args[len(args)-1] {
+			t.Fatalf("command %v resolved to %q, want %q", args, found.Name(), args[len(args)-1])
+		}
+	}
+}
+
 func TestExecAliasUsesRunPlaceholderHandler(t *testing.T) {
 	runCmd := NewRootCommand(Options{Version: "test"})
 	_, runErr := executeCommand(runCmd, "run")

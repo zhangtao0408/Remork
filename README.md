@@ -1,529 +1,346 @@
 # Remork
 
-Remork 是一个“本地控制远端工作区”的工具原型。目标是让人和 Agent 都可以在本机查看、同步、编辑远端服务器上的项目，并通过一个轻量远端 daemon 执行命令或打开交互式 shell。
+## What Remork is
 
-它解决的核心问题是：远端服务器很多，但不一定能在每台机器上安装完整 Agent 环境、同步依赖或联网构建。Remork 的远端只需要一个预编译好的 `remorkd` 单文件 daemon。
+Remork lets you work on a remote directory from a local editable working copy.
+You run `remorkd` on the remote machine, bind a local directory to a remote
+workspace, sync files down, edit locally, and explicitly apply safe changes back.
 
-## 当前状态
+The remote host only needs one prebuilt `remorkd` binary. It does not need Go,
+npm, apt, brew, or internet access.
 
-这个仓库现在是 MVP 基础层，不是完整终端产品。
+Remork is built for trusted VPN or private-network use. Product V1 supports an
+optional shared bearer token, but it is not an account system and should not be
+exposed directly to the public internet.
 
-已经实现并测试通过：
+## Five-minute workflow
 
-- `remorkd` 远端 daemon
-- manifest 扫描和大文件识别
-- 文件下载和 HTTP range 下载
-- 显式 `apply` 回写，带 base hash 冲突校验
-- 远端非交互式 `exec`
-- WebSocket 文件事件 `/events`
-- WebSocket PTY shell `/shell`
-- daemon request/operation log
-- 本地 state、planner、transfer、progress、config、client 内部包
-- Linux arm64/amd64、Darwin arm64/amd64 release 构建
-
-还没有完成：
-
-- `remork sync`
-- `remork pull`
-- `remork apply`
-- `remork exec`
-- `remork shell`
-- `remork diff`
-- `remork host/workspace` 配置命令
-
-现在的 `remork` CLI 只有 `version` 和 `status` skeleton。当前主要使用方式是直接运行 `remorkd` 并调用 HTTP/WebSocket API，或基于 `internal/client` 继续开发 CLI。
-
-当前 CLI 可用行为：
-
-```bash
-dist/remork version
-dist/remork status host:/absolute/workspace
-```
-
-`status` 目前只会回显 workspace 参数，是占位命令，不会连接 daemon。
-
-## 核心模型
-
-```mermaid
-flowchart LR
-  Human["Human / Agent"] --> CLI["remork CLI (local)"]
-  CLI --> State["local state + editable working copy"]
-  CLI --> API["HTTP / WebSocket over VPN"]
-  API --> Daemon["remorkd (remote)"]
-  Daemon --> Remote["remote workspace"]
-```
-
-关键约束：
-
-- 远端工作区是 source of truth。
-- 本地目录是 editable working copy，不是只读镜像。
-- 本地改动不会自动写回远端，必须显式 `apply`。
-- `apply` 必须带 base hash，远端文件变过就拒绝，避免覆盖别人或命令产生的新改动。
-- 大文件默认不拉全量内容，只在本地生成 `原文件名.meta`。
-- Remork 不依赖目标项目自己的 `.git`，也会跳过 `.git` 和 `.remork` 目录。
-- 当前安全模型假设机器只能通过 VPN 访问，不要把 daemon 暴露到公网。
-
-默认大文件阈值是 `128MB`。大于阈值的文件会变成本地 meta 占位文件，例如：
-
-```text
-remote: /workspace/checkpoints/model.tar.gz
-local:  /mirror/checkpoints/model.tar.gz.meta
-```
-
-## 构建
-
-需要本机有 Go 1.22+。远端机器不需要 Go。
-
-```bash
-go test ./...
-scripts/build-release.sh dev
-```
-
-构建产物在 `dist/`：
-
-```text
-dist/remork
-dist/remorkd-linux-amd64
-dist/remorkd-linux-arm64
-dist/remorkd-darwin-amd64
-dist/remorkd-darwin-arm64
-dist/remorkd.example.toml
-dist/checksums.txt
-```
-
-验证本机平台 daemon：
-
-```bash
-dist/remorkd-$(go env GOOS)-$(go env GOARCH) --version
-```
-
-## 启动 daemon
-
-本地测试：
-
-```bash
-tmp_remote=$(mktemp -d)
-printf 'hello\n' > "$tmp_remote/a.txt"
-
-dist/remorkd-$(go env GOOS)-$(go env GOARCH) \
-  --root "$tmp_remote" \
-  --addr 127.0.0.1:7731
-```
-
-远端离线部署示例，以 Linux arm64 为例：
+Build release binaries locally:
 
 ```bash
 scripts/build-release.sh dev
-scp dist/remorkd-linux-arm64 host:/tmp/remorkd
-ssh host 'chmod +x /tmp/remorkd && /tmp/remorkd --version'
-ssh host 'nohup /tmp/remorkd --root /path/to/workspace --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
 ```
 
-daemon request log 默认写在每个 workspace 自己的目录里：
+Copy the daemon to the remote host and start it:
+
+```bash
+scp dist/remorkd-linux-arm64 lab-a:/tmp/remorkd
+ssh lab-a 'chmod +x /tmp/remorkd'
+ssh lab-a 'nohup /tmp/remorkd --root /data/project-a --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
+```
+
+Configure the local CLI:
+
+```bash
+dist/remork-darwin-arm64 host add lab-a --url http://10.0.0.12:17731
+mkdir project-a && cd project-a
+../dist/remork-darwin-arm64 init lab-a:/data/project-a
+../dist/remork-darwin-arm64 sync
+../dist/remork-darwin-arm64 status
+```
+
+Edit files locally, review the diff, then apply:
+
+```bash
+remork diff
+remork apply
+```
+
+## The six commands you must know
+
+`remork init HOST:/absolute/remote/root`
+
+Binds the current local directory to a configured daemon host and remote root.
+After this, daily commands can infer the workspace from the current directory.
+
+`remork sync`
+
+Copies remote files into the local working copy and writes local base state.
+Large files become `.meta` placeholders by default.
+
+`remork status`
+
+Shows whether the local copy is clean, dirty, missing remote data, or blocked by
+conflicts.
+
+`remork apply`
+
+Writes local changes back to the remote root. Apply uses base hashes, so a remote
+file that changed after your last sync is rejected instead of overwritten.
+
+`remork run -- COMMAND ...`
+
+Runs a non-interactive command in the remote workspace.
+
+`remork shell`
+
+Opens an interactive remote shell through the daemon.
+
+## Daily examples
+
+Add a daemon endpoint:
+
+```bash
+remork host add lab-a --url http://10.0.0.12:17731
+```
+
+Use a shared token without writing the secret into config:
+
+```bash
+export REMORK_LAB_TOKEN='replace-with-real-token'
+remork host add lab-a --url http://10.0.0.12:17731 --token-env REMORK_LAB_TOKEN
+```
+
+Bind and sync a workspace:
+
+```bash
+mkdir ~/work/project-a
+cd ~/work/project-a
+remork init lab-a:/data/project-a
+remork sync
+```
+
+Run a remote check:
+
+```bash
+remork run -- make test
+```
+
+Apply one edited local working copy:
+
+```bash
+remork status
+remork diff
+remork apply
+```
+
+## Large files
+
+Files larger than the daemon threshold are not downloaded by default. Product V1
+uses a `128MB` threshold unless the daemon is started differently.
+
+If the remote workspace has:
+
+```text
+/data/project-a/checkpoints/model.tar.gz
+```
+
+the local working copy receives:
+
+```text
+checkpoints/model.tar.gz.meta
+```
+
+The meta file records the remote path, size, revision, and pull command. Use
+`remork pull checkpoints/model.tar.gz` when you really need the full content.
+
+## Applying safely
+
+Remork treats the remote workspace as the source of truth. Local files are
+editable, but they are not automatically pushed.
+
+`remork apply` sends a changeset with the base hash that was captured during
+sync or pull. If the remote file no longer matches that base hash, the daemon
+returns a conflict and does not partially apply the changeset.
+
+This protects against overwriting:
+
+- another user editing the same remote file;
+- a remote command changing generated files;
+- an agent applying stale local edits.
+
+Review with `remork status` and `remork diff` before applying.
+
+## Running commands and shell
+
+Use `run` for non-interactive commands:
+
+```bash
+remork run -- pwd
+remork run -- make test
+remork run -- python scripts/check.py
+```
+
+Use `shell` when you need an interactive session:
+
+```bash
+remork shell
+```
+
+For Product V1, shell sessions are live sessions. Detach and reattach are future
+workflow goals, so keep long-running critical jobs under a remote process manager
+if they must survive client disconnects.
+
+## Operation log
+
+Each remote workspace has its own operation log:
 
 ```text
 <workspace>/.remork/log/operations.jsonl
 ```
 
-这样同一台服务器上不同远端文件夹之间的 Remork 状态是解耦的。`.remork` 会被 manifest 扫描跳过，不会同步回本地 working copy。
+The daemon skips `.remork` during manifest scans, so the log is not synced into
+the local working copy. Use it to inspect daemon-side actions such as manifest,
+download, apply, exec, shell, and operations requests.
 
-如果本机有 HTTP proxy，直连 VPN IP 验证时建议加 `--noproxy '*'`，否则请求可能被代理截获：
-
-```bash
-curl --noproxy '*' -fsS \
-  'http://REMOTE_VPN_IP:17731/manifest?root=/path/to/workspace&path=.&recursive=true'
-```
-
-清理远端测试 daemon：
+Read recent entries:
 
 ```bash
-ssh host 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; rm -f /tmp/remorkd.pid /tmp/remorkd.log /tmp/remorkd'
+remork log
 ```
 
-如果你按 smoke test 创建了 `/tmp/remork-e2e`，也一起清理：
+## Advanced commands
 
-```bash
-ssh host 'rm -rf /tmp/remork-e2e'
-```
+`remork pull PATH`
 
-如果要连 operation log 一起清理：
+Fetches a specific file or directory. This is the explicit path for large files.
 
-```bash
-ssh host 'rm -rf /tmp/remork-e2e/.remork'
-```
+`remork diff`
 
-## API 快速试用
+Shows local changes against the synced base.
 
-下面假设 daemon 地址是：
+`remork restore PATH`
 
-```bash
-export REMORKD=http://127.0.0.1:7731
-export ROOT=/path/to/workspace
-```
+Discards local edits and restores from the synced base or remote copy.
 
-`ROOT` 必须和 `remorkd --root` 传入的路径完全一致。当前 daemon 做 exact allowlist match，不会把 `/path/to/workspace/..`、symlink 后路径或不同写法当成同一个 root。
+`remork log`
 
-如果 `REMORKD` 是远端 VPN IP，并且本机有 HTTP proxy，下面所有 `curl` 都建议加：
+Shows recent remote operation log entries.
 
-```bash
---noproxy '*'
-```
+`remork watch`
 
-本地客户端可以用 header 标记来源。daemon 会把它写入 operation log：
+Keeps a local working copy refreshed from daemon file events.
 
-```bash
-export CLIENT_ID=tao-macbook
-```
+`remork host`
 
-后续 curl 可加：
+Manages daemon endpoint aliases.
 
-```bash
--H "X-Remork-Client-ID: $CLIENT_ID"
-```
+`remork workspace`
 
-### 读取 manifest
+Inspects or removes local workspace bindings.
 
-```bash
-curl -fsS "$REMORKD/manifest?root=$ROOT&path=.&recursive=true"
-```
+## Debug and maintenance commands
 
-返回每个文件的 path、type、size、mtime、revision、hash 和 large 标记。小文件会有 `sha256:<hex>` hash，大文件 hash 可为空。
+`remork doctor`
 
-### 下载文件
+Checks local config, current workspace binding, token setup, daemon reachability,
+remote root allowlist, manifest access, and operation log access.
 
-```bash
-curl -fsS "$REMORKD/download?root=$ROOT&path=src/main.go" -o main.go
-```
+`remork debug manifest`
 
-Range 下载：
+Fetches daemon manifest data for troubleshooting scanner, ignore, hash, and
+large-file behavior.
 
-```bash
-curl -fsS \
-  -H 'Range: bytes=0-1023' \
-  "$REMORKD/download?root=$ROOT&path=large.bin" \
-  -o large.bin.part
-```
+`remork debug events`
 
-### 显式 apply
+Connects to daemon file events and prints normalized event information.
 
-先把远端当前 base 下载到文件，再对这个文件计算 base hash。不要把 `curl` 输出放进 shell 变量后再 hash；shell 变量容易丢掉末尾换行，导致 hash 不一致。
+`remork debug api`
 
-```bash
-curl -fsS "$REMORKD/download?root=$ROOT&path=a.txt" -o /tmp/remork-base-a.txt
-base_hash="sha256:$(shasum -a 256 /tmp/remork-base-a.txt | awk '{print $1}')"
-```
+Runs direct daemon API probes and prints concise transport diagnostics.
 
-然后发 changeset：
+`remork daemon status HOST`
 
-```bash
-printf 'after\n' > /tmp/remork-new-a.txt
-content_b64="$(base64 < /tmp/remork-new-a.txt | tr -d '\n')"
+Loads the configured host, calls `/status`, and prints daemon version, platform,
+roots, large-file threshold, watch support, and local auth state.
 
-cat > /tmp/remork-apply.json <<EOF
-{
-  "changes": [
-    {
-      "path": "a.txt",
-      "kind": "update",
-      "base_hash": "$base_hash",
-      "content": "$content_b64"
-    }
-  ]
-}
-EOF
+`remork daemon install HOST --root /remote/root`
 
-curl -fsS \
-  -X POST \
-  -H 'Content-Type: application/json' \
-  -H "X-Remork-Client-ID: $CLIENT_ID" \
-  --data @/tmp/remork-apply.json \
-  "$REMORKD/apply?root=$ROOT"
-```
+Prints exact offline `scp` and `ssh` commands for copying and starting a
+prebuilt daemon. Use `--ssh`, `--platform`, `--local-bin`, `--remote-bin`,
+`--addr`, and `--token-file` when the defaults are not correct.
 
-注意：`content` 是 JSON 的 `[]byte` 字段，Go 的 JSON 编码会用 base64。上面 `YWZ0ZXIK` 是 `after\n`。
+`remork daemon upgrade HOST`
 
-支持的 change kind：
+Prints exact commands for replacing the remote daemon binary. Start flags are
+included when `--root` is provided.
+
+## Offline daemon deployment
+
+Release packaging creates these files:
 
 ```text
-create
-update
-delete
+dist/remork-darwin-arm64
+dist/remork-darwin-amd64
+dist/remork-linux-arm64
+dist/remork-linux-amd64
+dist/remorkd-darwin-arm64
+dist/remorkd-darwin-amd64
+dist/remorkd-linux-arm64
+dist/remorkd-linux-amd64
+dist/remorkd.example.toml
+dist/checksums.txt
+dist/README-release.md
 ```
 
-如果 base hash 不匹配，daemon 返回 conflict，不会部分写入 changeset。
-
-当前 HTTP 状态码语义：
-
-```text
-200  apply 成功
-400  changeset 非法，例如 path 逃逸或未知 kind
-409  base hash 冲突或 create/delete/update 语义冲突
-```
-
-### 执行远端命令
+For a Linux arm64 remote:
 
 ```bash
-curl -fsS \
-  -X POST \
-  -H 'Content-Type: application/json' \
-  -H "X-Remork-Client-ID: $CLIENT_ID" \
-  --data '{"root":"'"$ROOT"'","cwd":"'"$ROOT"'","command":["sh","-c","pwd && ls"]}' \
-  "$REMORKD/exec"
-```
-
-返回：
-
-```json
-{
-  "stdout": "...",
-  "stderr": "...",
-  "exit_code": 0,
-  "timed_out": false
-}
-```
-
-`cwd` 必须在允许的 root 内。命令超时时会被 kill，并返回 `timed_out=true`。
-
-### 操作日志
-
-daemon 会记录本地客户端发给它的请求，主要用于回答：
-
-```text
-哪个本地机器/Agent 发起了 apply、exec、download、shell？
-什么时候发起，成功还是失败？
-apply 涉及哪些路径？
-exec 命令是什么，exit code 是多少？
-```
-
-查询最近操作：
-
-```bash
-curl -fsS "$REMORKD/operations?root=$ROOT&limit=20"
-```
-
-日志文件在远端：
-
-```text
-$ROOT/.remork/log/operations.jsonl
-```
-
-每个 `--root` 都有自己的 `.remork/log`，不会和同一台服务器上的其它 workspace 混在一起。
-
-典型返回：
-
-```json
-{
-  "entries": [
-    {
-      "op_id": "op_...",
-      "time_start": "2026-05-01T...",
-      "time_end": "2026-05-01T...",
-      "client_id": "tao-macbook",
-      "workspace_root": "/path/to/workspace",
-      "operation": "apply",
-      "request_summary": {
-        "changes": [
-          {
-            "path": "a.txt",
-            "kind": "update",
-            "content_bytes": 6,
-            "base_hash_prefix": "sha256:..."
-          }
-        ]
-      },
-      "result": "success",
-      "status_code": 200,
-      "changed_paths": ["a.txt"]
-    }
-  ]
-}
-```
-
-日志会避免保存文件内容：`apply` 只记录 path、kind、content size、base hash 前缀；`shell` 只记录连接打开/关闭，不记录完整交互内容。
-
-### 文件事件
-
-`/events` 是 WebSocket endpoint：
-
-```text
-ws://HOST:PORT/events?root=/path/to/workspace
-```
-
-事件包含：
-
-```json
-{
-  "kind": "create|update|delete|rename|overflow",
-  "path": "relative/path",
-  "revision": "..."
-}
-```
-
-如果收到 `overflow` 或 `resync_required=true`，客户端应该重新拉 manifest。watch/events 只是加速路径，正确性仍以 manifest reconciliation 为准。
-
-### 交互式 shell
-
-`/shell` 是 WebSocket endpoint：
-
-```text
-ws://HOST:PORT/shell?root=/path/to/workspace
-```
-
-当前实现会在 root 目录下启动 `sh` PTY。WebSocket 客户端向连接写入 bytes，daemon 会把 shell 输出写回 WebSocket。
-
-`/events` 和 `/shell` 不能用普通 `curl` 验证。当前仓库用 Go 测试覆盖了这两个 endpoint。如果本机有 `websocat`，可以手动试：
-
-```bash
-export WS=ws://127.0.0.1:7731
-
-# 终端 1：监听事件
-websocat "$WS/events?root=$ROOT"
-
-# 终端 2：触发事件
-touch "$ROOT/watched.txt"
-```
-
-shell：
-
-```bash
-websocat -t "$WS/shell?root=$ROOT"
-```
-
-当前 shell 是 MVP 级别：固定启动 `sh`，默认 `24x80`，还没有 resize 协议、detach/attach UX 或结构化错误帧。
-
-## 可复制的本地 smoke test
-
-下面这段会在本机创建临时 workspace，启动 daemon，验证 manifest、download、apply、exec，然后清理：
-
-```bash
-set -euo pipefail
-
 scripts/build-release.sh dev
-daemon="dist/remorkd-$(go env GOOS)-$(go env GOARCH)"
-root="$(mktemp -d)"
-printf 'hello\n' > "$root/a.txt"
-
-"$daemon" --root "$root" --addr 127.0.0.1:7731 >/tmp/remorkd-local.log 2>&1 &
-pid=$!
-trap 'kill "$pid" 2>/dev/null || true; rm -rf "$root" /tmp/remorkd-local.log /tmp/remork-apply.json /tmp/remork-base-a.txt /tmp/remork-new-a.txt /tmp/remork-manifest.json' EXIT
-sleep 1
-
-REMORKD=http://127.0.0.1:7731
-ROOT="$root"
-CLIENT_ID=local-smoke
-
-curl -fsS "$REMORKD/manifest?root=$ROOT&path=.&recursive=true" >/tmp/remork-manifest.json
-curl -fsS "$REMORKD/download?root=$ROOT&path=a.txt" -o /tmp/remork-base-a.txt
-base_hash="sha256:$(shasum -a 256 /tmp/remork-base-a.txt | awk '{print $1}')"
-
-printf 'after\n' > /tmp/remork-new-a.txt
-content_b64="$(base64 < /tmp/remork-new-a.txt | tr -d '\n')"
-cat > /tmp/remork-apply.json <<EOF
-{"changes":[{"path":"a.txt","kind":"update","base_hash":"$base_hash","content":"$content_b64"}]}
-EOF
-
-curl -fsS -X POST -H 'Content-Type: application/json' -H "X-Remork-Client-ID: $CLIENT_ID" --data @/tmp/remork-apply.json "$REMORKD/apply?root=$ROOT"
-curl -fsS -X POST -H 'Content-Type: application/json' -H "X-Remork-Client-ID: $CLIENT_ID" --data '{"root":"'"$ROOT"'","cwd":"'"$ROOT"'","command":["sh","-c","cat a.txt"]}' "$REMORKD/exec"
-curl -fsS "$REMORKD/operations?root=$ROOT&limit=10"
+scp dist/remorkd-linux-arm64 lab-a:/tmp/remorkd
+ssh lab-a 'chmod +x /tmp/remorkd'
+ssh lab-a 'nohup /tmp/remorkd --root /data/project-a --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
+curl --noproxy '*' http://10.0.0.12:17731/status
 ```
 
-远端 smoke test 形状类似，只是把 `dist/remorkd-linux-arm64` 复制到远端、用 `0.0.0.0:17731` 启动，并从本机直连时使用 `curl --noproxy '*'`。
+Or run the smoke helper:
 
-## 代码结构
+```bash
+scripts/remote-smoke.sh \
+  --host lab-a \
+  --probe-host 10.0.0.12 \
+  --root /tmp/remork-e2e \
+  --port 17731 \
+  --binary dist/remorkd-linux-arm64
+```
+
+Cleanup:
+
+```bash
+ssh lab-a 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; rm -f /tmp/remorkd.pid /tmp/remorkd.log /tmp/remorkd'
+```
+
+## Safety model and limitations
+
+Remork Product V1 assumes:
+
+- trusted VPN or private network access;
+- optional shared token auth through an environment variable or token file;
+- explicit remote roots passed to `remorkd`;
+- no automatic writes from local to remote;
+- no remote dependency installation during daemon deployment.
+
+Current limitations:
+
+- no accounts, RBAC, or multi-tenant isolation;
+- no public-internet hardening;
+- no shell detach and attach workflow yet;
+- daemon config is primarily flag-based in Product V1;
+- local config is JSON under `~/.remork`, even though deployment examples may be
+  documented as TOML templates.
+
+## Developer API notes
+
+The CLI uses these daemon APIs internally:
 
 ```text
-cmd/remork/          local CLI skeleton
-cmd/remorkd/         remote daemon entrypoint
-internal/api/        shared wire structs
-internal/paths/      path normalization and workspace escape checks
-internal/manifest/   filesystem manifest scanner and large-file metadata
-internal/state/      local base snapshot and dirty detection
-internal/planner/    sync/pull/delete/conflict planning
-internal/transfer/   local file and .meta materialization
-internal/apply/      changeset apply with base verification
-internal/daemon/     HTTP/WebSocket daemon routes
-internal/client/     HTTP client used by future CLI
-internal/exec/       non-interactive command runner
-internal/ops/        daemon request/operation log stores
-internal/pty/        PTY session manager
-internal/watch/      fsnotify event normalization
-test/e2e/            end-to-end daemon/client workflow tests
+GET  /status
+GET  /manifest?root=<root>&path=<path>&recursive=true
+GET  /download?root=<root>&path=<path>
+POST /apply?root=<root>
+POST /exec
+GET  /operations?root=<root>&limit=<n>
+GET  /events?root=<root>
+GET  /shell?root=<root>
 ```
 
-## 测试
+Clients may send `X-Remork-Client-ID` for operation log attribution. If the
+daemon was started with a shared token, clients must send
+`Authorization: Bearer <token>`.
 
-常规测试：
+Run the core validation suite:
 
 ```bash
 go test ./...
+scripts/build-release.sh dev
 ```
-
-重复跑 e2e：
-
-```bash
-go test ./test/e2e -count=5 -run Test -v
-```
-
-race detector：
-
-```bash
-go test -race ./internal/daemon ./internal/client ./internal/state ./internal/watch ./test/e2e
-```
-
-当前覆盖的关键 edge cases：
-
-- `../escape`、绝对路径、encoded traversal
-- symlink 逃逸
-- root allowlist
-- `.git` / `.remork` 跳过
-- 大文件阈值边界
-- local dirty 不被 sync 覆盖
-- remote delete 与 dirty conflict
-- apply create/update/delete conflict
-- changeset 原子性
-- apply retry 不重复危险写入
-- range download
-- quiet progress
-- exec timeout 和 cwd escape
-- PTY lifecycle
-- watch overflow/delete
-
-## 真实远端验证记录
-
-已经验证过两个 Linux arm64 远端：
-
-```text
-z00879328_docker       root@175.100.2.7:22022
-z00879328_docker_2.6   root@175.100.2.6:2226
-```
-
-验证方式：
-
-- 本地构建 `dist/remorkd-linux-arm64`
-- `scp` 到远端 `/tmp/remorkd`
-- 远端只执行二进制，不安装 Go、不跑包管理器、不需要联网
-- 远端 localhost manifest curl 通过
-- 本机通过 VPN IP + `curl --noproxy '*'` 直连 manifest 通过
-- `/tmp/remorkd*` 和 `/tmp/remork-e2e` 已清理
-
-## 下一步开发建议
-
-最自然的下一步是把当前内部能力接成真正的 CLI：
-
-1. `remork host add`
-2. `remork workspace add`
-3. `remork sync`
-4. `remork pull`
-5. `remork diff`
-6. `remork apply`
-7. `remork exec`
-8. `remork shell`
-9. `remork watch`
-
-实现 CLI 时应继续复用现有包，不要重新写一套逻辑：
-
-- sync/pull 决策走 `internal/planner`
-- 下载和 meta 落盘走 `internal/transfer`
-- dirty 检测走 `internal/state`
-- HTTP 调用走 `internal/client`
-- 远端正确性以 `internal/daemon` + manifest/apply 校验为准
