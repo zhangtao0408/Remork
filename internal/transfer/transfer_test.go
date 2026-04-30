@@ -77,6 +77,50 @@ func TestWriteLargeMetaRejectsPathEscape(t *testing.T) {
 	}
 }
 
+func TestWriteFileRejectsSymlinkDirectoryEscape(t *testing.T) {
+	local := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(local, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	err := WriteFile(local, "link/escape.txt", []byte("x"))
+	if err == nil {
+		t.Fatal("expected symlink escape error")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "escape.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside file should not exist: %v", statErr)
+	}
+}
+
+func TestWriteLargeMetaRejectsSymlinkDirectoryEscape(t *testing.T) {
+	local := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(local, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	err := WriteLargeMeta(local, "link/big.bin", api.LargeFileMeta{Kind: "remote-large-file"})
+	if err == nil {
+		t.Fatal("expected symlink escape error")
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "big.bin.meta")); !os.IsNotExist(statErr) {
+		t.Fatalf("outside meta file should not exist: %v", statErr)
+	}
+}
+
+func TestLocalPathAllowsNewNestedDirectories(t *testing.T) {
+	root := t.TempDir()
+
+	err := WriteFile(root, "src/new.txt", []byte("x"))
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "src", "new.txt")); statErr != nil {
+		t.Fatalf("new nested file should exist: %v", statErr)
+	}
+}
+
 func TestWriteFileUsesTempThenFinalName(t *testing.T) {
 	root := t.TempDir()
 	if err := WriteFile(root, "a.txt", []byte("hello")); err != nil {
