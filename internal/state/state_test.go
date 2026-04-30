@@ -45,6 +45,21 @@ func TestBasePathRejectsEscape(t *testing.T) {
 	}
 }
 
+func TestBasePathRejectsSymlinkBaseRoot(t *testing.T) {
+	stateDir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(stateDir, "base")); err != nil {
+		t.Fatalf("symlink base root: %v", err)
+	}
+
+	if _, err := BasePath(stateDir, "a.txt"); err == nil {
+		t.Fatal("BasePath accepted symlink base root, want error")
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "a.txt")); !os.IsNotExist(err) {
+		t.Fatalf("outside path was touched: %v", err)
+	}
+}
+
 func TestDirtyDetectionFindsModifyCreateDelete(t *testing.T) {
 	local := t.TempDir()
 	mustWrite(t, filepath.Join(local, "changed.txt"), []byte("after"))
@@ -61,6 +76,52 @@ func TestDirtyDetectionFindsModifyCreateDelete(t *testing.T) {
 	assertChange(t, dirty, "changed.txt", ChangeModify)
 	assertChange(t, dirty, "new.txt", ChangeCreate)
 	assertChange(t, dirty, "deleted.txt", ChangeDelete)
+}
+
+func TestDetectDirtyRejectsTrackedPathEscape(t *testing.T) {
+	parent := t.TempDir()
+	local := filepath.Join(parent, "local")
+	if err := os.Mkdir(local, 0o755); err != nil {
+		t.Fatalf("mkdir local: %v", err)
+	}
+	outside := filepath.Join(parent, "outside.txt")
+	mustWrite(t, outside, []byte("outside"))
+
+	snap := Snapshot{WorkspaceRef: "lab:/workspace", Entries: map[string]TrackedFile{
+		"../outside.txt": {Path: "../outside.txt", BaseHash: HashBytes([]byte("outside")), Type: api.FileTypeFile},
+	}}
+	if _, err := DetectDirty(local, snap); err == nil {
+		t.Fatal("DetectDirty accepted tracked path escape, want error")
+	}
+}
+
+func TestDetectDirtyRejectsTrackedSymlinkFile(t *testing.T) {
+	local := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	mustWrite(t, outside, []byte("outside"))
+	if err := os.Symlink(outside, filepath.Join(local, "a.txt")); err != nil {
+		t.Fatalf("symlink local file: %v", err)
+	}
+
+	snap := Snapshot{WorkspaceRef: "lab:/workspace", Entries: map[string]TrackedFile{
+		"a.txt": {Path: "a.txt", BaseHash: HashBytes([]byte("outside")), Type: api.FileTypeFile},
+	}}
+	if _, err := DetectDirty(local, snap); err == nil {
+		t.Fatal("DetectDirty accepted tracked symlink file, want error")
+	}
+}
+
+func TestDetectDirtyIgnoresLocalBindingMarker(t *testing.T) {
+	local := t.TempDir()
+	mustWrite(t, filepath.Join(local, ".remork-local.json"), []byte(`{"host":"lab"}`))
+
+	dirty, err := DetectDirty(local, Snapshot{Entries: map[string]TrackedFile{}})
+	if err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	if len(dirty) != 0 {
+		t.Fatalf("binding marker must be ignored: %#v", dirty)
+	}
 }
 
 func TestDetectDirtyIgnoresMetaPlaceholderEdits(t *testing.T) {

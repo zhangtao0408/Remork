@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -59,10 +60,30 @@ func (s Store) BasePath(remotePath string) (string, error) {
 
 func BasePath(stateDir, remotePath string) (string, error) {
 	baseDir := filepath.Join(stateDir, "base")
+	if err := rejectSymlinkBaseDir(baseDir); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return "", err
 	}
+	if err := rejectSymlinkBaseDir(baseDir); err != nil {
+		return "", err
+	}
 	return transfer.LocalPath(baseDir, remotePath)
+}
+
+func rejectSymlinkBaseDir(baseDir string) error {
+	info, err := os.Lstat(baseDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("base cache root %q is a symlink", baseDir)
+	}
+	return nil
 }
 
 func (s Store) Save(snapshot Snapshot) error {
@@ -112,8 +133,11 @@ func DetectDirty(localRoot string, snap Snapshot) ([]DirtyChange, error) {
 			continue
 		}
 		seen[path] = true
-		full := filepath.Join(localRoot, filepath.FromSlash(path))
-		info, err := os.Stat(full)
+		full, err := transfer.LocalPath(localRoot, path)
+		if err != nil {
+			return nil, err
+		}
+		info, err := os.Lstat(full)
 		if os.IsNotExist(err) {
 			changes = append(changes, DirtyChange{Path: path, Kind: ChangeDelete})
 			continue
@@ -147,7 +171,7 @@ func DetectDirty(localRoot string, snap Snapshot) ([]DirtyChange, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if strings.HasSuffix(rel, ".meta") {
+		if rel == ".remork-local.json" || strings.HasSuffix(rel, ".meta") {
 			return nil
 		}
 		if !seen[rel] {

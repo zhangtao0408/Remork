@@ -153,6 +153,25 @@ func TestRemorkProductRestoreMissingBaseCacheSuggestsForceSync(t *testing.T) {
 	}
 }
 
+func TestRemorkProductRestoreAllKeepsBindingMarker(t *testing.T) {
+	h := newCLIHarness(t)
+	h.writeRemote("a.txt", "one\n")
+	h.bindAndSync()
+	h.writeLocal("new.txt", "local-only\n")
+
+	h.runInLocal("restore", "--all")
+
+	if _, err := os.Stat(filepath.Join(h.local, workspace.MarkerName)); err != nil {
+		t.Fatalf("binding marker missing after restore --all: %v", err)
+	}
+	if _, _, err := workspace.ResolveFrom(h.local); err != nil {
+		t.Fatalf("resolve binding after restore --all: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(h.local, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("local-only file still exists after restore --all: %v", err)
+	}
+}
+
 type cliHarness struct {
 	t         *testing.T
 	home      string
