@@ -17,6 +17,14 @@ func TestTokenFromEnv(t *testing.T) {
 	}
 }
 
+func TestTokenFromEnvRejectsEmptyValue(t *testing.T) {
+	t.Setenv("REMORK_EMPTY_TOKEN", "")
+
+	if _, err := TokenFromEnv("REMORK_EMPTY_TOKEN"); err == nil {
+		t.Fatal("TokenFromEnv should reject empty token env")
+	}
+}
+
 func TestAuthorizeBearerToken(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, "http://remork.test/status", nil)
 	if err != nil {

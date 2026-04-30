@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"remork/internal/api"
 	"remork/internal/apply"
@@ -44,8 +45,12 @@ func NewWithOptions(opts Options) Client {
 	return Client{base: opts.BaseURL, http: httpClient, clientID: opts.ClientID, token: opts.Token}
 }
 
+func (c Client) endpoint(path string) string {
+	return strings.TrimRight(c.base, "/") + path
+}
+
 func (c Client) Status() (api.StatusResponse, error) {
-	u, _ := url.Parse(c.base + "/status")
+	u, _ := url.Parse(c.endpoint("/status"))
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return api.StatusResponse{}, err
@@ -66,7 +71,7 @@ func (c Client) Status() (api.StatusResponse, error) {
 }
 
 func (c Client) Manifest(root, path string) (api.ManifestResponse, error) {
-	u, _ := url.Parse(c.base + "/manifest")
+	u, _ := url.Parse(c.endpoint("/manifest"))
 	q := u.Query()
 	q.Set("root", root)
 	q.Set("path", path)
@@ -100,7 +105,7 @@ func (c Client) DownloadRange(root, path string, start, end int64) ([]byte, erro
 }
 
 func (c Client) Apply(root string, cs apply.Changeset) (apply.Result, error) {
-	u, _ := url.Parse(c.base + "/apply")
+	u, _ := url.Parse(c.endpoint("/apply"))
 	q := u.Query()
 	q.Set("root", root)
 	u.RawQuery = q.Encode()
@@ -130,7 +135,7 @@ func (c Client) Apply(root string, cs apply.Changeset) (apply.Result, error) {
 }
 
 func (c Client) Exec(root, cwd string, command []string, timeoutMillis int64) (execx.Result, error) {
-	u, _ := url.Parse(c.base + "/exec")
+	u, _ := url.Parse(c.endpoint("/exec"))
 	reqBody := api.ExecRequest{Root: root, Cwd: cwd, Command: command, TimeoutMillis: timeoutMillis}
 	data, err := json.Marshal(reqBody)
 	if err != nil {
@@ -157,7 +162,7 @@ func (c Client) Exec(root, cwd string, command []string, timeoutMillis int64) (e
 }
 
 func (c Client) Operations(root string, limit int) ([]ops.Entry, error) {
-	u, _ := url.Parse(c.base + "/operations")
+	u, _ := url.Parse(c.endpoint("/operations"))
 	q := u.Query()
 	if root != "" {
 		q.Set("root", root)
@@ -190,7 +195,7 @@ func (c Client) Operations(root string, limit int) ([]ops.Entry, error) {
 }
 
 func (c Client) download(root, path, byteRange string) ([]byte, error) {
-	u, _ := url.Parse(c.base + "/download")
+	u, _ := url.Parse(c.endpoint("/download"))
 	q := u.Query()
 	q.Set("root", root)
 	q.Set("path", path)

@@ -27,17 +27,28 @@ func main() {
 	if *root == "" {
 		log.Fatal("--root is required")
 	}
-	if *token != "" && *tokenFile != "" {
-		log.Fatal("--token and --token-file cannot both be set")
-	}
-	resolvedToken := *token
-	if *tokenFile != "" {
-		data, err := os.ReadFile(*tokenFile)
-		if err != nil {
-			log.Fatal(err)
-		}
-		resolvedToken = strings.TrimSpace(string(data))
+	resolvedToken, err := resolveToken(*token, *tokenFile)
+	if err != nil {
+		log.Fatal(err)
 	}
 	srv := daemon.NewServer(daemon.Config{Version: version, Roots: []string{*root}, LargeThreshold: 128 << 20, Token: resolvedToken})
 	log.Fatal(http.ListenAndServe(*addr, srv.Handler()))
+}
+
+func resolveToken(token, tokenFile string) (string, error) {
+	if token != "" && tokenFile != "" {
+		return "", fmt.Errorf("--token and --token-file cannot both be set")
+	}
+	if tokenFile == "" {
+		return token, nil
+	}
+	data, err := os.ReadFile(tokenFile)
+	if err != nil {
+		return "", err
+	}
+	resolved := strings.TrimSpace(string(data))
+	if resolved == "" {
+		return "", fmt.Errorf("token file %q is empty", tokenFile)
+	}
+	return resolved, nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 )
 
 var ErrUnauthorized = errors.New("unauthorized")
@@ -16,6 +17,10 @@ func TokenFromEnv(name string) (string, error) {
 	token, ok := os.LookupEnv(name)
 	if !ok {
 		return "", fmt.Errorf("token env %q is not set", name)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", fmt.Errorf("token env %q is empty", name)
 	}
 	return token, nil
 }

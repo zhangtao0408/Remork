@@ -138,6 +138,30 @@ func TestClientSendsClientIDAndBearerToken(t *testing.T) {
 	}
 }
 
+func TestClientTrimsTrailingSlashFromBaseURL(t *testing.T) {
+	var sawStatus bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			t.Errorf("path = %q, want /status", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		sawStatus = true
+		if err := json.NewEncoder(w).Encode(api.StatusResponse{Version: "test"}); err != nil {
+			t.Errorf("encode: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewWithOptions(Options{BaseURL: srv.URL + "/"})
+	if _, err := c.Status(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !sawStatus {
+		t.Fatal("status endpoint was not called")
+	}
+}
+
 func TestClientReturnsHTTPErrorForUnavailableDaemon(t *testing.T) {
 	c := New("http://127.0.0.1:1")
 	_, err := c.Manifest("/tmp/missing", ".")
