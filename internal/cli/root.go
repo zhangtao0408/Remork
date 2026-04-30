@@ -47,9 +47,10 @@ func NewRootCommand(opts Options) *cobra.Command {
 	}
 
 	root := &cobra.Command{
-		Use:          "remork",
-		Short:        "Control remote workspaces from a local working copy",
-		SilenceUsage: true,
+		Use:           "remork",
+		Short:         "Control remote workspaces from a local working copy",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
 	root.SetHelpTemplate(productHelpTemplate)
 	addVersionCommand(root, opts.Version)

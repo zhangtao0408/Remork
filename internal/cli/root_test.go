@@ -67,3 +67,15 @@ func TestExecAliasUsesRunPlaceholderHandler(t *testing.T) {
 		t.Fatalf("exec error %q, want run error %q", execErr.Error(), runErr.Error())
 	}
 }
+
+func TestRootCommandSilencesCobraErrorPrinting(t *testing.T) {
+	cmd := NewRootCommand(Options{Version: "test"})
+	out, err := executeCommand(cmd, "run")
+	if err == nil {
+		t.Fatal("run should return the product placeholder error")
+	}
+
+	if out.String() != "" {
+		t.Fatalf("expected cobra to leave error output empty, got %q", out.String())
+	}
+}
