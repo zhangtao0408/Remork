@@ -47,7 +47,7 @@ func watchEvents(ctx context.Context, cmd *cobra.Command, runCtx runContext) err
 		fmt.Fprintf(cmd.OutOrStdout(), "watching %s revision %s\n", runCtx.binding.RemoteRoot, lastRevision)
 		err = streamWorkspaceEvents(ctx, runCtx, func(ev watch.Event) error {
 			fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s\n", ev.Revision, ev.Kind, ev.Path)
-			if ev.ResyncRequired || ev.Kind == watch.EventOverflow || revisionGap(lastRevision, ev.Revision) {
+			if needsWatchReconcile(ev) {
 				manifest, err := runCtx.client.Manifest(runCtx.binding.RemoteRoot, ".")
 				if err != nil {
 					return err
@@ -126,6 +126,10 @@ func buildEventsURL(baseURL, root string) (string, error) {
 
 func revisionGap(last, next string) bool {
 	return last != "" && next != "" && last != next
+}
+
+func needsWatchReconcile(ev watch.Event) bool {
+	return ev.ResyncRequired || ev.Kind == watch.EventOverflow
 }
 
 func writeEventJSONLine(w interface{ Write([]byte) (int, error) }, ev watch.Event) error {

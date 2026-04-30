@@ -213,8 +213,32 @@ func TestRemorkProductLogShowsWorkspaceOperations(t *testing.T) {
 
 	out := h.runInLocal("log", "--limit", "5")
 
+	mustContain(t, out, "time")
+	mustContain(t, out, "client")
+	mustContain(t, out, "operation")
+	mustContain(t, out, "result")
+	mustContain(t, out, "summary")
 	mustContain(t, out, "run")
+	mustContain(t, out, "cat a.txt")
 	mustContain(t, out, productTestClientID)
+
+	jsonOut := h.runInLocal("log", "--limit", "5", "--json")
+	var entries []map[string]any
+	if err := json.Unmarshal([]byte(jsonOut), &entries); err != nil {
+		t.Fatalf("unmarshal log json: %v\noutput:\n%s", err, jsonOut)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("log json has no entries: %s", jsonOut)
+	}
+	var sawExec bool
+	for _, entry := range entries {
+		if entry["operation"] == "exec" && entry["client_id"] == productTestClientID {
+			sawExec = true
+		}
+	}
+	if !sawExec {
+		t.Fatalf("log json missing raw exec entry for %s: %#v", productTestClientID, entries)
+	}
 }
 
 func TestRemorkProductDoctorReportsReady(t *testing.T) {
@@ -225,6 +249,44 @@ func TestRemorkProductDoctorReportsReady(t *testing.T) {
 	out := h.runInLocal("doctor")
 
 	mustContain(t, out, "OK: workspace is ready")
+}
+
+func TestRemorkProductDoctorReportsUnboundFailure(t *testing.T) {
+	h := newProductHarness(t)
+	h.run("host", "add", "lab", "--url", h.serverURL)
+
+	out, code := h.runInLocalExpectCode(2, "doctor")
+
+	mustContain(t, out, "FAILED:")
+	mustContain(t, out, "Fix:")
+	mustContain(t, out, "remork init")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+}
+
+func TestRemorkProductDebugManifestAndAPI(t *testing.T) {
+	h := newProductHarness(t)
+	h.writeRemote("a.txt", "one\n")
+	h.bindAndSync()
+
+	manifestOut := h.runInLocal("debug", "manifest")
+	mustContain(t, manifestOut, "entries:")
+	mustContain(t, manifestOut, "a.txt")
+
+	manifestJSON := h.runInLocal("debug", "manifest", "--json")
+	var decodedManifest map[string]any
+	if err := json.Unmarshal([]byte(manifestJSON), &decodedManifest); err != nil {
+		t.Fatalf("unmarshal debug manifest json: %v\noutput:\n%s", err, manifestJSON)
+	}
+	if decodedManifest["root"] != h.remote {
+		t.Fatalf("manifest root = %#v, want %q", decodedManifest["root"], h.remote)
+	}
+
+	apiOut := h.runInLocal("debug", "api")
+	mustContain(t, apiOut, "status OK")
+	mustContain(t, apiOut, "manifest OK")
+	mustContain(t, apiOut, "operations OK")
 }
 
 type cliHarness struct {
