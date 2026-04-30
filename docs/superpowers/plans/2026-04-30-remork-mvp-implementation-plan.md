@@ -3319,11 +3319,51 @@ git commit -m "test: add remork end-to-end workflow coverage"
 - Modify: `internal/daemon/server_test.go`
 - Modify: `internal/apply/apply_test.go`
 - Modify: `internal/planner/planner_test.go`
+- Modify: `internal/state/state_test.go`
+- Modify: `internal/manifest/manifest_test.go`
+- Modify: `internal/transfer/transfer_test.go`
+- Modify: `internal/client/client_test.go`
 - Modify: `internal/watch/watch_test.go`
 - Modify: `internal/exec/exec_test.go`
 - Modify: `internal/pty/session_test.go`
 
-- [ ] **Step 1: Add daemon path edge test**
+### Edge-Case Validation Matrix
+
+Every row below must be represented by either a unit test, an integration test, or an explicit remote validation command before implementation is considered complete.
+
+| Area | Edge case | Required validation |
+| --- | --- | --- |
+| Path safety | `../escape`, absolute path, encoded traversal, symlink escape | `internal/paths` and `internal/daemon` tests reject with error or HTTP 400 |
+| Root allowlist | Request uses a root not configured in daemon | daemon endpoint returns HTTP 403 |
+| Manifest | Empty directory, nested directories, `.git` directory, `.remork` directory | scanner returns stable manifest and skips tool/project internals |
+| Manifest errors | Permission-denied file or disappearing file during scan | manifest records per-entry error or skips safely; daemon does not crash |
+| Hash policy | Small file hash present, large file hash optional, changed size/mtime updates revision | manifest tests check hash/revision behavior |
+| Large file threshold | File exactly `128MB`, file above `128MB`, directory pull with and without `--include-large` | planner chooses download, meta, or full pull correctly |
+| Meta placeholders | Editing `*.meta` locally | dirty detection ignores placeholder edits for apply |
+| Sync dirty protection | Local dirty file plus remote update | planner emits conflict and never overwrites local dirty content |
+| Remote delete | Remote deletes clean file vs local dirty file | clean file is deleted locally; dirty file becomes conflict |
+| Local create | Local creates path that remote also created | apply reports create conflict |
+| Local delete | Local deletes path that remote changed | apply reports delete conflict |
+| Apply update | Remote base hash matches vs changed | match applies atomically; mismatch leaves remote unchanged |
+| Apply atomicity | Changeset contains one valid change and one conflict | first version rejects all changes; no partial write |
+| Apply idempotency | Retry same changeset after network loss | either already-applied success or clear duplicate/conflict result, never double-apply unsafe writes |
+| Binary and large apply | Replacing pulled large file | chunk upload or whole-file replacement verifies base before atomic replace |
+| Transfer | Range request, interrupted download, temp-file rename | range bytes match; partial temp file never becomes final file |
+| Progress | Interactive mode, quiet mode, force mode | progress shown when interactive; quiet emits no prompt-only output |
+| Prompt policy | Confirmation required in `--quiet` without `--force` | command fails fast instead of blocking |
+| Exec safe mode | clean/stale/dirty/conflict states | safe mode syncs clean stale state and refuses dirty/conflict state |
+| Exec remote-only | local dirty state exists | `--remote-only` runs and clearly reports local state ignored |
+| Exec timeout | command exceeds timeout | process is killed and result marks `timed_out=true` |
+| PTY | start, resize, Ctrl-C, detach, attach, close, idle reap | PTY tests cover lifecycle and no leaked session after close |
+| Watch | create/update/delete/rename events | watcher emits normalized event paths |
+| Watch loss | overflow, revision gap, reconnect | event stream emits or triggers `resync_required`; CLI reconciles manifest |
+| Daemon restart | session/watch interrupted | client reports lost PTY/watch and recovers sync through manifest |
+| Network | HTTP error, refused connection, partial body | client returns typed error; sync/apply state remains unchanged |
+| Offline remote | remote lacks Go/internet/common tools | `remorkd-linux-arm64` runs after copy; no remote build/install step |
+| Direct VPN transport | daemon works on remote localhost but not local IP | classify as VPN/firewall exposure, not daemon startup failure |
+| Cleanup | failed remote validation leaves process/file under `/tmp` | cleanup command kills pid and removes `/tmp/remork*` artifacts |
+
+- [ ] **Step 1: Add daemon path, allowlist, and HTTP error tests**
 
 Append to `internal/daemon/server_test.go`:
 
@@ -3341,9 +3381,158 @@ func TestDownloadParentTraversalReturnsBadRequest(t *testing.T) {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 }
+
+func TestManifestUnknownRootReturnsForbidden(t *testing.T) {
+	root := t.TempDir()
+	other := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/manifest?root=" + other + "&path=.&recursive=true")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestDownloadEncodedTraversalReturnsBadRequest(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/download?root=" + root + "&path=%2e%2e/escape")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestDownloadSymlinkEscapeReturnsBadRequest(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	mustWrite(t, filepath.Join(outside, "secret.txt"), []byte("secret"))
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "link.txt")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/download?root=" + root + "&path=link.txt")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
 ```
 
-- [ ] **Step 2: Add apply conflict edge tests**
+When these tests are added, update daemon path resolution so `/download` rejects symlinks whose evaluated target is outside the configured workspace root. The remote server must not serve files through symlink escapes even if the textual path is inside the root.
+
+- [ ] **Step 2: Add manifest, state, transfer, and planner edge tests**
+
+Append to `internal/manifest/manifest_test.go`:
+
+```go
+func TestScanHandlesEmptyDirectory(t *testing.T) {
+	root := t.TempDir()
+	got, err := Scan(root, ".", Options{LargeThreshold: 128 << 20})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(got.Entries) != 0 {
+		t.Fatalf("entries %#v", got.Entries)
+	}
+	if got.Revision == "" {
+		t.Fatal("missing revision")
+	}
+}
+
+func TestLargeThresholdBoundary(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "exact.bin"), bytes.Repeat([]byte("x"), 8))
+	mustWrite(t, filepath.Join(root, "above.bin"), bytes.Repeat([]byte("x"), 9))
+	got, err := Scan(root, ".", Options{LargeThreshold: 8})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if findEntry(t, got.Entries, "exact.bin").Large {
+		t.Fatal("file at threshold should sync normally")
+	}
+	if !findEntry(t, got.Entries, "above.bin").Large {
+		t.Fatal("file above threshold should be large")
+	}
+}
+```
+
+Add `bytes` to `internal/manifest/manifest_test.go` imports.
+
+Append to `internal/state/state_test.go`:
+
+```go
+func TestDirtyDetectionSkipsProjectGitDirectory(t *testing.T) {
+	local := t.TempDir()
+	mustWrite(t, filepath.Join(local, ".git", "config"), []byte("ignored"))
+	dirty, err := DetectDirty(local, Snapshot{Entries: map[string]TrackedFile{}})
+	if err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	if len(dirty) != 0 {
+		t.Fatalf("git internals must be ignored: %#v", dirty)
+	}
+}
+```
+
+Append to `internal/transfer/transfer_test.go`:
+
+```go
+func TestWriteFileUsesTempThenFinalName(t *testing.T) {
+	root := t.TempDir()
+	if err := WriteFile(root, "a.txt", []byte("hello")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "a.txt.remork-tmp")); !os.IsNotExist(err) {
+		t.Fatalf("temp file should not remain: %v", err)
+	}
+}
+```
+
+Append to `internal/planner/planner_test.go`:
+
+```go
+func TestSyncDirtyRemoteDeleteBecomesConflict(t *testing.T) {
+	plan := PlanRemoteDeletes(state.Snapshot{Entries: map[string]state.TrackedFile{
+		"deleted.txt": {Path: "deleted.txt", Revision: "rev-old"},
+	}}, Options{Dirty: []state.DirtyChange{{Path: "deleted.txt", Kind: state.ChangeModify}}})
+	assertOp(t, plan, "deleted.txt", OpConflict)
+}
+```
+
+Implement `PlanRemoteDeletes` in Task 4 when this test is added:
+
+```go
+func PlanRemoteDeletes(snap state.Snapshot, opts Options) Plan {
+	dirty := dirtySet(opts.Dirty)
+	var ops []Operation
+	for path, tracked := range snap.Entries {
+		if tracked.Path == "" {
+			continue
+		}
+		if dirty[path] && !opts.Force {
+			ops = append(ops, Operation{Path: path, Kind: OpConflict, Reason: "remote deleted local dirty file"})
+		} else {
+			ops = append(ops, Operation{Path: path, Kind: OpDelete, Reason: "remote deleted file"})
+		}
+	}
+	return Plan{Operations: ops}
+}
+```
+
+- [ ] **Step 3: Add apply conflict, atomicity, and idempotency edge tests**
 
 Append to `internal/apply/apply_test.go`:
 
@@ -3375,9 +3564,29 @@ func TestApplyDeleteConflictsWhenRemoteChanged(t *testing.T) {
 		t.Fatal("delete conflict must not apply")
 	}
 }
+
+func TestApplyRejectsWholeChangesetWhenOneChangeConflicts(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "ok.txt"), []byte("ok-base"))
+	mustWrite(t, filepath.Join(root, "conflict.txt"), []byte("remote-change"))
+	result, err := Apply(root, Changeset{Changes: []Change{
+		{Path: "ok.txt", Kind: ChangeUpdate, BaseHash: state.HashBytes([]byte("ok-base")), Content: []byte("ok-after")},
+		{Path: "conflict.txt", Kind: ChangeUpdate, BaseHash: state.HashBytes([]byte("old-base")), Content: []byte("local-after")},
+	}})
+	if err == nil {
+		t.Fatal("expected conflict")
+	}
+	if result.Applied {
+		t.Fatal("changeset must not partially apply")
+	}
+	data, _ := os.ReadFile(filepath.Join(root, "ok.txt"))
+	if string(data) != "ok-base" {
+		t.Fatalf("valid change was partially applied: %q", data)
+	}
+}
 ```
 
-- [ ] **Step 3: Add planner edge tests**
+- [ ] **Step 4: Add planner large-file policy tests**
 
 Append to `internal/planner/planner_test.go`:
 
@@ -3393,7 +3602,19 @@ func TestPullLargePolicySwitchesBetweenMetaAndDownload(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Add watch, exec, and PTY edge tests**
+- [ ] **Step 5: Add client, watch, exec, and PTY edge tests**
+
+Append to `internal/client/client_test.go`:
+
+```go
+func TestClientReturnsHTTPErrorForUnavailableDaemon(t *testing.T) {
+	c := New("http://127.0.0.1:1")
+	_, err := c.Manifest("/tmp/missing", ".")
+	if err == nil {
+		t.Fatal("expected connection error")
+	}
+}
+```
 
 Append to `internal/watch/watch_test.go`:
 
@@ -3434,17 +3655,41 @@ func TestCloseUnknownSessionIsNoop(t *testing.T) {
 }
 ```
 
-- [ ] **Step 5: Run focused package tests**
+- [ ] **Step 6: Add runtime validation notes to implementation PR or final handoff**
+
+When executing this plan, record the following in the final implementation handoff:
+
+```text
+Automated validation:
+- go test ./...
+- go test ./test/e2e -count=5 -run Test -v
+- go test -race ./internal/daemon ./internal/client ./internal/state ./internal/watch ./test/e2e
+
+Manual/local validation:
+- scripts/build-release.sh dev
+- dist/remorkd-$(go env GOOS)-$(go env GOARCH) --version
+- local daemon manifest curl against a temporary workspace
+
+Remote validation:
+- z00879328_docker remote localhost manifest curl
+- z00879328_docker_2.6 remote localhost manifest curl
+- local direct VPN curl to both remote daemons
+
+Observed failures:
+- classify each failure as code bug, remote permission, missing remote command, VPN/firewall exposure, or flaky watch/PTY behavior
+```
+
+- [ ] **Step 7: Run focused package tests**
 
 Run:
 
 ```bash
-go test ./internal/paths ./internal/manifest ./internal/apply ./internal/planner ./internal/watch ./internal/exec ./internal/pty -run Test -v
+go test ./internal/paths ./internal/manifest ./internal/state ./internal/transfer ./internal/apply ./internal/planner ./internal/client ./internal/watch ./internal/exec ./internal/pty -run Test -v
 ```
 
 Expected: PASS.
 
-- [ ] **Step 6: Run integration tests repeatedly**
+- [ ] **Step 8: Run integration tests repeatedly**
 
 Run:
 
@@ -3454,7 +3699,7 @@ go test ./test/e2e -count=5 -run Test -v
 
 Expected: PASS five times to catch flaky watcher or PTY behavior.
 
-- [ ] **Step 7: Run race detector for non-PTY packages**
+- [ ] **Step 9: Run race detector for non-PTY packages**
 
 Run:
 
@@ -3464,7 +3709,7 @@ go test -race ./internal/daemon ./internal/client ./internal/state ./internal/wa
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add internal test
