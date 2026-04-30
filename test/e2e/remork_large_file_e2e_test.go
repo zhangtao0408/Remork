@@ -40,6 +40,19 @@ func TestRemorkProductLargeFilePullPolicies(t *testing.T) {
 	mustContain(t, status, "Large placeholders: 0")
 }
 
+func TestRemorkProductPullDirectoryDownloadsChildren(t *testing.T) {
+	h := newProductHarnessWithThreshold(t, 128)
+	h.writeRemote("src/a.txt", "a\n")
+	h.writeRemote("src/nested/b.txt", "b\n")
+	h.run("host", "add", "lab", "--url", h.serverURL)
+	h.runInLocal("init", "lab:"+h.remote)
+
+	out := h.runInLocal("pull", "src")
+	mustContain(t, out, "downloaded 2")
+	h.assertLocal("src/a.txt", "a\n")
+	h.assertLocal("src/nested/b.txt", "b\n")
+}
+
 func newProductHarnessWithThreshold(t *testing.T, threshold int64) *cliHarness {
 	t.Helper()
 	h := &cliHarness{

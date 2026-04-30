@@ -131,6 +131,11 @@ func DetectDirty(localRoot string, snap Snapshot) ([]DirtyChange, error) {
 			return nil, err
 		}
 		if tracked.Large && tracked.MetaPath != "" {
+			if _, err := os.Lstat(full); err == nil {
+				changes = append(changes, DirtyChange{Path: path, Kind: ChangeModify})
+			} else if err != nil && !os.IsNotExist(err) {
+				return nil, err
+			}
 			continue
 		}
 		info, err := os.Lstat(full)

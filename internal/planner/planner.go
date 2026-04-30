@@ -75,7 +75,7 @@ func PlanPull(manifest api.ManifestResponse, snap state.Snapshot, opts Options) 
 		if entry.Type != api.FileTypeFile {
 			continue
 		}
-		if opts.TargetPath != "" && entry.Path != opts.TargetPath {
+		if opts.TargetPath != "" && !inTargetScope(entry.Path, opts.TargetPath) {
 			continue
 		}
 		if entry.Large && !opts.IncludeLarge {

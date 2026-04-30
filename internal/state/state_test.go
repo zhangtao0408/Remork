@@ -170,6 +170,21 @@ func TestDetectDirtyIgnoresMetaPlaceholderEdits(t *testing.T) {
 	}
 }
 
+func TestDetectDirtyLargePlaceholderReportsMaterializedFile(t *testing.T) {
+	local := t.TempDir()
+	mustWrite(t, filepath.Join(local, "large.bin"), []byte("local materialized content"))
+	mustWrite(t, filepath.Join(local, "large.bin.meta"), []byte("{}"))
+	snap := Snapshot{WorkspaceRef: "lab:/workspace", Entries: map[string]TrackedFile{
+		"large.bin": {Path: "large.bin", Large: true, MetaPath: "large.bin.meta", Type: api.FileTypeFile},
+	}}
+
+	dirty, err := DetectDirty(local, snap)
+	if err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	assertChange(t, dirty, "large.bin", ChangeModify)
+}
+
 func TestDirtyDetectionSkipsProjectGitDirectory(t *testing.T) {
 	local := t.TempDir()
 	mustWrite(t, filepath.Join(local, ".git", "config"), []byte("ignored"))

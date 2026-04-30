@@ -3,9 +3,11 @@ package syncer
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"remork/internal/client"
@@ -141,6 +143,56 @@ func TestPullForceLargeFileMaterializesAndClearsMeta(t *testing.T) {
 	entry := snap.Entries["model.bin"]
 	if entry.Large || entry.MetaPath != "" {
 		t.Fatalf("snapshot entry = %#v, want materialized non-large", entry)
+	}
+}
+
+func TestPullDoesNotOverwriteMaterializedPlaceholderWithoutForce(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(remote, "model.bin"), []byte("remote"))
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}, LargeThreshold: 4}).Handler())
+	defer srv.Close()
+
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   state.NewStore(filepath.Join(local, ".remork", "state")),
+		LocalRoot:    local,
+		WorkspaceRef: "lab:" + remote,
+		RemoteRoot:   remote,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(local, "model.bin"), []byte("local"))
+
+	result, err := runner.Pull(context.Background(), "model.bin", PullOptions{
+		In:  strings.NewReader("Y\n"),
+		Out: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if result.Conflicts != 1 {
+		t.Fatalf("conflicts = %d, want 1; result=%#v", result.Conflicts, result)
+	}
+	got, err := os.ReadFile(filepath.Join(local, "model.bin"))
+	if err != nil {
+		t.Fatalf("read local: %v", err)
+	}
+	if string(got) != "local" {
+		t.Fatalf("local file overwritten: %q", got)
+	}
+
+	if _, err := runner.Pull(context.Background(), "model.bin", PullOptions{Force: true}); err != nil {
+		t.Fatalf("force pull: %v", err)
+	}
+	got, err = os.ReadFile(filepath.Join(local, "model.bin"))
+	if err != nil {
+		t.Fatalf("read local after force: %v", err)
+	}
+	if string(got) != "remote" {
+		t.Fatalf("force pull did not overwrite: %q", got)
 	}
 }
 

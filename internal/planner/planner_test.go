@@ -46,6 +46,19 @@ func TestPullLargePolicySwitchesBetweenMetaAndDownload(t *testing.T) {
 	assertOp(t, downloadPlan, "big.bin", OpDownload)
 }
 
+func TestPullDirectoryPlansFilesInsideTarget(t *testing.T) {
+	manifest := api.ManifestResponse{Entries: []api.FileEntry{
+		{Path: "src", Type: api.FileTypeDir, Revision: "rev-dir"},
+		{Path: "src/a.txt", Type: api.FileTypeFile, Size: 1, Hash: "sha256:a", Revision: "rev-a"},
+		{Path: "other.txt", Type: api.FileTypeFile, Size: 1, Hash: "sha256:o", Revision: "rev-o"},
+	}}
+
+	plan := PlanPull(manifest, state.Snapshot{}, Options{TargetPath: "src"})
+
+	assertOp(t, plan, "src/a.txt", OpDownload)
+	assertNoOp(t, plan, "other.txt")
+}
+
 func TestSyncSameRevisionLargeToNormalDownloadsFile(t *testing.T) {
 	manifest := api.ManifestResponse{Entries: []api.FileEntry{
 		{Path: "model.bin", Type: api.FileTypeFile, Large: false, Size: 200, Revision: "same"},
@@ -94,4 +107,13 @@ func assertOp(t *testing.T, plan Plan, path string, kind OperationKind) {
 		}
 	}
 	t.Fatalf("missing op %s %s in %#v", kind, path, plan.Operations)
+}
+
+func assertNoOp(t *testing.T, plan Plan, path string) {
+	t.Helper()
+	for _, op := range plan.Operations {
+		if op.Path == path {
+			t.Fatalf("unexpected op for %s in %#v", path, plan.Operations)
+		}
+	}
 }
