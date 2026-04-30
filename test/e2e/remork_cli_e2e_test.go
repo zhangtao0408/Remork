@@ -65,6 +65,27 @@ func TestRemorkProductStatusJSON(t *testing.T) {
 	}
 }
 
+func TestStatusJSONIncludesEmptyPathLists(t *testing.T) {
+	h := newCLIHarness(t)
+	h.writeRemote("a.txt", "one\n")
+	h.bindAndSync()
+
+	out := h.runInLocal("status", "--json")
+	var status map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &status); err != nil {
+		t.Fatalf("unmarshal status json: %v\noutput:\n%s", err, out)
+	}
+	for _, key := range []string{"changed_paths", "conflict_paths"} {
+		raw, ok := status[key]
+		if !ok {
+			t.Fatalf("status json missing %q; output=%s", key, out)
+		}
+		if string(raw) != "[]" {
+			t.Fatalf("%s = %s, want [] ; output=%s", key, raw, out)
+		}
+	}
+}
+
 func TestRemorkProductStatusTextSummary(t *testing.T) {
 	h := newCLIHarness(t)
 	h.writeRemote("a.txt", "one\n")

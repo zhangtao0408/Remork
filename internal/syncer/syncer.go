@@ -53,8 +53,8 @@ type Status struct {
 	RemoteUpdates     int      `json:"remote_updates"`
 	Conflicts         int      `json:"conflicts"`
 	LargePlaceholders int      `json:"large_placeholders"`
-	ChangedPaths      []string `json:"changed_paths,omitempty"`
-	ConflictPaths     []string `json:"conflict_paths,omitempty"`
+	ChangedPaths      []string `json:"changed_paths"`
+	ConflictPaths     []string `json:"conflict_paths"`
 }
 
 type Runner struct {
