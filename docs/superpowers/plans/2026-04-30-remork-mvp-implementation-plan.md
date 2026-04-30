@@ -4,9 +4,9 @@
 
 **Goal:** Build a TDD-first MVP of `remork`: a local CLI plus remote daemon for editable local working copies, explicit apply, sync/pull, safe exec, PTY shell, and watch/events.
 
-**Architecture:** Implement a Go monorepo with two binaries: `remork` for the local CLI and `remorkd` for the remote daemon. Core behavior lives in focused internal packages so the sync planner, manifest scanner, apply checker, state store, and transport client can be tested without running full end-to-end processes. The MVP uses manifest reconciliation as the source of truth and watch/events as a freshness accelerator.
+**Architecture:** Implement a Go monorepo with two binaries: `remork` for the local CLI and `remorkd` for the remote daemon. Go is a build-time dependency only: remote servers receive prebuilt `remorkd` binaries and do not need Go or internet access. Core behavior lives in focused internal packages so the sync planner, manifest scanner, apply checker, state store, and transport client can be tested without running full end-to-end processes.
 
-**Tech Stack:** Go 1.22+, stdlib `net/http`, Cobra CLI, Gorilla WebSocket, fsnotify, creack/pty, JSON state store with atomic writes, Go unit/integration tests.
+**Tech Stack:** Go 1.22+ on the local build machine or CI, stdlib `net/http`, Cobra CLI, Gorilla WebSocket, fsnotify, creack/pty, JSON state store with atomic writes, Go unit/integration tests, cross-compiled release binaries for offline remote servers.
 
 ---
 
@@ -21,6 +21,9 @@ Create this structure:
 ```text
 go.mod
 go.sum
+.gitignore
+scripts/build-release.sh
+deploy/remorkd.example.toml
 cmd/remork/main.go
 cmd/remorkd/main.go
 internal/api/types.go
@@ -69,16 +72,21 @@ Responsibilities:
 - `internal/watch`: filesystem watch event normalization and reconciliation signals.
 - `internal/config`: host/workspace config file handling.
 - `internal/progress`: progress reporter abstraction for interactive and quiet modes.
+- `scripts/build-release.sh`: builds local and cross-compiled release artifacts.
+- `deploy/remorkd.example.toml`: minimal offline daemon config template copied next to `remorkd`.
 
 ## Task 0: Toolchain Bootstrap And Module Skeleton
 
 **Files:**
 - Create: `go.mod`
+- Create: `.gitignore`
+- Create: `scripts/build-release.sh`
+- Create: `deploy/remorkd.example.toml`
 - Create: `cmd/remork/main.go`
 - Create: `cmd/remorkd/main.go`
 - Create: `internal/api/types.go`
 
-- [ ] **Step 1: Verify Go toolchain is unavailable or usable**
+- [ ] **Step 1: Verify local Go toolchain is unavailable or usable**
 
 Run:
 
@@ -92,9 +100,9 @@ Expected on the current machine before bootstrap:
 zsh:1: command not found: go
 ```
 
-If Go is already installed on the execution machine, continue without installing.
+If Go is already installed on the local execution machine or CI, continue without installing. Do not install Go on remote servers; remote servers receive prebuilt `remorkd` binaries.
 
-- [ ] **Step 2: Install Go when missing**
+- [ ] **Step 2: Install Go locally when missing**
 
 Run:
 
@@ -126,7 +134,19 @@ module remork
 go 1.22
 ```
 
-- [ ] **Step 4: Create shared API types**
+- [ ] **Step 4: Create gitignore for generated artifacts**
+
+Create `.gitignore`:
+
+```gitignore
+dist/
+remork
+remorkd
+*.remork-tmp
+*.remork-apply
+```
+
+- [ ] **Step 5: Create shared API types**
 
 Create `internal/api/types.go`:
 
@@ -181,16 +201,27 @@ type StatusResponse struct {
 }
 ```
 
-- [ ] **Step 5: Create stub binaries**
+- [ ] **Step 6: Create stub binaries**
 
 Create `cmd/remork/main.go`:
 
 ```go
 package main
 
-import "fmt"
+import (
+	"flag"
+	"fmt"
+)
+
+var version = "dev"
 
 func main() {
+	showVersion := flag.Bool("version", false, "print version")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println("remork " + version)
+		return
+	}
 	fmt.Println("remork")
 }
 ```
@@ -200,14 +231,84 @@ Create `cmd/remorkd/main.go`:
 ```go
 package main
 
-import "fmt"
+import (
+	"flag"
+	"fmt"
+)
+
+var version = "dev"
 
 func main() {
+	showVersion := flag.Bool("version", false, "print version")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println("remorkd " + version)
+		return
+	}
 	fmt.Println("remorkd")
 }
 ```
 
-- [ ] **Step 6: Resolve dependencies**
+- [ ] **Step 7: Add offline daemon config template**
+
+Create `deploy/remorkd.example.toml`:
+
+```toml
+listen_addr = "0.0.0.0:7731"
+workspace_roots = ["/data/project"]
+large_file_threshold = "128MB"
+
+# Optional deployment guards for VPN environments:
+# allowlist = ["10.0.0.0/8"]
+# token = ""
+```
+
+- [ ] **Step 8: Add release build script**
+
+Create `scripts/build-release.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+version="${1:-dev}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+dist_dir="$repo_root/dist"
+mkdir -p "$dist_dir"
+rm -f "$dist_dir"/remork "$dist_dir"/remorkd-* "$dist_dir"/checksums.txt
+
+build_daemon() {
+  local goos="$1"
+  local goarch="$2"
+  local out="$dist_dir/remorkd-$goos-$goarch"
+  echo "building $out"
+  CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+    go build -trimpath -ldflags "-s -w -X main.version=$version" \
+    -o "$out" ./cmd/remorkd
+}
+
+go build -trimpath -ldflags "-s -w -X main.version=$version" -o "$dist_dir/remork" ./cmd/remork
+build_daemon linux amd64
+build_daemon linux arm64
+build_daemon darwin amd64
+build_daemon darwin arm64
+
+cp "$repo_root/deploy/remorkd.example.toml" "$dist_dir/remorkd.example.toml"
+(
+  cd "$dist_dir"
+  shasum -a 256 remork remorkd-* remorkd.example.toml > checksums.txt
+)
+```
+
+- [ ] **Step 9: Make release script executable**
+
+Run:
+
+```bash
+chmod +x scripts/build-release.sh
+```
+
+- [ ] **Step 10: Resolve dependencies**
 
 Run:
 
@@ -217,21 +318,23 @@ go mod tidy
 
 Expected: no errors are printed. `go.sum` may not exist yet because external dependencies are added in later tasks when their imports first appear.
 
-- [ ] **Step 7: Run tests and builds**
+- [ ] **Step 11: Run tests, builds, and offline daemon artifact build**
 
 Run:
 
 ```bash
 go test ./...
 go build ./cmd/remork ./cmd/remorkd
+scripts/build-release.sh dev
+dist/remorkd-$(go env GOOS)-$(go env GOARCH) --version
 ```
 
-Expected: both commands pass.
+Expected: all commands pass. `dist/checksums.txt` exists, and the local-platform `remorkd` binary prints `remorkd dev`.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 12: Commit**
 
 ```bash
-git add go.mod go.sum cmd internal
+git add go.mod .gitignore scripts deploy cmd internal
 git commit -m "chore: bootstrap remork go module"
 ```
 
@@ -2497,7 +2600,7 @@ Expected: PASS on macOS/Linux. If CI lacks a PTY, skip PTY tests only when `os.G
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/pty
+git add go.mod go.sum internal/pty
 git commit -m "feat: add pty session manager"
 ```
 
@@ -2960,12 +3063,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var version = "dev"
+
 func main() {
 	root := &cobra.Command{Use: "remork"}
 	root.AddCommand(&cobra.Command{
 		Use: "version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("remork dev")
+			fmt.Println("remork " + version)
 		},
 	})
 	root.AddCommand(&cobra.Command{
@@ -2990,16 +3095,24 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 
 	"remork/internal/daemon"
 )
 
+var version = "dev"
+
 func main() {
 	addr := flag.String("addr", "127.0.0.1:7731", "listen address")
 	root := flag.String("root", "", "workspace root")
+	showVersion := flag.Bool("version", false, "print version")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("remorkd " + version)
+		return
+	}
 	if *root == "" {
 		log.Fatal("--root is required")
 	}
@@ -3023,7 +3136,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add cmd internal/config
+git add go.mod go.sum cmd internal/config
 git commit -m "feat: add remork command skeleton and config"
 ```
 
@@ -3350,19 +3463,38 @@ Run:
 ```bash
 go test ./...
 go build ./cmd/remork ./cmd/remorkd
+scripts/build-release.sh dev
 ```
 
-Expected: PASS.
+Expected: PASS. `dist/` contains `remork`, four `remorkd-*` target binaries, `remorkd.example.toml`, and `checksums.txt`.
 
-- [ ] **Step 2: Manual local daemon smoke test**
+- [ ] **Step 2: Verify local-platform release daemon does not need Go at runtime**
 
 Run:
 
 ```bash
+local_daemon="dist/remorkd-$(go env GOOS)-$(go env GOARCH)"
+"$local_daemon" --version
+```
+
+Expected:
+
+```text
+remorkd dev
+```
+
+This confirms the copied daemon binary can start directly. Remote servers do not run `go build`, `go get`, `brew`, or any internet-dependent install step.
+
+- [ ] **Step 3: Manual local daemon smoke test**
+
+Run:
+
+```bash
+local_daemon="dist/remorkd-$(go env GOOS)-$(go env GOARCH)"
 tmp_remote=$(mktemp -d)
 tmp_local=$(mktemp -d)
 printf 'hello\n' > "$tmp_remote/a.txt"
-./remorkd --root "$tmp_remote" --addr 127.0.0.1:7731 &
+"$local_daemon" --root "$tmp_remote" --addr 127.0.0.1:7731 &
 daemon_pid=$!
 sleep 1
 curl -fsS "http://127.0.0.1:7731/manifest?root=$tmp_remote&path=.&recursive=true"
@@ -3372,7 +3504,7 @@ rm -rf "$tmp_remote" "$tmp_local"
 
 Expected: manifest JSON contains `a.txt`.
 
-- [ ] **Step 3: Inspect git state**
+- [ ] **Step 4: Inspect git state**
 
 Run:
 
@@ -3382,7 +3514,7 @@ git status --short
 
 Expected: clean, unless documentation was intentionally updated.
 
-- [ ] **Step 4: Commit final docs if changed**
+- [ ] **Step 5: Commit final docs if changed**
 
 If docs changed:
 
@@ -3402,6 +3534,7 @@ Spec coverage:
 - Remote command execution: Task 8, Task 13.
 - Interactive PTY shell: Task 9, Task 13.
 - Watch/events with manifest fallback: Task 10, Task 13.
+- Offline remote deployment with prebuilt daemon binary: Task 0, Task 14.
 - No target Git pollution: Task 2 skips `.git`, Task 3 skips `.git`, Task 13 adds regression coverage.
 - Edge cases and TDD: every implementation task starts with failing tests, then minimal code, then verification.
 

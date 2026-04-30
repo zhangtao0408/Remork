@@ -20,6 +20,7 @@ The system should support:
 ## Non-Goals
 
 - Do not install or synchronize a full Agent runtime on every remote server.
+- Do not require the remote server to install Go, Node, Python packages, or internet-fetched build dependencies.
 - Do not use the target project Git repository as the tool's state mechanism.
 - Do not implement automatic bidirectional sync in the first version.
 - Do not rely on SSH tunnels as the primary transport.
@@ -41,6 +42,28 @@ The remote daemon listens on a VPN-reachable network address and port. The first
 - Bind to a configured internal interface by default.
 - Optional source IP allowlist.
 - Optional shared token for deployments that want an extra guard.
+
+### Offline Remote Deployment Model
+
+Remote servers may not have outbound internet access. They also should not need a compiler toolchain. The supported deployment shape is:
+
+- Build `remorkd` on the local machine or CI.
+- Produce a standalone daemon binary for the target OS and CPU architecture.
+- Copy the binary and a small config file to the remote server using any available path, such as `scp`, an internal artifact store, a mounted share, or manual transfer.
+- Start the daemon with a config file or service manager.
+
+The remote server must not need Go installed at runtime. First-version release artifacts should include at least:
+
+```text
+dist/remorkd-linux-amd64
+dist/remorkd-linux-arm64
+dist/remorkd-darwin-amd64
+dist/remorkd-darwin-arm64
+dist/checksums.txt
+dist/remorkd.example.toml
+```
+
+The daemon should expose `remorkd --version` so a copied binary can be verified on an offline server before it is started.
 
 ### Large File Policy
 
@@ -534,6 +557,7 @@ For very large files, daemon may avoid full content hash during manifest scans. 
 First version includes:
 
 - Linux/macOS remote daemon.
+- Prebuilt `remorkd` binaries for offline remote installation.
 - VPN-direct HTTP or WebSocket transport.
 - Host and workspace configuration.
 - Manifest generation.
@@ -585,6 +609,7 @@ Later versions can add:
 
 ### Manual Acceptance Tests
 
+- Build a Linux `remorkd` binary locally and verify it starts without Go installed on the target machine.
 - Use `rg` locally on a synced workspace.
 - Edit a local source file and apply it to the remote.
 - Confirm a remote git repo is not affected by tool metadata.
@@ -597,7 +622,7 @@ Later versions can add:
 
 These are not unresolved requirements; they are implementation details to decide during planning:
 
-- HTTP framework and language for `remorkd`.
+- Exact service-manager templates for starting offline `remorkd` binaries.
 - Local state database format, likely SQLite.
 - Exact hash policy for large files.
 - Exact patch format for text files.
