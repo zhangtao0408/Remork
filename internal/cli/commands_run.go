@@ -110,9 +110,12 @@ func runCommandArgs(args []string) []string {
 }
 
 type runContext struct {
-	binding workspace.Binding
-	client  client.Client
-	runner  syncer.Runner
+	binding  workspace.Binding
+	client   client.Client
+	runner   syncer.Runner
+	baseURL  string
+	clientID string
+	token    string
 }
 
 func newRunContext(opts Options) (runContext, error) {
@@ -145,5 +148,5 @@ func newRunContext(opts Options) (runContext, error) {
 		WorkspaceRef: workspaceRef,
 		RemoteRoot:   binding.RemoteRoot,
 	})
-	return runContext{binding: binding, client: c, runner: runner}, nil
+	return runContext{binding: binding, client: c, runner: runner, baseURL: host.URL, clientID: cfg.ClientID, token: token}, nil
 }

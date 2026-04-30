@@ -55,4 +55,11 @@ type ExecRequest struct {
 	TimeoutMillis int64    `json:"timeout_millis,omitempty"`
 }
 
+type ShellFrame struct {
+	Type string `json:"type"`
+	Data []byte `json:"data,omitempty"`
+	Rows int    `json:"rows,omitempty"`
+	Cols int    `json:"cols,omitempty"`
+}
+
 const HeaderClientID = "X-Remork-Client-ID"

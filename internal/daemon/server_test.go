@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -237,6 +238,38 @@ func TestOperationsEndpointRecordsClientApplyWithoutContent(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "YWZ0ZXIK") || strings.Contains(string(raw), "after") {
 		t.Fatalf("operation log leaked apply content: %s", raw)
+	}
+}
+
+func TestShellAcceptsResizeFrame(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty shell is not supported on windows")
+	}
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/shell?root=" + url.QueryEscape(root)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	frame := api.ShellFrame{Type: "resize", Rows: 30, Cols: 100}
+	if err := conn.WriteJSON(frame); err != nil {
+		t.Fatalf("resize: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("printf 'resize-ok\\n'; exit\n")); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var transcript strings.Builder
+	for !strings.Contains(transcript.String(), "resize-ok") {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read shell output: %v\ntranscript:\n%s", err, transcript.String())
+		}
+		transcript.Write(msg)
 	}
 }
 

@@ -312,6 +312,7 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer conn.Close()
 		buf := make([]byte, 4096)
 		for {
 			n, err := session.Read(buf)
@@ -336,10 +337,35 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if messageType == websocket.TextMessage || messageType == websocket.BinaryMessage {
+			if handled, err := handleShellFrame(session, msg); handled || err != nil {
+				if err != nil {
+					return
+				}
+				continue
+			}
 			if _, err := session.Write(msg); err != nil {
 				return
 			}
 		}
+	}
+}
+
+func handleShellFrame(session *ptysession.Session, msg []byte) (bool, error) {
+	var frame api.ShellFrame
+	if err := json.Unmarshal(msg, &frame); err != nil || frame.Type == "" {
+		return false, nil
+	}
+	switch frame.Type {
+	case "resize":
+		return true, session.Resize(frame.Rows, frame.Cols)
+	case "data":
+		if len(frame.Data) == 0 {
+			return true, nil
+		}
+		_, err := session.Write(frame.Data)
+		return true, err
+	default:
+		return false, nil
 	}
 }
 

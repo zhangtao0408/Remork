@@ -38,6 +38,14 @@ func (s *Session) Write(p []byte) (int, error) {
 	return s.file.Write(p)
 }
 
+func (s *Session) Resize(rows, cols int) error {
+	if rows <= 0 || cols <= 0 {
+		return nil
+	}
+	s.touch()
+	return pty.Setsize(s.file, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+}
+
 func (s *Session) snapshot() Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
