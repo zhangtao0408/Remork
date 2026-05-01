@@ -70,7 +70,7 @@ func newDebugEventsCommand(opts Options) *cobra.Command {
 			}
 			return streamWorkspaceEvents(ctx, runCtx, nil, func(ev watch.Event) error {
 				return writeEventJSONLine(cmd.OutOrStdout(), ev)
-			})
+			}, nil, 0, 0, nil)
 		},
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"os"
@@ -424,6 +425,59 @@ func TestRemorkProductWatchStreamsNestedRemoteEvents(t *testing.T) {
 	waitForFileContaining(t, filepath.Join(h.remote, ".remork", "log", "operations.jsonl"), `"operation":"events"`)
 }
 
+func TestRemorkProductWatchDebouncesBurstRemoteEvents(t *testing.T) {
+	h := newProductHarness(t)
+	h.writeRemote("seed.txt", "seed\n")
+	h.bindAndSync()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader, writer := io.Pipe()
+	cmd := cli.NewRootCommand(cli.Options{Version: "test", HomeDir: h.home, WorkingDir: h.local})
+	cmd.SetContext(ctx)
+	cmd.SetOut(writer)
+	cmd.SetErr(writer)
+	cmd.SetArgs([]string{"watch", "--debounce", "50ms", "--reconcile-interval", "150ms"})
+	errCh := make(chan error, 1)
+	go func() {
+		err := cmd.Execute()
+		_ = writer.Close()
+		if errors.Is(err, context.Canceled) {
+			err = nil
+		}
+		errCh <- err
+	}()
+
+	lines := make(chan string, 128)
+	go func() {
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		close(lines)
+	}()
+
+	waitForLine(t, lines, "watching")
+	wantBurst := make(map[string]string, 12)
+	for i := 0; i < 12; i++ {
+		name := filepath.Join("burst", fmt.Sprintf("file-%02d.txt", i))
+		content := fmt.Sprintf("remote-%02d\n", i)
+		wantBurst[name] = content
+		h.writeRemote(name, content)
+	}
+	waitForLocalContents(t, h.local, wantBurst)
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("watch returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch did not stop after context cancellation")
+	}
+	waitForFileContaining(t, filepath.Join(h.remote, ".remork", "log", "operations.jsonl"), `"operation":"events"`)
+}
+
 func waitForLine(t *testing.T, lines <-chan string, want string) string {
 	t.Helper()
 	deadline := time.After(3 * time.Second)
@@ -455,6 +509,33 @@ func waitForLocalContent(t *testing.T, path, want string) {
 				t.Fatalf("timed out waiting for %s to contain %q: %v", path, want, err)
 			}
 			t.Fatalf("timed out waiting for %s to equal %q; got %q", path, want, data)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForLocalContents(t *testing.T, root string, wants map[string]string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var missing []string
+		var mismatched []string
+		for path, want := range wants {
+			fullPath := filepath.Join(root, path)
+			data, err := os.ReadFile(fullPath)
+			if err != nil {
+				missing = append(missing, path)
+				continue
+			}
+			if string(data) != want {
+				mismatched = append(mismatched, fmt.Sprintf("%s=%q want %q", path, data, want))
+			}
+		}
+		if len(missing) == 0 && len(mismatched) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for local contents; missing=%v mismatched=%v", missing, mismatched)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

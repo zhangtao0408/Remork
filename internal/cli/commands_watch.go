@@ -18,6 +18,7 @@ import (
 )
 
 func addWatchCommand(root *cobra.Command, opts Options) {
+	watchOpts := defaultWatchOptions()
 	cmd := &cobra.Command{
 		Use:   "watch",
 		Short: "Keep syncing from remote events",
@@ -31,15 +32,30 @@ func addWatchCommand(root *cobra.Command, opts Options) {
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			return watchEvents(ctx, cmd, runCtx)
+			return watchEvents(ctx, cmd, runCtx, watchOpts)
 		},
 	}
+	cmd.Flags().DurationVar(&watchOpts.ReconcileInterval, "reconcile-interval", watchOpts.ReconcileInterval, "Periodically run a full reconcile while connected")
+	cmd.Flags().DurationVar(&watchOpts.Debounce, "debounce", watchOpts.Debounce, "Debounce rapid watch events before syncing")
 	root.AddCommand(cmd)
 }
 
-func watchEvents(ctx context.Context, cmd *cobra.Command, runCtx runContext) error {
+type watchOptions struct {
+	ReconcileInterval time.Duration
+	Debounce          time.Duration
+}
+
+func defaultWatchOptions() watchOptions {
+	return watchOptions{
+		ReconcileInterval: 30 * time.Second,
+		Debounce:          200 * time.Millisecond,
+	}
+}
+
+func watchEvents(ctx context.Context, cmd *cobra.Command, runCtx runContext, opts watchOptions) error {
 	var lastRevision string
 	for {
+		handle, flush := newWatchEventAccumulator(ctx, cmd, runCtx, &lastRevision)
 		err := streamWorkspaceEvents(ctx, runCtx, func() error {
 			if _, err := syncForWatch(ctx, cmd, runCtx, ""); err != nil {
 				return err
@@ -51,23 +67,16 @@ func watchEvents(ctx context.Context, cmd *cobra.Command, runCtx runContext) err
 			lastRevision = manifest.Revision
 			fmt.Fprintf(cmd.OutOrStdout(), "watching %s revision %s\n", runCtx.binding.RemoteRoot, lastRevision)
 			return nil
-		}, func(ev watch.Event) error {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s\n", ev.Revision, ev.Kind, ev.Path)
-			if _, err := syncForWatch(ctx, cmd, runCtx, watchSyncTarget(ev)); err != nil {
+		}, handle, flush, opts.Debounce, opts.ReconcileInterval, func() error {
+			if _, err := syncForWatch(ctx, cmd, runCtx, ""); err != nil {
 				return err
 			}
-			if needsWatchReconcile(ev) {
-				manifest, err := runCtx.client.ManifestContext(ctx, runCtx.binding.RemoteRoot, ".")
-				if err != nil {
-					return err
-				}
-				lastRevision = manifest.Revision
-				fmt.Fprintf(cmd.OutOrStdout(), "reconciled %s\n", lastRevision)
-				return nil
+			manifest, err := runCtx.client.ManifestContext(ctx, runCtx.binding.RemoteRoot, ".")
+			if err != nil {
+				return err
 			}
-			if ev.Revision != "" {
-				lastRevision = ev.Revision
-			}
+			lastRevision = manifest.Revision
+			fmt.Fprintf(cmd.OutOrStdout(), "reconciled %s\n", lastRevision)
 			return nil
 		})
 		if ctx.Err() != nil {
@@ -82,6 +91,61 @@ func watchEvents(ctx context.Context, cmd *cobra.Command, runCtx runContext) err
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+func newWatchEventAccumulator(ctx context.Context, cmd *cobra.Command, runCtx runContext, lastRevision *string) (func(watch.Event) error, func() error) {
+	var pending *pendingWatchSync
+	handle := func(ev watch.Event) error {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s\n", ev.Revision, ev.Kind, ev.Path)
+		target := watchSyncTarget(ev)
+		needsReconcile := target == ""
+		if pending == nil {
+			pending = &pendingWatchSync{target: target, revision: ev.Revision, needsReconcile: needsReconcile}
+		} else {
+			if pending.target != target {
+				pending.target = ""
+				pending.needsReconcile = true
+			}
+			if needsReconcile {
+				pending.target = ""
+				pending.needsReconcile = true
+			}
+			if ev.Revision != "" {
+				pending.revision = ev.Revision
+			}
+		}
+		return nil
+	}
+	flush := func() error {
+		if pending == nil {
+			return nil
+		}
+		current := *pending
+		pending = nil
+		if _, err := syncForWatch(ctx, cmd, runCtx, current.target); err != nil {
+			return err
+		}
+		if current.needsReconcile {
+			manifest, err := runCtx.client.ManifestContext(ctx, runCtx.binding.RemoteRoot, ".")
+			if err != nil {
+				return err
+			}
+			*lastRevision = manifest.Revision
+			fmt.Fprintf(cmd.OutOrStdout(), "reconciled %s\n", *lastRevision)
+			return nil
+		}
+		if current.revision != "" {
+			*lastRevision = current.revision
+		}
+		return nil
+	}
+	return handle, flush
+}
+
+type pendingWatchSync struct {
+	target         string
+	revision       string
+	needsReconcile bool
 }
 
 func syncForWatch(ctx context.Context, cmd *cobra.Command, runCtx runContext, target string) (syncer.Result, error) {
@@ -102,7 +166,7 @@ func watchSyncTarget(ev watch.Event) string {
 	return ev.Path
 }
 
-func streamWorkspaceEvents(ctx context.Context, runCtx runContext, connected func() error, handle func(watch.Event) error) error {
+func streamWorkspaceEvents(ctx context.Context, runCtx runContext, connected func() error, handle func(watch.Event) error, flush func() error, debounce time.Duration, tickInterval time.Duration, tick func() error) error {
 	wsURL, err := buildEventsURL(runCtx.baseURL, runCtx.binding.RemoteRoot)
 	if err != nil {
 		return err
@@ -123,30 +187,111 @@ func streamWorkspaceEvents(ctx context.Context, runCtx runContext, connected fun
 		return err
 	}
 	defer conn.Close()
-	done := make(chan struct{})
+	streamDone := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
 			_ = conn.Close()
-		case <-done:
+		case <-streamDone:
 		}
 	}()
-	defer close(done)
+	defer close(streamDone)
 	if connected != nil {
 		if err := connected(); err != nil {
 			return err
 		}
 	}
+	events := make(chan watch.Event, 1)
+	readErr := make(chan error, 1)
+	go func() {
+		for {
+			var ev watch.Event
+			if err := conn.ReadJSON(&ev); err != nil {
+				select {
+				case readErr <- err:
+				case <-streamDone:
+				case <-ctx.Done():
+				}
+				return
+			}
+			select {
+			case events <- ev:
+			case <-streamDone:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	var ticker *time.Ticker
+	var tickC <-chan time.Time
+	if tickInterval > 0 && tick != nil {
+		ticker = time.NewTicker(tickInterval)
+		tickC = ticker.C
+		defer ticker.Stop()
+	}
+	var debounceTimer *time.Timer
+	var debounceC <-chan time.Time
+	stopDebounce := func() {
+		if debounceTimer == nil {
+			return
+		}
+		if !debounceTimer.Stop() {
+			select {
+			case <-debounceTimer.C:
+			default:
+			}
+		}
+		debounceTimer = nil
+		debounceC = nil
+	}
+	resetDebounce := func() error {
+		stopDebounce()
+		debounceTimer = time.NewTimer(debounce)
+		debounceC = debounceTimer.C
+		return nil
+	}
+	flushPending := func() error {
+		stopDebounce()
+		if flush != nil {
+			return flush()
+		}
+		return nil
+	}
 	for {
-		var ev watch.Event
-		if err := conn.ReadJSON(&ev); err != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-readErr:
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			if flushErr := flushPending(); flushErr != nil {
+				return flushErr
+			}
 			return err
-		}
-		if err := handle(ev); err != nil {
-			return err
+		case <-tickC:
+			if err := flushPending(); err != nil {
+				return err
+			}
+			if err := tick(); err != nil {
+				return err
+			}
+		case <-debounceC:
+			if err := flushPending(); err != nil {
+				return err
+			}
+		case ev := <-events:
+			if err := handle(ev); err != nil {
+				return err
+			}
+			if debounce > 0 {
+				if err := resetDebounce(); err != nil {
+					return err
+				}
+			} else if err := flushPending(); err != nil {
+				return err
+			}
 		}
 	}
 }
