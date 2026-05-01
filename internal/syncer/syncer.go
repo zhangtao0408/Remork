@@ -111,10 +111,10 @@ func (r Runner) Status(ctx context.Context) (Status, error) {
 		if isLocalOnlyPath(entry.Path) {
 			continue
 		}
-		remotePaths[entry.Path] = true
 		if entry.Type != api.FileTypeFile {
 			continue
 		}
+		remotePaths[entry.Path] = true
 		tracked, ok := snap.Entries[entry.Path]
 		if !ok || !statusCurrent(tracked, entry) {
 			remoteUpdates[entry.Path] = true
@@ -243,6 +243,13 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 				return result, err
 			}
 			if err := removeIfExists(localPath); err != nil {
+				return result, err
+			}
+			basePath, err := r.opts.StateStore.BasePath(op.Path)
+			if err != nil {
+				return result, err
+			}
+			if err := removeIfExists(basePath); err != nil {
 				return result, err
 			}
 			if tracked, ok := snap.Entries[op.Path]; ok && tracked.MetaPath != "" {

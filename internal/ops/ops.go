@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -69,17 +70,21 @@ type JSONLStore struct {
 const maxJSONLLineBytes = 16 << 20
 
 func NewJSONLStore(path string) *JSONLStore {
-	return &JSONLStore{path: path}
+	return &JSONLStore{path: normalizeLogPath(path)}
 }
 
 func (s *JSONLStore) Append(entry Entry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := ensureSafeLogPath(s.path); err != nil {
 		return err
 	}
 	f, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
+		return err
+	}
+	if err := verifyOpenFileIsNotSymlink(s.path, f); err != nil {
+		_ = f.Close()
 		return err
 	}
 	defer f.Close()
@@ -96,11 +101,24 @@ func (s *JSONLStore) Append(entry Entry) error {
 func (s *JSONLStore) List(filter Filter) ([]Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := rejectSymlinkParents(filepath.Dir(s.path)); err != nil {
+		return nil, err
+	}
+	if err := rejectSymlinkFinal(s.path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
 	f, err := os.Open(s.path)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := verifyOpenFileIsNotSymlink(s.path, f); err != nil {
+		_ = f.Close()
 		return nil, err
 	}
 	defer f.Close()
@@ -118,6 +136,141 @@ func (s *JSONLStore) List(filter Filter) ([]Entry, error) {
 		return nil, err
 	}
 	return applyFilter(entries, filter), nil
+}
+
+func ensureSafeLogPath(logPath string) error {
+	if err := mkdirAllNoSymlink(filepath.Dir(logPath)); err != nil {
+		return err
+	}
+	if err := rejectSymlinkFinal(logPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func normalizeLogPath(logPath string) string {
+	abs, err := filepath.Abs(logPath)
+	if err != nil {
+		abs = filepath.Clean(logPath)
+	}
+	base := filepath.Base(abs)
+	dir := filepath.Dir(abs)
+	var suffix []string
+	for {
+		if filepath.Base(dir) == ".remork" {
+			prefix := filepath.Dir(dir)
+			if evaluated, err := filepath.EvalSymlinks(prefix); err == nil {
+				parts := append([]string{evaluated, ".remork"}, reverseStrings(suffix)...)
+				parts = append(parts, base)
+				return filepath.Join(parts...)
+			}
+			return abs
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		suffix = append(suffix, filepath.Base(dir))
+		dir = parent
+	}
+	if evaluated, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		return filepath.Join(evaluated, base)
+	}
+	return abs
+}
+
+func reverseStrings(in []string) []string {
+	out := make([]string, len(in))
+	for i := range in {
+		out[i] = in[len(in)-1-i]
+	}
+	return out
+}
+
+func mkdirAllNoSymlink(dir string) error {
+	clean := filepath.Clean(dir)
+	parent := filepath.Dir(clean)
+	if parent != clean {
+		if err := mkdirAllNoSymlink(parent); err != nil {
+			return err
+		}
+	}
+	info, err := os.Lstat(clean)
+	if os.IsNotExist(err) {
+		if err := os.Mkdir(clean, 0o755); err != nil {
+			if os.IsExist(err) {
+				return mkdirAllNoSymlink(clean)
+			}
+			return err
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("operation log directory %q is a symlink", clean)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("operation log path %q is not a directory", clean)
+	}
+	return nil
+}
+
+func rejectSymlinkParents(dir string) error {
+	clean := filepath.Clean(dir)
+	parent := filepath.Dir(clean)
+	if parent != clean {
+		if err := rejectSymlinkParents(parent); err != nil {
+			return err
+		}
+	}
+	info, err := os.Lstat(clean)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("operation log directory %q is a symlink", clean)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("operation log path %q is not a directory", clean)
+	}
+	return nil
+}
+
+func rejectSymlinkFinal(logPath string) error {
+	info, err := os.Lstat(logPath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("operation log path %q is a symlink", logPath)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("operation log path %q is a directory", logPath)
+	}
+	return nil
+}
+
+func verifyOpenFileIsNotSymlink(path string, f *os.File) error {
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("operation log path %q is a symlink", path)
+	}
+	fileInfo, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(pathInfo, fileInfo) {
+		return fmt.Errorf("operation log path %q changed while opening", path)
+	}
+	return nil
 }
 
 func NewID() string {

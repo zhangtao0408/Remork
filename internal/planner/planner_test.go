@@ -112,6 +112,36 @@ func TestSyncCleanRemoteDeletePlansDelete(t *testing.T) {
 	assertOp(t, plan, "deleted.txt", OpDelete)
 }
 
+func TestSyncFileReplacedByDirectoryDeletesStaleFileBeforeChildren(t *testing.T) {
+	manifest := api.ManifestResponse{Entries: []api.FileEntry{
+		{Path: "a.txt", Type: api.FileTypeDir, Revision: "rev-dir"},
+		{Path: "a.txt/child.txt", Type: api.FileTypeFile, Hash: "sha256:child", Revision: "rev-child"},
+	}}
+	snap := state.Snapshot{Entries: map[string]state.TrackedFile{
+		"a.txt": {Path: "a.txt", Type: api.FileTypeFile, BaseHash: "sha256:old", Revision: "rev-old"},
+	}}
+
+	plan := PlanSync(manifest, snap, Options{})
+
+	assertOp(t, plan, "a.txt", OpDelete)
+	assertOp(t, plan, "a.txt/child.txt", OpDownload)
+}
+
+func TestSyncDirtyFileReplacedByDirectoryBlocksChildren(t *testing.T) {
+	manifest := api.ManifestResponse{Entries: []api.FileEntry{
+		{Path: "a.txt", Type: api.FileTypeDir, Revision: "rev-dir"},
+		{Path: "a.txt/child.txt", Type: api.FileTypeFile, Hash: "sha256:child", Revision: "rev-child"},
+	}}
+	snap := state.Snapshot{Entries: map[string]state.TrackedFile{
+		"a.txt": {Path: "a.txt", Type: api.FileTypeFile, BaseHash: "sha256:old", Revision: "rev-old"},
+	}}
+
+	plan := PlanSync(manifest, snap, Options{Dirty: []state.DirtyChange{{Path: "a.txt", Kind: state.ChangeModify}}})
+
+	assertOp(t, plan, "a.txt", OpConflict)
+	assertNoOp(t, plan, "a.txt/child.txt")
+}
+
 func assertOp(t *testing.T, plan Plan, path string, kind OperationKind) {
 	t.Helper()
 	for _, op := range plan.Operations {

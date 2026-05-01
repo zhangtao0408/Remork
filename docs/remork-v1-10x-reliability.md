@@ -275,12 +275,19 @@ and covered with targeted tests:
   second are visible;
 - operation log reads accept large JSONL entries instead of failing at the
   default scanner token limit.
+- sync handles remote file-to-directory replacements by deleting clean stale
+  local/base-cache files before downloading child files, while dirty local
+  replacements become conflicts and block child downloads;
+- operation logging rejects `.remork/log` symlink parents and symlinked
+  `operations.jsonl` files so daemon logs cannot be redirected outside the
+  workspace root.
 
 Verification after these fixes:
 
 ```bash
 go test -count=1 ./internal/transfer ./internal/apply ./internal/pty ./internal/client ./internal/manifest ./internal/ops
 go test -count=1 ./internal/syncer ./internal/daemon ./test/e2e ./internal/cli ./cmd/remork ./cmd/remorkd
+go test -count=1 ./internal/planner ./internal/syncer ./internal/ops ./internal/daemon ./internal/cli ./test/e2e
 go test -count=1 ./...
 go test -race -count=1 ./internal/daemon ./internal/client ./internal/syncer ./internal/preflight ./internal/shellclient ./internal/watch ./test/e2e
 scripts/build-release.sh dev

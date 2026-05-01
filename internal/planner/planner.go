@@ -43,8 +43,19 @@ func PlanSync(manifest api.ManifestResponse, snap state.Snapshot, opts Options) 
 	remotePaths := map[string]bool{}
 	var ops []Operation
 	for _, entry := range manifest.Entries {
-		remotePaths[entry.Path] = true
+		if entry.Type == api.FileTypeFile {
+			remotePaths[entry.Path] = true
+		}
+	}
+	deleteOps := remoteDeleteOps(snap, remotePaths, opts)
+	ops = append(ops, deleteOps...)
+	blockedPrefixes := conflictPrefixSet(deleteOps)
+
+	for _, entry := range manifest.Entries {
 		if entry.Type != api.FileTypeFile {
+			continue
+		}
+		if hasConflictAncestor(entry.Path, blockedPrefixes) {
 			continue
 		}
 		if dirty[entry.Path] && !opts.Force {
@@ -61,9 +72,6 @@ func PlanSync(manifest api.ManifestResponse, snap state.Snapshot, opts Options) 
 		} else {
 			ops = append(ops, Operation{Path: entry.Path, Kind: OpDownload, Entry: entry})
 		}
-	}
-	for _, op := range remoteDeleteOps(snap, remotePaths, opts) {
-		ops = append(ops, op)
 	}
 	return Plan{Operations: sortedOps(ops)}
 }
@@ -98,7 +106,7 @@ func remoteDeleteOps(snap state.Snapshot, remotePaths map[string]bool, opts Opti
 		if tracked.Path == "" || remotePaths[path] {
 			continue
 		}
-		if !inTargetScope(path, opts.TargetPath) {
+		if !inTargetScope(path, opts.TargetPath) && !isAncestorOfTarget(path, opts.TargetPath) {
 			continue
 		}
 		if dirty[path] && !opts.Force {
@@ -108,6 +116,26 @@ func remoteDeleteOps(snap state.Snapshot, remotePaths map[string]bool, opts Opti
 		}
 	}
 	return ops
+}
+
+func conflictPrefixSet(ops []Operation) map[string]bool {
+	out := map[string]bool{}
+	for _, op := range ops {
+		if op.Kind == OpConflict {
+			out[strings.Trim(path.Clean(op.Path), "/")] = true
+		}
+	}
+	return out
+}
+
+func hasConflictAncestor(filePath string, conflicts map[string]bool) bool {
+	cleanPath := strings.Trim(path.Clean(filePath), "/")
+	for prefix := range conflicts {
+		if prefix != "" && cleanPath != prefix && strings.HasPrefix(cleanPath, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func isCurrent(tracked state.TrackedFile, entry api.FileEntry) bool {
@@ -133,6 +161,15 @@ func inTargetScope(filePath, targetPath string) bool {
 	}
 	cleanPath := strings.Trim(path.Clean(filePath), "/")
 	return cleanPath == target || strings.HasPrefix(cleanPath, target+"/")
+}
+
+func isAncestorOfTarget(filePath, targetPath string) bool {
+	if targetPath == "" || targetPath == "." {
+		return false
+	}
+	cleanPath := strings.Trim(path.Clean(filePath), "/")
+	target := strings.Trim(path.Clean(targetPath), "/")
+	return cleanPath != "" && target != "" && cleanPath != target && strings.HasPrefix(target, cleanPath+"/")
 }
 
 func dirtySet(changes []state.DirtyChange) map[string]bool {

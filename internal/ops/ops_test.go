@@ -68,6 +68,53 @@ func TestJSONLStoreListsLargeEntries(t *testing.T) {
 	}
 }
 
+func TestJSONLStoreRejectsSymlinkParent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, ".remork")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	store := NewJSONLStore(filepath.Join(root, ".remork", "log", "operations.jsonl"))
+
+	if err := store.Append(Entry{ID: "op-symlink-parent"}); err == nil {
+		t.Fatal("expected symlink parent error")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "log", "operations.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("outside log should not be written: %v", err)
+	}
+}
+
+func TestJSONLStoreRejectsSymlinkLogFile(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.jsonl")
+	logDir := filepath.Join(root, ".remork", "log")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(logDir, "operations.jsonl")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	store := NewJSONLStore(filepath.Join(logDir, "operations.jsonl"))
+
+	if err := store.Append(Entry{ID: "op-symlink-file"}); err == nil {
+		t.Fatal("expected symlink log file error")
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("outside log should not be written: %v", err)
+	}
+}
+
+func TestJSONLStoreListMissingLogReturnsEmpty(t *testing.T) {
+	store := NewJSONLStore(filepath.Join(t.TempDir(), ".remork", "log", "operations.jsonl"))
+	got, err := store.List(Filter{})
+	if err != nil {
+		t.Fatalf("list missing log: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("entries = %#v, want empty", got)
+	}
+}
+
 func TestMemoryStoreLimitReturnsMostRecentEntries(t *testing.T) {
 	store := NewMemoryStore()
 	for _, id := range []string{"op-1", "op-2", "op-3"} {
