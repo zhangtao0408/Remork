@@ -68,7 +68,7 @@ func newDebugEventsCommand(opts Options) *cobra.Command {
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			return streamWorkspaceEvents(ctx, runCtx, func(ev watch.Event) error {
+			return streamWorkspaceEvents(ctx, runCtx, nil, func(ev watch.Event) error {
 				return writeEventJSONLine(cmd.OutOrStdout(), ev)
 			})
 		},

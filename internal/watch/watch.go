@@ -1,7 +1,9 @@
 package watch
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -40,7 +42,7 @@ func New(root string) (*Watcher, error) {
 }
 
 func (w *Watcher) Start() error {
-	if err := w.fs.Add(w.root); err != nil {
+	if err := w.addDirs(w.root); err != nil {
 		return err
 	}
 	go w.loop()
@@ -76,6 +78,17 @@ func (w *Watcher) loop() {
 				w.events <- Overflow()
 				continue
 			}
+			rel = filepath.ToSlash(rel)
+			if rel == "." || ignoredPath(rel) {
+				continue
+			}
+			if ev.Has(fsnotify.Create) {
+				if info, err := os.Stat(ev.Name); err == nil && info.IsDir() && !ignoredPath(rel) {
+					if err := w.addDirs(ev.Name); err != nil {
+						w.events <- Overflow()
+					}
+				}
+			}
 			kind := EventUpdate
 			if ev.Has(fsnotify.Create) {
 				kind = EventCreate
@@ -86,7 +99,7 @@ func (w *Watcher) loop() {
 			if ev.Has(fsnotify.Rename) {
 				kind = EventRename
 			}
-			w.events <- Event{Kind: kind, Path: filepath.ToSlash(rel), Revision: revision()}
+			w.events <- Event{Kind: kind, Path: rel, Revision: revision()}
 		case _, ok := <-w.fs.Errors:
 			if !ok {
 				return
@@ -96,6 +109,31 @@ func (w *Watcher) loop() {
 			return
 		}
 	}
+}
+
+func (w *Watcher) addDirs(root string) error {
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(w.root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel != "." && ignoredPath(rel) {
+			return filepath.SkipDir
+		}
+		return w.fs.Add(path)
+	})
+}
+
+func ignoredPath(path string) bool {
+	path = strings.TrimPrefix(filepath.ToSlash(path), "./")
+	return path == ".git" || strings.HasPrefix(path, ".git/") || path == ".remork" || strings.HasPrefix(path, ".remork/")
 }
 
 func revision() string {

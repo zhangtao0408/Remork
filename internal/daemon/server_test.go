@@ -534,6 +534,30 @@ func TestEventsEndpointStreamsWorkspaceChanges(t *testing.T) {
 		t.Fatalf("event %#v", ev)
 	}
 	_ = conn.Close()
+	waitForOperationLogContaining(t, root, `"operation":"events"`)
+}
+
+func TestEventsEndpointStreamsNestedWorkspaceChanges(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "src", "main.txt"), []byte("one\n"))
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/events?root=" + url.QueryEscape(root)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	mustWrite(t, filepath.Join(root, "src", "main.txt"), []byte("two\n"))
+	var ev watch.Event
+	if err := conn.ReadJSON(&ev); err != nil {
+		t.Fatalf("read event: %v", err)
+	}
+	if ev.Path != "src/main.txt" {
+		t.Fatalf("event %#v", ev)
+	}
+	_ = conn.Close()
+	waitForOperationLogContaining(t, root, `"operation":"events"`)
 }
 
 func TestShellEndpointRunsInteractiveCommand(t *testing.T) {

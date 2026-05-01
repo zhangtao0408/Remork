@@ -1,13 +1,18 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"remork/internal/cli"
 	"remork/internal/config"
@@ -369,6 +374,108 @@ func TestRemorkProductDebugManifestAndAPI(t *testing.T) {
 	mustContain(t, apiOut, "status OK")
 	mustContain(t, apiOut, "manifest OK")
 	mustContain(t, apiOut, "operations OK")
+}
+
+func TestRemorkProductWatchStreamsNestedRemoteEvents(t *testing.T) {
+	h := newProductHarness(t)
+	h.writeRemote("src/main.txt", "one\n")
+	h.bindAndSync()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader, writer := io.Pipe()
+	cmd := cli.NewRootCommand(cli.Options{Version: "test", HomeDir: h.home, WorkingDir: h.local})
+	cmd.SetContext(ctx)
+	cmd.SetOut(writer)
+	cmd.SetErr(writer)
+	cmd.SetArgs([]string{"watch"})
+	errCh := make(chan error, 1)
+	go func() {
+		err := cmd.Execute()
+		_ = writer.Close()
+		if errors.Is(err, context.Canceled) {
+			err = nil
+		}
+		errCh <- err
+	}()
+
+	lines := make(chan string, 8)
+	go func() {
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		close(lines)
+	}()
+
+	waitForLine(t, lines, "watching")
+	h.writeRemote("src/main.txt", "two\n")
+	waitForLine(t, lines, "src/main.txt")
+	waitForLocalContent(t, filepath.Join(h.local, "src", "main.txt"), "two\n")
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("watch returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch did not stop after context cancellation")
+	}
+	waitForFileContaining(t, filepath.Join(h.remote, ".remork", "log", "operations.jsonl"), `"operation":"events"`)
+}
+
+func waitForLine(t *testing.T, lines <-chan string, want string) string {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				t.Fatalf("output closed before seeing %q", want)
+			}
+			if strings.Contains(line, want) {
+				return line
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for output containing %q", want)
+		}
+	}
+}
+
+func waitForLocalContent(t *testing.T, path, want string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil && string(data) == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				t.Fatalf("timed out waiting for %s to contain %q: %v", path, want, err)
+			}
+			t.Fatalf("timed out waiting for %s to equal %q; got %q", path, want, data)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForFileContaining(t *testing.T, path, want string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil && strings.Contains(string(data), want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				t.Fatalf("timed out waiting for %s to contain %q: %v", path, want, err)
+			}
+			t.Fatalf("timed out waiting for %s to contain %q", path, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 type cliHarness struct {

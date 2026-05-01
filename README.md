@@ -82,6 +82,7 @@ Add a daemon endpoint:
 
 ```bash
 remork host add lab-a --url http://10.0.0.12:17731
+remork host list
 ```
 
 If your local shell has a proxy that cannot reach the VPN address, bypass it
@@ -105,6 +106,7 @@ mkdir ~/work/project-a
 cd ~/work/project-a
 remork init lab-a:/data/project-a
 remork sync
+remork workspace
 ```
 
 Run a remote check:
@@ -140,6 +142,9 @@ checkpoints/model.tar.gz.meta
 
 The meta file records the remote path, size, revision, and pull command. Use
 `remork pull checkpoints/model.tar.gz` when you really need the full content.
+The recorded pull command may use a fully qualified
+`lab-a:/data/project-a/checkpoints/model.tar.gz` reference so it remains usable
+even when copied out of the bound directory.
 
 ## Applying safely
 
@@ -225,6 +230,15 @@ Manages daemon endpoint aliases.
 `remork workspace`
 
 Inspects or removes local workspace bindings.
+
+Common maintenance forms:
+
+```bash
+remork host list
+remork host remove lab-a
+remork workspace
+remork workspace remove
+```
 
 ## Debug and maintenance commands
 

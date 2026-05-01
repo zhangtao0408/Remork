@@ -273,6 +273,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		for {
+			if _, _, err := conn.NextReader(); err != nil {
+				return
+			}
+		}
+	}()
 	defer s.finishOperation(op, http.StatusOK, "success", "")
 	for {
 		select {
@@ -280,6 +289,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if err := conn.WriteJSON(ev); err != nil {
 				return
 			}
+		case <-clientDone:
+			return
 		case <-r.Context().Done():
 			return
 		}

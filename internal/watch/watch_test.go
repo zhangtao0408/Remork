@@ -27,6 +27,33 @@ func TestWatcherEmitsCreateUpdateDelete(t *testing.T) {
 	}
 }
 
+func TestWatcherEmitsNestedFileUpdate(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "src")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(nested, "main.txt")
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := New(root)
+	if err != nil {
+		t.Fatalf("watcher: %v", err)
+	}
+	defer w.Close()
+	if err := w.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("after"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ev := waitEvent(t, w.Events(), "src/main.txt")
+	if ev.Path != "src/main.txt" {
+		t.Fatalf("event %#v", ev)
+	}
+}
+
 func TestWatcherOverflowEventCanBeInjectedForReconcile(t *testing.T) {
 	ev := Overflow()
 	if ev.Kind != EventOverflow || !ev.ResyncRequired {
