@@ -59,6 +59,12 @@ ssh user@host 'chmod +x /tmp/remorkd && nohup /tmp/remorkd --root /data/project 
 curl --noproxy '*' http://host:17731/status
 \`\`\`
 
+Warning: \`--addr 0.0.0.0:17731\` without \`--token-file\` allows any client
+that can reach the host to use file, apply, exec, and shell endpoints. Use it
+only on a trusted VPN or private network. On shared networks, start the daemon
+with \`--token-file /path/to/remork.token\` and configure the local host entry
+with the same token.
+
 Verify downloads with checksums.txt.
 EOF
 (

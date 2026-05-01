@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -396,7 +397,19 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	s.finishOperation(op, http.StatusOK, resultName, errorMessage)
 }
 
-var wsUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+var wsUpgrader = websocket.Upgrader{CheckOrigin: allowEmptyOrSameOrigin}
+
+func allowEmptyOrSameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, r.Host)
+}
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	root := r.URL.Query().Get("root")

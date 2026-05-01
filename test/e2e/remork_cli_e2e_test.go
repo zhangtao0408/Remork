@@ -122,6 +122,46 @@ func TestRemorkProductFullWorkflow(t *testing.T) {
 	mustContain(t, string(rawLog), `"operation":"exec"`)
 }
 
+func TestRemorkApplyExplicitPathPreservesOtherDirtyLocalFiles(t *testing.T) {
+	h := newCLIHarness(t)
+	h.writeRemote("a.txt", "remote-a\n")
+	h.writeRemote("b.txt", "remote-b\n")
+	h.bindAndSync()
+
+	h.writeLocal("a.txt", "local-a\n")
+	h.writeLocal("b.txt", "local-b\n")
+
+	applyOut := h.runInLocal("apply", "a.txt")
+	mustContain(t, applyOut, "applied 1")
+	h.assertRemote("a.txt", "local-a\n")
+	h.assertRemote("b.txt", "remote-b\n")
+	h.assertLocal("a.txt", "local-a\n")
+	h.assertLocal("b.txt", "local-b\n")
+}
+
+func TestRemorkApplyExplicitDeletePreservesOtherDirtyLocalFiles(t *testing.T) {
+	h := newCLIHarness(t)
+	h.writeRemote("a.txt", "remote-a\n")
+	h.writeRemote("b.txt", "remote-b\n")
+	h.bindAndSync()
+
+	if err := os.Remove(filepath.Join(h.local, "a.txt")); err != nil {
+		t.Fatalf("remove local a.txt: %v", err)
+	}
+	h.writeLocal("b.txt", "local-b\n")
+
+	applyOut := h.runInLocal("apply", "a.txt")
+	mustContain(t, applyOut, "applied 1")
+	if _, err := os.Stat(filepath.Join(h.remote, "a.txt")); !os.IsNotExist(err) {
+		t.Fatalf("remote a.txt still exists after apply delete: %v", err)
+	}
+	h.assertRemote("b.txt", "remote-b\n")
+	h.assertLocal("b.txt", "local-b\n")
+
+	statusOut := h.runInLocal("status")
+	mustContain(t, statusOut, "Local changes: 1")
+}
+
 func TestRemorkProductSyncJSONConflictDoesNotPrintSuccess(t *testing.T) {
 	h := newCLIHarness(t)
 	h.writeRemote("a.txt", "base")

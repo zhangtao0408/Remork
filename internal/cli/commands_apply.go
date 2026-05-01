@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"remork/internal/output"
 	"remork/internal/state"
 	"remork/internal/syncer"
+	"remork/internal/transfer"
 	"remork/internal/workspace"
 )
 
@@ -118,7 +120,7 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 				writeApplyConflict(cmd, result.Conflicts, jsonOut)
 				return applyConflictError(result.Conflicts)
 			}
-			if _, err := runner.Sync(ctx, syncer.SyncOptions{Force: true}); err != nil {
+			if err := refreshAppliedChanges(ctx, runner, binding, localRoot, workspaceRef, changeset.Changes); err != nil {
 				return err
 			}
 			if jsonOut {
@@ -157,6 +159,65 @@ func boundApplyContext(opts Options) (syncer.Runner, workspace.Binding, string, 
 		return syncer.Runner{}, workspace.Binding{}, "", "", err
 	}
 	return runner, binding, localRoot, binding.Host + ":" + binding.RemoteRoot, nil
+}
+
+func refreshAppliedChanges(ctx context.Context, runner syncer.Runner, binding workspace.Binding, localRoot, workspaceRef string, changes []apply.Change) error {
+	seen := map[string]bool{}
+	var deletes []apply.Change
+	for _, change := range changes {
+		if change.Kind == apply.ChangeDelete {
+			deletes = append(deletes, change)
+			continue
+		}
+		if seen[change.Path] {
+			continue
+		}
+		seen[change.Path] = true
+		if _, err := runner.Sync(ctx, syncer.SyncOptions{Force: true, TargetPath: change.Path}); err != nil {
+			return err
+		}
+	}
+	if len(deletes) == 0 {
+		return nil
+	}
+	return forgetAppliedDeletes(binding, localRoot, workspaceRef, deletes)
+}
+
+func forgetAppliedDeletes(binding workspace.Binding, localRoot, workspaceRef string, changes []apply.Change) error {
+	store := state.NewStore(binding.StateDir)
+	snap, err := store.Load(workspaceRef)
+	if err != nil {
+		return err
+	}
+	for _, change := range changes {
+		tracked := snap.Entries[change.Path]
+		basePath, err := store.BasePath(change.Path)
+		if err != nil {
+			return err
+		}
+		if err := removeFileIfExists(basePath); err != nil {
+			return err
+		}
+		if tracked.MetaPath != "" {
+			metaPath, err := transfer.LocalPath(localRoot, tracked.MetaPath)
+			if err != nil {
+				return err
+			}
+			if err := removeFileIfExists(metaPath); err != nil {
+				return err
+			}
+		}
+		delete(snap.Entries, change.Path)
+	}
+	return store.Save(snap)
+}
+
+func removeFileIfExists(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func summarizeApplyPlan(changes []apply.Change, skipped []syncer.SkippedChange) map[string]int {

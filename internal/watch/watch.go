@@ -75,7 +75,9 @@ func (w *Watcher) loop() {
 			}
 			rel, err := filepath.Rel(w.root, ev.Name)
 			if err != nil {
-				w.events <- Overflow()
+				if !w.emit(Overflow()) {
+					return
+				}
 				continue
 			}
 			rel = filepath.ToSlash(rel)
@@ -85,7 +87,9 @@ func (w *Watcher) loop() {
 			if ev.Has(fsnotify.Create) {
 				if info, err := os.Stat(ev.Name); err == nil && info.IsDir() && !ignoredPath(rel) {
 					if err := w.addDirs(ev.Name); err != nil {
-						w.events <- Overflow()
+						if !w.emit(Overflow()) {
+							return
+						}
 					}
 				}
 			}
@@ -99,16 +103,40 @@ func (w *Watcher) loop() {
 			if ev.Has(fsnotify.Rename) {
 				kind = EventRename
 			}
-			w.events <- Event{Kind: kind, Path: rel, Revision: revision()}
+			if !w.emit(Event{Kind: kind, Path: rel, Revision: revision()}) {
+				return
+			}
 		case _, ok := <-w.fs.Errors:
 			if !ok {
 				return
 			}
-			w.events <- Overflow()
+			if !w.emit(Overflow()) {
+				return
+			}
 		case <-w.done:
 			return
 		}
 	}
+}
+
+func (w *Watcher) emit(ev Event) bool {
+	select {
+	case w.events <- ev:
+		return true
+	case <-w.done:
+		return false
+	default:
+	}
+	if ev.Kind != EventOverflow {
+		ev = Overflow()
+	}
+	select {
+	case w.events <- ev:
+	case <-w.done:
+		return false
+	default:
+	}
+	return true
 }
 
 func (w *Watcher) addDirs(root string) error {

@@ -314,3 +314,67 @@ Cleanup proof commands returned no output:
 ssh z00879328_docker 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
 ssh z00879328_docker_2.6 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
 ```
+
+## Final P0-P2 Review Closeout
+
+Date: 2026-05-01
+
+The final full-branch review found four remaining P0-P2 issues. They are now
+fixed and covered:
+
+- `remork apply a.txt` no longer runs a force full-workspace sync after a
+  successful apply, so unrelated dirty local files such as `b.txt` are
+  preserved. The refresh now targets only changed create/update paths and
+  removes applied delete paths from local state/base cache.
+- `/events` and `/shell` WebSocket upgrades now accept empty Origin headers for
+  CLI clients and reject non-empty foreign Origins.
+- daemon watcher event emission is non-blocking when the event channel is full
+  and returns promptly after `Close()`, dropping or coalescing overflow events
+  instead of leaking a blocked goroutine.
+- generated `dist/README-release.md` now warns that `--addr 0.0.0.0:17731`
+  without `--token-file` exposes file/apply/exec/shell endpoints to anyone who
+  can reach the host.
+
+Targeted regression coverage:
+
+```bash
+go test -count=1 ./test/e2e -run 'TestRemorkApplyExplicit(Path|Delete)PreservesOtherDirtyLocalFiles'
+go test -count=1 ./internal/daemon -run 'Test(EventsEndpointRejectsForeignOrigin|ShellEndpointRejectsForeignOrigin)'
+go test -count=1 ./internal/watch -run 'TestWatcherEmit(DoesNotBlockWhenBufferIsFull|StopsAfterClose)'
+```
+
+Full local verification after the closeout fixes:
+
+```bash
+go test -count=1 ./...
+go test -race -count=1 ./internal/daemon ./internal/client ./internal/syncer ./internal/preflight ./internal/shellclient ./internal/watch ./test/e2e
+scripts/build-release.sh dev
+(cd dist && shasum -a 256 -c checksums.txt)
+```
+
+Result: all commands passed. The release checksum verified all Darwin/Linux
+amd64/arm64 CLI and daemon binaries plus `remorkd.example.toml` and
+`README-release.md`.
+
+Final remote smoke used the rebuilt `dist/remorkd-linux-arm64` daemon and
+`dist/remork-darwin-arm64` CLI against both provided servers:
+
+| Host | URL | Result | Coverage |
+| --- | --- | --- | --- |
+| `z00879328_docker` | `http://175.100.2.7:17911` | PASS | copy daemon, detached start, `host add`, `init`, `sync`, explicit apply update preserving unrelated dirty local file, explicit apply delete preserving unrelated dirty local file, `run --remote-only`, `shell --remote-only`, CLI `log` |
+| `z00879328_docker_2.6` | `http://175.100.2.6:17932` | PASS | copy daemon, detached start, `host add`, `init`, `sync`, explicit apply update preserving unrelated dirty local file, explicit apply delete preserving unrelated dirty local file, `run --remote-only`, `shell --remote-only`, CLI `log` |
+
+Smoke output:
+
+```text
+z7final2 remote smoke passed
+z6final4 remote smoke passed
+```
+
+Cleanup proof commands returned no output after removing temporary
+`/tmp/remork-v1-final-*` paths:
+
+```bash
+ssh z00879328_docker 'ps -ef | grep remork-v1-final | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-final-*" -print 2>/dev/null | sort'
+ssh -T -o ControlMaster=no -o ControlPath=none -o BatchMode=yes -o ConnectTimeout=10 z00879328_docker_2.6 'ps -ef | grep remork-v1-final | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-final-*" -print 2>/dev/null | sort'
+```

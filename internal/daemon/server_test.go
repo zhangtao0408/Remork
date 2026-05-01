@@ -920,6 +920,40 @@ func TestEventsEndpointStreamsNestedWorkspaceChanges(t *testing.T) {
 	waitForOperationLogContaining(t, root, `"operation":"events"`)
 }
 
+func TestEventsEndpointRejectsForeignOrigin(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/events?root=" + url.QueryEscape(root)
+	headers := http.Header{"Origin": []string{"http://evil.example"}}
+
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("foreign origin websocket dial succeeded")
+	}
+	if resp != nil && resp.StatusCode == http.StatusSwitchingProtocols {
+		t.Fatalf("foreign origin upgraded with status %d", resp.StatusCode)
+	}
+}
+
+func TestShellEndpointRejectsForeignOrigin(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/shell?root=" + url.QueryEscape(root)
+	headers := http.Header{"Origin": []string{"http://evil.example"}}
+
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("foreign origin websocket dial succeeded")
+	}
+	if resp != nil && resp.StatusCode == http.StatusSwitchingProtocols {
+		t.Fatalf("foreign origin upgraded with status %d", resp.StatusCode)
+	}
+}
+
 func TestShellEndpointRunsInteractiveCommand(t *testing.T) {
 	root := t.TempDir()
 	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())

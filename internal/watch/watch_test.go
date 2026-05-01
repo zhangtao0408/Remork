@@ -71,6 +71,44 @@ func TestOverflowRequiresManifestReconcile(t *testing.T) {
 	}
 }
 
+func TestWatcherEmitDoesNotBlockWhenBufferIsFull(t *testing.T) {
+	w := &Watcher{events: make(chan Event, 1), done: make(chan struct{})}
+	w.events <- Event{Kind: EventUpdate, Path: "queued.txt", Revision: revision()}
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- w.emit(Event{Kind: EventUpdate, Path: "dropped.txt", Revision: revision()})
+	}()
+
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("emit returned false before watcher was closed")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("emit blocked with a full event buffer")
+	}
+}
+
+func TestWatcherEmitStopsAfterClose(t *testing.T) {
+	w := &Watcher{events: make(chan Event), done: make(chan struct{})}
+	close(w.done)
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- w.emit(Event{Kind: EventUpdate, Path: "closed.txt", Revision: revision()})
+	}()
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("emit returned true after watcher was closed")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("emit blocked after watcher was closed")
+	}
+}
+
 func TestWatcherEmitsDelete(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "gone.txt")
