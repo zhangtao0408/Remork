@@ -163,6 +163,15 @@ This protects against overwriting:
 
 Review with `remork status` and `remork diff` before applying.
 
+New local files are not created on the remote by a broad `remork apply` unless
+you explicitly select them. Use `remork apply path/to/new-file` when you intend
+to create one specific remote file, or `remork apply --include-untracked` when
+you intend to apply all untracked local files that are not ignored.
+
+Remork reads ignore rules from `.remorkignore` first and `.gitignore` second.
+Use `.remorkignore` for local-only caches, secrets, generated outputs, virtual
+environments, and agent scratch files that should never be applied.
+
 ## Running commands and shell
 
 Use `run` for non-interactive commands:

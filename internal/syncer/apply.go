@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -23,6 +24,12 @@ type SkippedChange struct {
 	Reason string `json:"reason"`
 }
 
+type BuildChangesetOptions struct {
+	UseIgnoreFiles   bool
+	IncludeUntracked bool
+	ExplicitPaths    []string
+}
+
 func (r Runner) ApplyChangeset(cs apply.Changeset) (apply.Result, error) {
 	return r.ApplyChangesetContext(context.Background(), cs)
 }
@@ -32,11 +39,19 @@ func (r Runner) ApplyChangesetContext(ctx context.Context, cs apply.Changeset) (
 }
 
 func BuildChangeset(localRoot string, snap state.Snapshot) (apply.Changeset, []SkippedChange, error) {
-	dirty, err := state.DetectDirty(localRoot, snap)
+	return BuildChangesetWithOptions(localRoot, snap, BuildChangesetOptions{UseIgnoreFiles: true})
+}
+
+func BuildChangesetWithOptions(localRoot string, snap state.Snapshot, opts BuildChangesetOptions) (apply.Changeset, []SkippedChange, error) {
+	dirty, err := state.DetectDirtyWithOptions(localRoot, snap, state.DirtyOptions{UseIgnoreFiles: opts.UseIgnoreFiles})
 	if err != nil {
 		return apply.Changeset{}, nil, err
 	}
 	skipped, err := skippedPlaceholderChanges(localRoot, snap)
+	if err != nil {
+		return apply.Changeset{}, nil, err
+	}
+	explicit, err := normalizeExplicitPaths(localRoot, opts.ExplicitPaths)
 	if err != nil {
 		return apply.Changeset{}, nil, err
 	}
@@ -50,19 +65,33 @@ func BuildChangeset(localRoot string, snap state.Snapshot) (apply.Changeset, []S
 		if _, err := paths.NormalizeRemotePath(change.Path); err != nil {
 			return apply.Changeset{}, nil, err
 		}
-		localPath, err := transfer.LocalPath(localRoot, change.Path)
-		if err != nil {
-			return apply.Changeset{}, nil, err
+		if explicit.filters() && !explicit.selects(change.Path) {
+			if change.Kind == state.ChangeCreate {
+				skipped = append(skipped, SkippedChange{Path: change.Path, Reason: "untracked local file; pass --include-untracked or an explicit path"})
+			}
+			continue
 		}
 		tracked := snap.Entries[change.Path]
 		switch change.Kind {
 		case state.ChangeCreate:
+			if !opts.IncludeUntracked && !explicit.selects(change.Path) {
+				skipped = append(skipped, SkippedChange{Path: change.Path, Reason: "untracked local file; pass --include-untracked or an explicit path"})
+				continue
+			}
+			localPath, err := transfer.LocalPath(localRoot, change.Path)
+			if err != nil {
+				return apply.Changeset{}, nil, err
+			}
 			data, err := os.ReadFile(localPath)
 			if err != nil {
 				return apply.Changeset{}, nil, err
 			}
 			changes = append(changes, apply.Change{Path: change.Path, Kind: apply.ChangeCreate, Content: data})
 		case state.ChangeModify:
+			localPath, err := transfer.LocalPath(localRoot, change.Path)
+			if err != nil {
+				return apply.Changeset{}, nil, err
+			}
 			data, err := os.ReadFile(localPath)
 			if err != nil {
 				return apply.Changeset{}, nil, err
@@ -83,6 +112,40 @@ func BuildChangeset(localRoot string, snap state.Snapshot) (apply.Changeset, []S
 		return skipped[i].Path < skipped[j].Path
 	})
 	return apply.Changeset{ID: changesetID(changes, skipped), Changes: changes}, skipped, nil
+}
+
+type explicitPathSet []string
+
+func normalizeExplicitPaths(localRoot string, values []string) (explicitPathSet, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	normalized := make(explicitPathSet, 0, len(values))
+	for _, value := range values {
+		value = filepath.ToSlash(value)
+		clean, err := paths.NormalizeRemotePath(value)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := transfer.LocalPath(localRoot, clean); err != nil {
+			return nil, err
+		}
+		normalized = append(normalized, clean)
+	}
+	return normalized, nil
+}
+
+func (paths explicitPathSet) selects(path string) bool {
+	for _, explicit := range paths {
+		if path == explicit || strings.HasPrefix(path, explicit+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (paths explicitPathSet) filters() bool {
+	return len(paths) > 0
 }
 
 func skippedPlaceholderChanges(localRoot string, snap state.Snapshot) ([]SkippedChange, error) {

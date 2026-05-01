@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"remork/internal/apply"
 	"remork/internal/client"
 	"remork/internal/daemon"
 	"remork/internal/prompt"
@@ -578,7 +579,10 @@ func TestBuildChangesetCreatesUpdatesDeletesAndSkipsLargeMeta(t *testing.T) {
 		},
 	}
 
-	changes, skipped, err := BuildChangeset(local, snap)
+	changes, skipped, err := BuildChangesetWithOptions(local, snap, BuildChangesetOptions{
+		UseIgnoreFiles:   true,
+		IncludeUntracked: true,
+	})
 	if err != nil {
 		t.Fatalf("BuildChangeset: %v", err)
 	}
@@ -634,6 +638,153 @@ func TestBuildChangesetDoesNotReportCleanLargeMetaAsSkipped(t *testing.T) {
 	}
 }
 
+func TestBuildChangesetSkipsUntrackedCreatesByDefault(t *testing.T) {
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(local, "tracked.txt"), []byte("new\n"))
+	mustWriteFile(t, filepath.Join(local, "scratch.log"), []byte("local only\n"))
+	snap := state.Snapshot{
+		WorkspaceRef: "lab:/remote",
+		Entries: map[string]state.TrackedFile{
+			"tracked.txt": {Path: "tracked.txt", BaseHash: state.HashBytes([]byte("old\n")), Revision: "r1"},
+		},
+	}
+
+	changes, skipped, err := BuildChangeset(local, snap)
+	if err != nil {
+		t.Fatalf("BuildChangeset: %v", err)
+	}
+	if len(changes.Changes) != 1 || changes.Changes[0].Path != "tracked.txt" {
+		t.Fatalf("changes = %#v", changes.Changes)
+	}
+	if !containsSkipped(skipped, "scratch.log") {
+		t.Fatalf("untracked file was not skipped: %#v", skipped)
+	}
+}
+
+func TestBuildChangesetSkipsUntrackedSymlinkCreateByDefault(t *testing.T) {
+	local := t.TempDir()
+	target := filepath.Join(t.TempDir(), "target.txt")
+	mustWriteFile(t, target, []byte("target\n"))
+	if err := os.Symlink(target, filepath.Join(local, "linked.txt")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	changes, skipped, err := BuildChangeset(local, state.Snapshot{Entries: map[string]state.TrackedFile{}})
+	if err != nil {
+		t.Fatalf("BuildChangeset: %v", err)
+	}
+	if len(changes.Changes) != 0 {
+		t.Fatalf("changes = %#v", changes.Changes)
+	}
+	if !containsSkipped(skipped, "linked.txt") {
+		t.Fatalf("untracked symlink was not skipped: %#v", skipped)
+	}
+}
+
+func TestBuildChangesetIncludesExplicitUntrackedPath(t *testing.T) {
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(local, "tracked.txt"), []byte("tracked new\n"))
+	mustWriteFile(t, filepath.Join(local, "src", "new.txt"), []byte("intentional\n"))
+	mustWriteFile(t, filepath.Join(local, "other.txt"), []byte("local only\n"))
+	snap := state.Snapshot{
+		WorkspaceRef: "lab:/remote",
+		Entries: map[string]state.TrackedFile{
+			"tracked.txt": {Path: "tracked.txt", BaseHash: state.HashBytes([]byte("tracked old\n")), Revision: "r1"},
+		},
+	}
+
+	changes, skipped, err := BuildChangesetWithOptions(local, snap, BuildChangesetOptions{
+		UseIgnoreFiles: true,
+		ExplicitPaths:  []string{"src"},
+	})
+	if err != nil {
+		t.Fatalf("BuildChangesetWithOptions: %v", err)
+	}
+	if len(changes.Changes) != 1 || changes.Changes[0].Path != "src/new.txt" || string(changes.Changes[0].Content) != "intentional\n" {
+		t.Fatalf("changes = %#v", changes.Changes)
+	}
+	if containsChange(changes.Changes, "tracked.txt") {
+		t.Fatalf("non-explicit tracked modify was included: %#v", changes.Changes)
+	}
+	if !containsSkipped(skipped, "other.txt") {
+		t.Fatalf("non-explicit untracked file was not skipped: %#v", skipped)
+	}
+}
+
+func TestBuildChangesetExplicitTrackedModifyOnlyIncludesSelectedPath(t *testing.T) {
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(local, "selected.txt"), []byte("selected new\n"))
+	mustWriteFile(t, filepath.Join(local, "other.txt"), []byte("other new\n"))
+	snap := state.Snapshot{
+		WorkspaceRef: "lab:/remote",
+		Entries: map[string]state.TrackedFile{
+			"selected.txt": {Path: "selected.txt", BaseHash: state.HashBytes([]byte("selected old\n")), Revision: "r1"},
+			"other.txt":    {Path: "other.txt", BaseHash: state.HashBytes([]byte("other old\n")), Revision: "r2"},
+			"deleted.txt":  {Path: "deleted.txt", BaseHash: state.HashBytes([]byte("deleted old\n")), Revision: "r3"},
+		},
+	}
+
+	changes, skipped, err := BuildChangesetWithOptions(local, snap, BuildChangesetOptions{
+		UseIgnoreFiles: true,
+		ExplicitPaths:  []string{"selected.txt"},
+	})
+	if err != nil {
+		t.Fatalf("BuildChangesetWithOptions: %v", err)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %#v", skipped)
+	}
+	if len(changes.Changes) != 1 || changes.Changes[0].Path != "selected.txt" || string(changes.Changes[0].Kind) != "update" {
+		t.Fatalf("changes = %#v", changes.Changes)
+	}
+}
+
+func TestBuildChangesetExplicitDirectorySelectsChildrenNotSiblings(t *testing.T) {
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(local, "src", "child.txt"), []byte("child new\n"))
+	mustWriteFile(t, filepath.Join(local, "src-sibling.txt"), []byte("sibling new\n"))
+	snap := state.Snapshot{
+		WorkspaceRef: "lab:/remote",
+		Entries: map[string]state.TrackedFile{
+			"src/child.txt":   {Path: "src/child.txt", BaseHash: state.HashBytes([]byte("child old\n")), Revision: "r1"},
+			"src-sibling.txt": {Path: "src-sibling.txt", BaseHash: state.HashBytes([]byte("sibling old\n")), Revision: "r2"},
+		},
+	}
+
+	changes, skipped, err := BuildChangesetWithOptions(local, snap, BuildChangesetOptions{
+		UseIgnoreFiles: true,
+		ExplicitPaths:  []string{"src"},
+	})
+	if err != nil {
+		t.Fatalf("BuildChangesetWithOptions: %v", err)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %#v", skipped)
+	}
+	if len(changes.Changes) != 1 || changes.Changes[0].Path != "src/child.txt" {
+		t.Fatalf("changes = %#v", changes.Changes)
+	}
+}
+
+func TestBuildChangesetIncludesUntrackedWithFlag(t *testing.T) {
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(local, "new.txt"), []byte("intentional\n"))
+
+	changes, skipped, err := BuildChangesetWithOptions(local, state.Snapshot{Entries: map[string]state.TrackedFile{}}, BuildChangesetOptions{
+		UseIgnoreFiles:   true,
+		IncludeUntracked: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildChangesetWithOptions: %v", err)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %#v", skipped)
+	}
+	if len(changes.Changes) != 1 || changes.Changes[0].Path != "new.txt" {
+		t.Fatalf("changes = %#v", changes.Changes)
+	}
+}
+
 func mustWriteFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -654,6 +805,15 @@ func containsString(values []string, want string) bool {
 }
 
 func containsSkipped(values []SkippedChange, want string) bool {
+	for _, value := range values {
+		if value.Path == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsChange(values []apply.Change, want string) bool {
 	for _, value := range values {
 		if value.Path == want {
 			return true

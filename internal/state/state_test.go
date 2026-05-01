@@ -197,6 +197,35 @@ func TestDirtyDetectionSkipsProjectGitDirectory(t *testing.T) {
 	}
 }
 
+func TestDetectDirtyRespectsRemorkIgnore(t *testing.T) {
+	local := t.TempDir()
+	mustWrite(t, filepath.Join(local, ".remorkignore"), []byte("node_modules/\n*.log\n.env\n"))
+	mustWrite(t, filepath.Join(local, "node_modules", "pkg", "index.js"), []byte("ignored"))
+	mustWrite(t, filepath.Join(local, "run.log"), []byte("ignored"))
+	mustWrite(t, filepath.Join(local, ".env"), []byte("ignored"))
+	mustWrite(t, filepath.Join(local, "src", "main.go"), []byte("tracked"))
+
+	dirty, err := DetectDirtyWithOptions(local, Snapshot{Entries: map[string]TrackedFile{}}, DirtyOptions{
+		UseIgnoreFiles: true,
+	})
+	if err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	assertChange(t, dirty, "src/main.go", ChangeCreate)
+	if hasChange(dirty, "node_modules/pkg/index.js") || hasChange(dirty, "run.log") || hasChange(dirty, ".env") {
+		t.Fatalf("ignored paths were reported dirty: %#v", dirty)
+	}
+}
+
+func hasChange(changes []DirtyChange, path string) bool {
+	for _, change := range changes {
+		if change.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
 func mustWrite(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

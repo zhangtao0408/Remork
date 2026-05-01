@@ -37,10 +37,12 @@ func (e codedCommandError) ExitCode() int {
 func addApplyCommand(root *cobra.Command, opts Options) {
 	var dryRun bool
 	var jsonOut bool
+	var includeUntracked bool
 
 	cmd := &cobra.Command{
-		Use:   "apply",
+		Use:   "apply [path...]",
 		Short: "Write local changes to the remote after base checks",
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runner, binding, localRoot, workspaceRef, err := boundApplyContext(opts)
 			if err != nil {
@@ -53,7 +55,11 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 				}
 				snap = state.Snapshot{WorkspaceRef: workspaceRef, Entries: map[string]state.TrackedFile{}}
 			}
-			changeset, skipped, err := syncer.BuildChangeset(localRoot, snap)
+			changeset, skipped, err := syncer.BuildChangesetWithOptions(localRoot, snap, syncer.BuildChangesetOptions{
+				UseIgnoreFiles:   true,
+				IncludeUntracked: includeUntracked,
+				ExplicitPaths:    args,
+			})
 			if err != nil {
 				return err
 			}
@@ -70,6 +76,11 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 						DryRun:  true,
 					})
 				}
+				return nil
+			}
+			if len(changeset.Changes) == 0 && len(skipped) > 0 && !jsonOut {
+				fmt.Fprintln(cmd.OutOrStdout(), "applied 0")
+				fmt.Fprintln(cmd.ErrOrStderr(), "Skipped untracked or ignored files. Use remork apply <path> or --include-untracked when you intend to create remote files.")
 				return nil
 			}
 			if len(changeset.Changes) == 0 {
@@ -116,6 +127,7 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the apply plan without writing remote files")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON output")
+	cmd.Flags().BoolVar(&includeUntracked, "include-untracked", false, "Include untracked local files in the apply changeset")
 	root.AddCommand(cmd)
 }
 

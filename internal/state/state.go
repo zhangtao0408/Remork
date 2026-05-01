@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"remork/internal/api"
+	remorkignore "remork/internal/ignore"
 	"remork/internal/transfer"
 )
 
@@ -40,6 +41,10 @@ type Snapshot struct {
 type DirtyChange struct {
 	Path string     `json:"path"`
 	Kind ChangeKind `json:"kind"`
+}
+
+type DirtyOptions struct {
+	UseIgnoreFiles bool
 }
 
 type Store struct {
@@ -122,6 +127,10 @@ func (s Store) path(workspaceRef string) string {
 }
 
 func DetectDirty(localRoot string, snap Snapshot) ([]DirtyChange, error) {
+	return DetectDirtyWithOptions(localRoot, snap, DirtyOptions{})
+}
+
+func DetectDirtyWithOptions(localRoot string, snap Snapshot, opts DirtyOptions) ([]DirtyChange, error) {
 	var changes []DirtyChange
 	seen := map[string]bool{}
 	for path, tracked := range snap.Entries {
@@ -157,22 +166,39 @@ func DetectDirty(localRoot string, snap Snapshot) ([]DirtyChange, error) {
 			changes = append(changes, DirtyChange{Path: path, Kind: ChangeModify})
 		}
 	}
+	var matcher remorkignore.Matcher
+	if opts.UseIgnoreFiles {
+		var err error
+		matcher, err = remorkignore.Load(localRoot)
+		if err != nil {
+			return nil, err
+		}
+	}
 	err := filepath.WalkDir(localRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
-		}
-		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == ".remork" {
-				return filepath.SkipDir
-			}
-			return nil
 		}
 		rel, err := filepath.Rel(localRoot, path)
 		if err != nil {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if rel == "." {
+			return nil
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" || d.Name() == ".remork" {
+				return filepath.SkipDir
+			}
+			if opts.UseIgnoreFiles && matcher.Match(rel, true) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if rel == ".remork-local.json" || strings.HasSuffix(rel, ".meta") {
+			return nil
+		}
+		if opts.UseIgnoreFiles && matcher.Match(rel, false) {
 			return nil
 		}
 		if !seen[rel] {
