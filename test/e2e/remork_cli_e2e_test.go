@@ -218,6 +218,23 @@ func TestRemorkProductDiffAndRestore(t *testing.T) {
 	h.assertLocal("a.txt", "one\n")
 }
 
+func TestRemorkProductDiffAndRestoreDashPrefixedPath(t *testing.T) {
+	h := newCLIHarness(t)
+	h.writeRemote("-dash.txt", "one\n")
+	h.bindAndSync()
+	h.writeLocal("-dash.txt", "two\n")
+
+	diffOut := h.runInLocal("diff", "--", "-dash.txt")
+	for _, want := range []string{"-one", "+two"} {
+		if !strings.Contains(diffOut, want) {
+			t.Fatalf("diff output missing %q:\n%s", want, diffOut)
+		}
+	}
+
+	h.runInLocal("restore", "--", "-dash.txt")
+	h.assertLocal("-dash.txt", "one\n")
+}
+
 func TestRemorkProductRestoreMissingBaseCacheSuggestsForceSync(t *testing.T) {
 	h := newCLIHarness(t)
 	h.writeRemote("a.txt", "one\n")

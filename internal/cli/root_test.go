@@ -42,7 +42,7 @@ func TestRootHelpShowsProductCommandLayers(t *testing.T) {
 	}
 
 	mustContain(t, out.String(), "Must know: init sync status apply run shell")
-	mustContain(t, out.String(), "Learn later: pull diff restore log watch")
+	mustContain(t, out.String(), "Learn later: pull diff restore conflict log watch")
 	mustContain(t, out.String(), "Debug and operations: doctor debug daemon")
 }
 

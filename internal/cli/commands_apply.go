@@ -212,6 +212,7 @@ func writeApplyConflict(cmd *cobra.Command, paths []string, jsonOut bool) {
 	}
 	for _, path := range paths {
 		fmt.Fprintf(cmd.ErrOrStderr(), "conflict: %s\n", path)
+		fmt.Fprintf(cmd.ErrOrStderr(), "inspect: %s\n", pathCommand("conflict", path))
 	}
 }
 

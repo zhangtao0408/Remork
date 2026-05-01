@@ -167,6 +167,52 @@ This protects against overwriting:
 
 Review with `remork status` and `remork diff` before applying.
 
+### Conflict recovery
+
+When local edits and remote updates touch the same file, start with the verbose
+status view:
+
+```sh
+remork status --verbose
+```
+
+For each conflict, inspect the guided recovery steps:
+
+```sh
+remork conflict -- path/to/file
+```
+
+Review your local edit against the synced base:
+
+```sh
+remork diff -- path/to/file
+```
+
+To discard your local edit for that file, restore it back to the synced base
+cache. This does not accept the current remote update that caused the conflict:
+
+```sh
+remork restore -- path/to/file
+```
+
+After restore, check status again:
+
+```sh
+remork status
+```
+
+If remote updates remain, pull them into the local workspace:
+
+```sh
+remork sync
+```
+
+Then continue reviewing changes or apply when appropriate:
+
+```sh
+remork apply
+```
+
 New local files are not created on the remote by a broad `remork apply` unless
 you explicitly select them. Use `remork apply path/to/new-file` when you intend
 to create one specific remote file, or `remork apply --include-untracked` when
@@ -228,9 +274,15 @@ Fetches a specific file or directory. This is the explicit path for large files.
 
 Shows local changes against the synced base.
 
-`remork restore PATH`
+`remork restore -- PATH`
 
-Discards local edits and restores from the synced base or remote copy.
+Discards local edits and restores from the synced base cache, not the current
+remote update. Run `remork status` afterward; if remote updates remain, run
+`remork sync`, then continue or apply as appropriate.
+
+`remork conflict -- PATH`
+
+Shows the local diff, restore, status, and apply commands for a conflicted path.
 
 `remork log`
 

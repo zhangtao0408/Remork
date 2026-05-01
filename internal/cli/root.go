@@ -44,10 +44,11 @@ Must know: init sync status apply run shell
   run         Run a command in the remote workspace
   shell       Open an interactive remote shell
 
-Learn later: pull diff restore log watch
+Learn later: pull diff restore conflict log watch
   pull        Fetch a specific file or directory
   diff        Show local changes against the synced base
   restore     Discard local changes
+  conflict    Show conflict recovery steps for a path
   log         Show recent remote Remork operations
   watch       Keep syncing from remote events
   host        Manage daemon endpoints
@@ -96,6 +97,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	addStatusCommand(root, opts)
 	addDiffCommand(root, opts)
 	addRestoreCommand(root, opts)
+	addConflictCommand(root, opts)
 	addApplyCommand(root, opts)
 	addPullCommand(root, opts)
 	addRunCommand(root, opts)
@@ -207,6 +209,7 @@ func placeholderShort(name string) string {
 		"pull":      "Fetch a specific file or directory",
 		"diff":      "Show local changes against the synced base",
 		"restore":   "Discard local changes",
+		"conflict":  "Show conflict recovery steps for a path",
 		"log":       "Show recent remote Remork operations",
 		"watch":     "Keep syncing from remote events",
 		"host":      "Manage daemon endpoints",
