@@ -193,6 +193,8 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, apply.ErrConflict) {
 			status = http.StatusConflict
 			resultName = "conflict"
+		} else if result.Error == "" {
+			result.Error = err.Error()
 		}
 		var buf bytes.Buffer
 		_ = json.NewEncoder(&buf).Encode(result)

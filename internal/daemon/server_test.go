@@ -17,6 +17,8 @@ import (
 	"github.com/gorilla/websocket"
 
 	"remork/internal/api"
+	"remork/internal/apply"
+	"remork/internal/client"
 	"remork/internal/state"
 	"remork/internal/watch"
 )
@@ -233,6 +235,36 @@ func TestApplyEndpointConflictReturnsConflict(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestApplyEndpointLockedErrorSurfacesThroughClient(t *testing.T) {
+	root := t.TempDir()
+	lockDir := filepath.Join(root, ".remork", "lock")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		t.Fatalf("mkdir lock dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(lockDir, "apply.lock"), []byte("held\n"), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+
+	c := client.New(srv.URL)
+	result, err := c.Apply(root, apply.Changeset{Changes: []apply.Change{
+		{Path: "a.txt", Kind: apply.ChangeCreate, Content: []byte("local")},
+	}})
+	if err == nil {
+		t.Fatal("expected apply lock error")
+	}
+	if result.Applied {
+		t.Fatalf("result applied = true, want false")
+	}
+	if !strings.Contains(result.Error, "apply lock is already held") {
+		t.Fatalf("result error %q missing lock message", result.Error)
+	}
+	if !strings.Contains(err.Error(), "apply lock is already held") {
+		t.Fatalf("client error %q missing lock message; result %#v", err.Error(), result)
 	}
 }
 

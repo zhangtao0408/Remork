@@ -104,7 +104,15 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 					writeApplyConflict(cmd, result.Conflicts, jsonOut)
 					return applyConflictError(result.Conflicts)
 				}
+				if isApplyPartialFailure(result) {
+					writeApplyPartialFailure(cmd, result, jsonOut)
+					return applyPartialError(result)
+				}
 				return err
+			}
+			if isApplyPartialFailure(result) {
+				writeApplyPartialFailure(cmd, result, jsonOut)
+				return applyPartialError(result)
 			}
 			if !result.Applied {
 				writeApplyConflict(cmd, result.Conflicts, jsonOut)
@@ -173,11 +181,22 @@ func isApplyConflict(err error, result apply.Result) bool {
 	return len(result.Conflicts) > 0 || errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict
 }
 
+func isApplyPartialFailure(result apply.Result) bool {
+	return result.FailedPath != "" || len(result.Partial) > 0
+}
+
 func applyConflictError(paths []string) error {
 	if len(paths) == 0 {
 		return codedCommandError{code: exitcode.Conflict, err: errors.New("conflict")}
 	}
 	return codedCommandError{code: exitcode.Conflict, err: fmt.Errorf("conflict: %v", paths)}
+}
+
+func applyPartialError(result apply.Result) error {
+	if result.FailedPath == "" {
+		return errors.New("apply failed after partial mutation")
+	}
+	return fmt.Errorf("apply failed at %s after partial mutation", result.FailedPath)
 }
 
 func writeApplyConflict(cmd *cobra.Command, paths []string, jsonOut bool) {
@@ -194,4 +213,22 @@ func writeApplyConflict(cmd *cobra.Command, paths []string, jsonOut bool) {
 	for _, path := range paths {
 		fmt.Fprintf(cmd.ErrOrStderr(), "conflict: %s\n", path)
 	}
+}
+
+func writeApplyPartialFailure(cmd *cobra.Command, result apply.Result, jsonOut bool) {
+	if jsonOut {
+		_ = output.WriteJSON(cmd.OutOrStdout(), result)
+		return
+	}
+	if result.FailedPath != "" {
+		fmt.Fprintf(cmd.ErrOrStderr(), "apply failed at: %s\n", result.FailedPath)
+	} else {
+		fmt.Fprintln(cmd.ErrOrStderr(), "apply failed after partial mutation")
+	}
+	if len(result.Partial) == 0 {
+		fmt.Fprintln(cmd.ErrOrStderr(), "changed paths: none")
+	} else {
+		fmt.Fprintf(cmd.ErrOrStderr(), "changed paths: %v\n", result.Partial)
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), "Run remork status and remork sync before retrying.")
 }

@@ -1,8 +1,10 @@
 package apply
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"remork/internal/state"
@@ -142,6 +144,81 @@ func TestApplyBinaryUpdate(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(root, "blob.bin"))
 	if string(data) != string(after) {
 		t.Fatalf("binary content %#v", data)
+	}
+}
+
+func TestApplyReportsPartialFailure(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.txt"), []byte("a-before"))
+	mustWrite(t, filepath.Join(root, "b.txt"), []byte("b-before"))
+	renameErr := errors.New("injected rename failure")
+	ops := defaultApplyOps()
+	ops.rename = func(oldpath, newpath string) error {
+		if filepath.Base(newpath) == "b.txt" {
+			return renameErr
+		}
+		return os.Rename(oldpath, newpath)
+	}
+
+	result, err := applyWithOps(root, Changeset{Changes: []Change{
+		{Path: "a.txt", Kind: ChangeUpdate, BaseHash: state.HashBytes([]byte("a-before")), Content: []byte("a-after")},
+		{Path: "b.txt", Kind: ChangeUpdate, BaseHash: state.HashBytes([]byte("b-before")), Content: []byte("b-after")},
+	}}, ops)
+	if !errors.Is(err, renameErr) {
+		t.Fatalf("error = %v, want injected rename failure", err)
+	}
+	if result.Applied {
+		t.Fatalf("partial failure reported applied: %#v", result)
+	}
+	if !reflect.DeepEqual(result.Partial, []string{"a.txt"}) {
+		t.Fatalf("partial = %#v, want [a.txt]", result.Partial)
+	}
+	if result.FailedPath != "b.txt" {
+		t.Fatalf("failed path = %q, want b.txt", result.FailedPath)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "a-after" {
+		t.Fatalf("a.txt = %q, want a-after", data)
+	}
+	data, err = os.ReadFile(filepath.Join(root, "b.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "b-before" {
+		t.Fatalf("b.txt = %q, want b-before", data)
+	}
+}
+
+func TestApplyFailsWhenApplyLockExists(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.txt"), []byte("before"))
+	lockDir := filepath.Join(root, ".remork", "lock")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lockFile := filepath.Join(lockDir, "apply.lock")
+	if err := os.WriteFile(lockFile, []byte("held"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Apply(root, Changeset{Changes: []Change{
+		{Path: "a.txt", Kind: ChangeUpdate, BaseHash: state.HashBytes([]byte("before")), Content: []byte("after")},
+	}})
+	if err == nil {
+		t.Fatal("expected apply lock error")
+	}
+	if result.Applied {
+		t.Fatalf("locked apply reported applied: %#v", result)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "before" {
+		t.Fatalf("locked apply mutated file: %q", data)
 	}
 }
 

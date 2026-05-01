@@ -61,6 +61,22 @@ captured during sync or pull. If the remote file changed after that base was
 captured, the daemon returns a conflict and does not partially apply the
 changeset.
 
+The JSON result includes:
+
+- `applied`: true only when every change was written.
+- `conflicts`: paths whose base checks failed. Conflicts are detected before
+  mutation, so these responses do not change remote files.
+- `partial`: paths successfully changed before an unexpected mutation failure.
+- `failed_path`: the changeset path that failed during mutation.
+- `error`: non-conflict apply error text when no conflict list carries the
+  failure reason.
+
+Remork serializes applies with `<workspace>/.remork/lock/apply.lock` and
+verifies the full changeset after taking that lock. This prevents concurrent
+applies from interleaving and preserves conflict behavior, but Remork does not
+provide arbitrary multi-file filesystem transactions. If `partial` is non-empty,
+run `remork status` and `remork sync` before retrying.
+
 ## Exec
 
 `POST /exec`
