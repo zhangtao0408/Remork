@@ -100,8 +100,7 @@ func newDaemonDeployCommand(action string, opts Options) *cobra.Command {
 			if deploy.localBin == "" {
 				deploy.localBin = filepathForDaemonBinary(deploy.platform)
 			}
-			printDaemonDeployPlan(cmd.OutOrStdout(), deploy)
-			return nil
+			return runDaemonDeploy(cmd.OutOrStdout(), deploy)
 		},
 	}
 	cmd.Flags().StringVar(&deploy.root, "root", "", "Remote workspace root for remorkd")
@@ -111,6 +110,8 @@ func newDaemonDeployCommand(action string, opts Options) *cobra.Command {
 	cmd.Flags().StringVar(&deploy.remoteBin, "remote-bin", deploy.remoteBin, "Remote remorkd path")
 	cmd.Flags().StringVar(&deploy.platform, "platform", "", "Daemon platform suffix such as linux-arm64")
 	cmd.Flags().StringVar(&deploy.tokenFile, "token-file", "", "Remote token file passed to remorkd")
+	cmd.Flags().BoolVar(&deploy.execute, "execute", false, "Run generated scp and ssh deployment commands")
+	cmd.Flags().BoolVar(&deploy.yes, "yes", false, "Confirm deployment command execution")
 	return cmd
 }
 
@@ -124,6 +125,9 @@ type daemonDeployOptions struct {
 	remoteBin string
 	platform  string
 	tokenFile string
+	execute   bool
+	yes       bool
+	runner    commandRunner
 }
 
 func loadConfiguredHost(opts Options, name string) (config.Host, bool, error) {
@@ -154,13 +158,48 @@ func printDaemonDeployPlan(out interface{ Write([]byte) (int, error) }, deploy d
 	}
 	fmt.Fprintln(out, "Run these commands from this machine. They copy a prebuilt daemon and start it without remote Go, npm, apt, brew, or internet.")
 	fmt.Fprintf(out, "scp %s %s:%s\n", shellQuote(deploy.localBin), shellQuote(remote), shellQuote(deploy.remoteBin))
-	fmt.Fprintf(out, "ssh %s %s\n", shellQuote(remote), shellQuote("chmod 0755 "+deploy.remoteBin))
+	fmt.Fprintf(out, "ssh %s %s\n", shellQuote(remote), shellQuote(remoteChmodCommand(deploy.remoteBin)))
 	if startCmd != "" {
 		fmt.Fprintf(out, "ssh %s %s\n", shellQuote(remote), shellQuote(startCmd))
 	}
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Then configure the host URL if needed:\n  remork host add %s --url http://HOST:%s\n", deploy.hostName, daemonPort(deploy.addr))
 	fmt.Fprintf(out, "Verify:\n  remork daemon status %s\n", deploy.hostName)
+}
+
+func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonDeployOptions) error {
+	printDaemonDeployPlan(out, deploy)
+	if !deploy.execute {
+		return nil
+	}
+	if !deploy.yes {
+		return fmt.Errorf("--execute requires --yes")
+	}
+	runner := deploy.runner
+	if runner == nil {
+		runner = osCommandRunner{}
+	}
+	remote := deploy.sshTarget
+	if remote == "" {
+		remote = deploy.hostName
+	}
+	if err := runner.Run("scp", deploy.localBin, remote+":"+deploy.remoteBin); err != nil {
+		return err
+	}
+	if err := runner.Run("ssh", remote, remoteChmodCommand(deploy.remoteBin)); err != nil {
+		return err
+	}
+	if startCmd := remoteStartCommand(deploy); startCmd != "" {
+		if err := runner.Run("ssh", remote, startCmd); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintln(out, "daemon deploy executed")
+	return nil
+}
+
+func remoteChmodCommand(remoteBin string) string {
+	return "chmod 0755 " + shellQuote(remoteBin)
 }
 
 func insecureNoTokenNonLoopbackAddr(addr string, hasToken bool) bool {

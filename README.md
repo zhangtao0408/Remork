@@ -25,7 +25,7 @@ Copy the daemon to the remote host and start it:
 
 ```bash
 scp dist/remorkd-linux-arm64 lab-a:/tmp/remorkd
-ssh lab-a 'chmod +x /tmp/remorkd'
+ssh lab-a 'chmod 0755 /tmp/remorkd'
 ssh lab-a 'nohup /tmp/remorkd --root /data/project-a --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
 ```
 
@@ -338,12 +338,14 @@ roots, large-file threshold, watch support, and local auth state.
 
 Prints exact offline `scp` and `ssh` commands for copying and starting a
 prebuilt daemon. Use `--ssh`, `--platform`, `--local-bin`, `--remote-bin`,
-`--addr`, and `--token-file` when the defaults are not correct.
+`--addr`, and `--token-file` when the defaults are not correct. Add
+`--execute --yes` to run the generated commands.
 
 `remork daemon upgrade HOST`
 
 Prints exact commands for replacing the remote daemon binary. Start flags are
-included when `--root` is provided.
+included when `--root` is provided. Add `--execute --yes` to run the generated
+commands.
 
 ## Offline daemon deployment
 
@@ -367,8 +369,25 @@ For a Linux arm64 remote:
 
 ```bash
 scripts/build-release.sh dev
+remork daemon install lab-a --root /data/project-a --ssh lab-a --platform linux-arm64
+```
+
+Daemon deployment is print-only by default. To have Remork run the generated
+`scp` and `ssh` commands from this machine:
+
+```bash
+remork daemon install lab-a --root /data/project-a --ssh lab-a --platform linux-arm64 --execute --yes
+```
+
+The SSH step is only an install helper for copying and starting `remorkd`.
+Normal Remork runtime transport is still HTTP to the configured `remorkd`
+address.
+
+The generated commands are equivalent to:
+
+```bash
 scp dist/remorkd-linux-arm64 lab-a:/tmp/remorkd
-ssh lab-a 'chmod +x /tmp/remorkd'
+ssh lab-a 'chmod 0755 /tmp/remorkd'
 ssh lab-a 'nohup /tmp/remorkd --root /data/project-a --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
 curl --noproxy '*' http://10.0.0.12:17731/status
 ```
