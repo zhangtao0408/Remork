@@ -89,9 +89,13 @@ Use `shell` only for workflows that need interactivity:
 
 ```bash
 remork shell
+remork shell --list
+remork shell --attach <session-id>
+remork shell --kill <session-id>
 ```
 
-Product V1 shell sessions are live sessions. They are not detachable.
+Product V1 shell sessions are durable daemon sessions. If the local client
+disconnects, list and reattach to the retained session or kill it explicitly.
 
 ## Logs And Debugging
 

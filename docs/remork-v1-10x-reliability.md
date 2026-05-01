@@ -194,3 +194,64 @@ Cleanup proof commands returned no output after removing temporary smoke paths:
 ssh z00879328_docker 'rm -rf /tmp/remork-v1-e2e-* /tmp/remork-v1-e2e-final-*; ps -ef | grep remork-v1-e2e | grep -v grep || true; find /tmp -maxdepth 1 \( -name "remork-v1-e2e-*" -o -name "remork-v1-e2e-final-*" \) -print 2>/dev/null | sort'
 ssh z00879328_docker_2.6 'rm -rf /tmp/remork-v1-e2e-* /tmp/remork-v1-e2e-final-*; ps -ef | grep remork-v1-e2e | grep -v grep || true; find /tmp -maxdepth 1 \( -name "remork-v1-e2e-*" -o -name "remork-v1-e2e-final-*" \) -print 2>/dev/null | sort'
 ```
+
+## P0-P2 Hardening Verification
+
+Date: 2026-05-01
+
+After the P0-P2 hardening work, the Master Agent ran the full local and remote
+verification pass from the hardening plan.
+
+Verified:
+
+- daemon apply rejects symlink parent and symlink final paths;
+- apply reports partial filesystem failures;
+- client and daemon have default timeouts and body/output limits;
+- untracked local files require explicit selection or `--include-untracked`;
+- each local checkout uses an isolated state directory;
+- watch has periodic reconcile and burst coverage;
+- shell sessions can be listed and reattached;
+- non-loopback no-token daemon plans print warnings;
+- conflict recovery paths are visible in text output;
+- daemon install can execute its generated scp/ssh plan.
+
+Local verification:
+
+```bash
+go test -count=1 ./...
+go test -race -count=1 ./internal/daemon ./internal/client ./internal/syncer ./internal/preflight ./internal/shellclient ./internal/watch ./test/e2e
+scripts/build-release.sh dev
+(cd dist && shasum -a 256 -c checksums.txt)
+```
+
+Result: all commands passed. The release check verified all Darwin/Linux
+amd64/arm64 CLI and daemon binaries plus `remorkd.example.toml` and
+`README-release.md`.
+
+Final remote smoke used the rebuilt `dist/remorkd-linux-arm64` daemon and
+`dist/remork-darwin-arm64` CLI against both provided servers. Each run copied a
+single daemon binary to the server, started it without requiring remote Go or
+internet access, configured the local CLI with a deliberately bad proxy plus
+`--no-proxy`, then exercised `host add`, `init`, `sync`, large-file `.meta`
+materialization for a 128MiB+ file, `apply`, `run`, `log`, and the remote
+workspace operation log under `.remork/log/operations.jsonl`.
+
+| Host | URL | Result | Coverage |
+| --- | --- | --- | --- |
+| `z00879328_docker` | `http://175.100.2.7:17771` | PASS | copy daemon, detached start, bad proxy plus `--no-proxy`, `init`, `sync`, nested file, 128MiB+ large `.meta`, `apply`, `run`, CLI `log`, remote `.remork/log` check |
+| `z00879328_docker_2.6` | `http://175.100.2.6:17772` | PASS | copy daemon, detached start, bad proxy plus `--no-proxy`, `init`, `sync`, nested file, 128MiB+ large `.meta`, `apply`, `run`, CLI `log`, remote `.remork/log` check |
+
+Smoke output:
+
+```text
+z00879328_docker final remote smoke PASS
+z00879328_docker_2.6 final remote smoke PASS
+```
+
+Cleanup proof commands returned no output after removing temporary hardening
+smoke paths:
+
+```bash
+ssh z00879328_docker 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
+ssh z00879328_docker_2.6 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
+```

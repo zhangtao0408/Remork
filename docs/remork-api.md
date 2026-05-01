@@ -27,7 +27,9 @@ POST /apply?root=<root>
 POST /exec
 GET  /operations?root=<root>&limit=<n>
 GET  /events?root=<root>
-GET  /shell?root=<root>
+GET  /shell?root=<root>[&session=<id>]
+GET  /shell/sessions?root=<root>
+DELETE /shell/sessions?root=<root>&id=<id>
 ```
 
 ## Status
@@ -103,7 +105,39 @@ as `remork watch`.
 
 ## Shell
 
-`GET /shell?root=<root>`
+`GET /shell?root=<root>[&session=<id>]`
 
-Opens a WebSocket-backed interactive shell session. Product V1 shell sessions
-are live sessions; detach and reattach are future workflow goals.
+Opens a WebSocket-backed interactive shell session. Without `session`, the
+daemon starts a durable shell in the requested root. With `session`, the daemon
+reattaches the WebSocket to an existing retained session for the same root.
+
+Shell WebSocket frames:
+
+- Binary frames carry PTY output from the daemon to the client.
+- Text or binary input that is not structured JSON is written to the PTY.
+- Structured JSON frames may carry control messages such as terminal resize.
+- The daemon sends a JSON `ShellFrame` with `type: "exit"` and `exit_code` when
+  the remote shell exits.
+
+`GET /shell/sessions?root=<root>`
+
+Lists retained shell sessions for a root. The response is:
+
+```json
+{
+  "sessions": [
+    {
+      "id": "sess-...",
+      "command": ["sh"],
+      "last_active": "2026-05-01T12:00:00Z"
+    }
+  ]
+}
+```
+
+`DELETE /shell/sessions?root=<root>&id=<id>`
+
+Stops and removes a retained shell session. The endpoint returns `204` when the
+session was found and closed. The CLI exposes these APIs as `remork shell`,
+`remork shell --list`, `remork shell --attach <session-id>`, and
+`remork shell --kill <session-id>`.
