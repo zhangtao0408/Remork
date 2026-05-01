@@ -11,6 +11,7 @@ import (
 	"remork/internal/auth"
 	"remork/internal/client"
 	"remork/internal/config"
+	"remork/internal/safety"
 )
 
 func addDaemonCommand(root *cobra.Command, opts Options) {
@@ -145,6 +146,12 @@ func printDaemonDeployPlan(out interface{ Write([]byte) (int, error) }, deploy d
 	}
 	startCmd := remoteStartCommand(deploy)
 	fmt.Fprintf(out, "remorkd %s plan for %s\n\n", deploy.action, deploy.hostName)
+	if insecureNoTokenNonLoopbackAddr(deploy.addr, deploy.tokenFile != "") {
+		fmt.Fprintln(out, "WARNING: this plan starts remorkd on a non-loopback or wildcard address without authentication.")
+		fmt.Fprintln(out, "Anyone who can reach that address can use apply/file access and writes, remote command execution, and shell endpoints.")
+		fmt.Fprintln(out, "Use --token-file for remorkd and configure the CLI with remork host add --token-env before using this on shared VPNs or multi-user networks.")
+		fmt.Fprintln(out)
+	}
 	fmt.Fprintln(out, "Run these commands from this machine. They copy a prebuilt daemon and start it without remote Go, npm, apt, brew, or internet.")
 	fmt.Fprintf(out, "scp %s %s:%s\n", shellQuote(deploy.localBin), shellQuote(remote), shellQuote(deploy.remoteBin))
 	fmt.Fprintf(out, "ssh %s %s\n", shellQuote(remote), shellQuote("chmod 0755 "+deploy.remoteBin))
@@ -154,6 +161,10 @@ func printDaemonDeployPlan(out interface{ Write([]byte) (int, error) }, deploy d
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Then configure the host URL if needed:\n  remork host add %s --url http://HOST:%s\n", deploy.hostName, daemonPort(deploy.addr))
 	fmt.Fprintf(out, "Verify:\n  remork daemon status %s\n", deploy.hostName)
+}
+
+func insecureNoTokenNonLoopbackAddr(addr string, hasToken bool) bool {
+	return safety.UnsafeNoTokenNonLoopbackBind(addr, hasToken)
 }
 
 func remoteStartCommand(deploy daemonDeployOptions) string {

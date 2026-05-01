@@ -10,6 +10,7 @@ import (
 
 	"remork/internal/daemon"
 	"remork/internal/limits"
+	"remork/internal/safety"
 )
 
 var version = "dev"
@@ -32,6 +33,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if insecureNoTokenNonLoopbackListenAddr(*addr, resolvedToken != "") {
+		log.Printf("WARNING: remorkd is listening on a non-loopback or wildcard address without authentication; clients that can reach it can use apply/file access and writes, remote command execution, and shell endpoints. Use --token-file and configure clients with remork host add --token-env.")
+	}
 	srv := daemon.NewServer(daemon.Config{Version: version, Roots: []string{*root}, LargeThreshold: 128 << 20, Token: resolvedToken})
 	httpServer := &http.Server{
 		Addr:              *addr,
@@ -40,6 +44,10 @@ func main() {
 		IdleTimeout:       limits.DaemonIdleTimeout,
 	}
 	log.Fatal(httpServer.ListenAndServe())
+}
+
+func insecureNoTokenNonLoopbackListenAddr(addr string, hasToken bool) bool {
+	return safety.UnsafeNoTokenNonLoopbackBind(addr, hasToken)
 }
 
 func resolveToken(token, tokenFile string) (string, error) {

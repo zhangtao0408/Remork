@@ -29,6 +29,10 @@ ssh lab-a 'chmod +x /tmp/remorkd'
 ssh lab-a 'nohup /tmp/remorkd --root /data/project-a --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
 ```
 
+`--addr 0.0.0.0:17731` exposes Remork to machines that can reach the
+VPN/private address. On shared VPNs or multi-user networks, start `remorkd`
+with `--token-file` and configure the CLI with `remork host add --token-env`.
+
 Configure the local CLI:
 
 ```bash
@@ -316,6 +320,10 @@ ssh lab-a 'chmod +x /tmp/remorkd'
 ssh lab-a 'nohup /tmp/remorkd --root /data/project-a --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
 curl --noproxy '*' http://10.0.0.12:17731/status
 ```
+
+`--addr 0.0.0.0:17731` exposes Remork to machines that can reach the
+VPN/private address. On shared VPNs or multi-user networks, start `remorkd`
+with `--token-file` and configure the CLI with `remork host add --token-env`.
 
 Or run the smoke helper:
 
