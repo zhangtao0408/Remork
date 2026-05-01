@@ -184,6 +184,56 @@ func TestInitWritesLocalBinding(t *testing.T) {
 	}
 }
 
+func TestInitUsesDifferentStateDirForDifferentLocalRoots(t *testing.T) {
+	home := t.TempDir()
+	localA := t.TempDir()
+	localB := t.TempDir()
+
+	cmd := NewRootCommand(Options{
+		Version:     "test",
+		HomeDir:     home,
+		WorkingDir:  localA,
+		DaemonProbe: fakeDaemonProbe{Roots: []string{"/data/project-a"}},
+	})
+	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://10.0.0.12:17731"); err != nil {
+		t.Fatalf("host add: %v", err)
+	}
+	if _, err := executeCommand(cmd, "init", "lab-a:/data/project-a"); err != nil {
+		t.Fatalf("init A: %v", err)
+	}
+
+	cmd = NewRootCommand(Options{
+		Version:     "test",
+		HomeDir:     home,
+		WorkingDir:  localB,
+		DaemonProbe: fakeDaemonProbe{Roots: []string{"/data/project-a"}},
+	})
+	if _, err := executeCommand(cmd, "init", "lab-a:/data/project-a"); err != nil {
+		t.Fatalf("init B: %v", err)
+	}
+
+	bindingA, _, err := workspace.ResolveFrom(localA)
+	if err != nil {
+		t.Fatalf("resolve binding A: %v", err)
+	}
+	bindingB, _, err := workspace.ResolveFrom(localB)
+	if err != nil {
+		t.Fatalf("resolve binding B: %v", err)
+	}
+	if bindingA.StateDir == bindingB.StateDir {
+		t.Fatalf("state dirs shared: %s", bindingA.StateDir)
+	}
+}
+
+func TestStableWorkspaceIDUsesDelimiterSafePartBoundaries(t *testing.T) {
+	first := stableWorkspaceID("a\x00b", "c")
+	second := stableWorkspaceID("a", "b\x00c")
+
+	if first == second {
+		t.Fatalf("workspace IDs collide: %s", first)
+	}
+}
+
 func TestInitUsesDefaultDaemonProbe(t *testing.T) {
 	home := t.TempDir()
 	local := t.TempDir()

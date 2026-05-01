@@ -46,7 +46,7 @@ func addInitCommand(root *cobra.Command, opts Options) {
 			if err != nil {
 				return err
 			}
-			workspaceID := stableWorkspaceID(hostName, remoteRoot)
+			workspaceID := stableWorkspaceID(hostName, host.URL, remoteRoot, localRoot)
 			stateDir := filepath.Join(opts.HomeDir, ".remork", "state", workspaceID)
 			stateDir, err = filepath.Abs(stateDir)
 			if err != nil {
@@ -75,7 +75,12 @@ func containsRoot(roots []string, root string) bool {
 	return false
 }
 
-func stableWorkspaceID(host, remoteRoot string) string {
-	sum := sha256.Sum256([]byte(host + "\x00" + remoteRoot))
-	return "ws_" + hex.EncodeToString(sum[:])[:16]
+func stableWorkspaceID(parts ...string) string {
+	h := sha256.New()
+	for _, part := range parts {
+		fmt.Fprintf(h, "%x:", len(part))
+		h.Write([]byte(part))
+		h.Write([]byte{':'})
+	}
+	return "ws_" + hex.EncodeToString(h.Sum(nil))[:16]
 }

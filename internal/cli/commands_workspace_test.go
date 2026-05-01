@@ -33,6 +33,7 @@ func TestWorkspaceCommandShowsCurrentBinding(t *testing.T) {
 	mustContain(t, out.String(), "host: lab")
 	mustContain(t, out.String(), "remote_root: /data/project")
 	mustContain(t, out.String(), "workspace_id: ws_test")
+	mustContain(t, out.String(), "state_scope: local-checkout")
 	mustNotContain(t, out.String(), "token")
 }
 

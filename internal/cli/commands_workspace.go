@@ -25,6 +25,7 @@ func addWorkspaceCommand(root *cobra.Command, opts Options) {
 			fmt.Fprintf(out, "host: %s\n", binding.Host)
 			fmt.Fprintf(out, "remote_root: %s\n", binding.RemoteRoot)
 			fmt.Fprintf(out, "workspace_id: %s\n", binding.WorkspaceID)
+			fmt.Fprintf(out, "state_scope: local-checkout\n")
 			fmt.Fprintf(out, "state_dir: %s\n", binding.StateDir)
 			return nil
 		},
