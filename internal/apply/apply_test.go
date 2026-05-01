@@ -145,6 +145,114 @@ func TestApplyBinaryUpdate(t *testing.T) {
 	}
 }
 
+func TestApplyUpdateDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	mustWrite(t, outside, []byte("outside-base"))
+	mustWrite(t, filepath.Join(root, "safe.txt"), []byte("safe-base"))
+	if err := os.Symlink(outside, filepath.Join(root, "safe.txt.remork-apply")); err != nil {
+		t.Fatalf("temp symlink: %v", err)
+	}
+
+	result, err := Apply(root, Changeset{Changes: []Change{
+		{
+			Path:     "safe.txt",
+			Kind:     ChangeUpdate,
+			BaseHash: state.HashBytes([]byte("safe-base")),
+			Content:  []byte("safe-after"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !result.Applied {
+		t.Fatalf("not applied: %#v", result)
+	}
+	outsideData, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(outsideData) != "outside-base" {
+		t.Fatalf("outside file was modified: %q", outsideData)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "safe.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "safe-after" {
+		t.Fatalf("safe file content: %q", data)
+	}
+}
+
+func TestApplyRejectsCreateThroughSymlinkParent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Fatalf("symlink parent: %v", err)
+	}
+
+	_, err := Apply(root, Changeset{Changes: []Change{
+		{Path: "linked/escape.txt", Kind: ChangeCreate, Content: []byte("outside")},
+	}})
+	if err == nil {
+		t.Fatal("Apply accepted create through symlink parent")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "escape.txt")); !os.IsNotExist(err) {
+		t.Fatalf("outside file was touched: %v", err)
+	}
+}
+
+func TestApplyRejectsUpdateOfSymlinkFile(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	mustWrite(t, outside, []byte("outside-base"))
+	if err := os.Symlink(outside, filepath.Join(root, "link.txt")); err != nil {
+		t.Fatalf("symlink file: %v", err)
+	}
+
+	_, err := Apply(root, Changeset{Changes: []Change{
+		{
+			Path:     "link.txt",
+			Kind:     ChangeUpdate,
+			BaseHash: state.HashBytes([]byte("outside-base")),
+			Content:  []byte("outside-after"),
+		},
+	}})
+	if err == nil {
+		t.Fatal("Apply accepted update of symlink file")
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "outside-base" {
+		t.Fatalf("outside file was modified: %q", data)
+	}
+}
+
+func TestApplyRejectsDeleteOfSymlinkFile(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	mustWrite(t, outside, []byte("outside-base"))
+	if err := os.Symlink(outside, filepath.Join(root, "link.txt")); err != nil {
+		t.Fatalf("symlink file: %v", err)
+	}
+
+	_, err := Apply(root, Changeset{Changes: []Change{
+		{
+			Path:     "link.txt",
+			Kind:     ChangeDelete,
+			BaseHash: state.HashBytes([]byte("outside-base")),
+		},
+	}})
+	if err == nil {
+		t.Fatal("Apply accepted delete of symlink file")
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside file was removed: %v", err)
+	}
+}
+
 func mustWrite(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

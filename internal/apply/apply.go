@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"remork/internal/paths"
 	"remork/internal/state"
 )
 
@@ -45,7 +44,7 @@ func Apply(root string, cs Changeset) (Result, error) {
 		return Result{Applied: false, Conflicts: conflicts}, ErrConflict
 	}
 	for _, ch := range cs.Changes {
-		full, err := paths.ResolveInsideWorkspace(root, ch.Path)
+		full, err := resolveMutationPath(root, ch.Path)
 		if err != nil {
 			return Result{Applied: false}, err
 		}
@@ -54,11 +53,7 @@ func Apply(root string, cs Changeset) (Result, error) {
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 				return Result{Applied: false}, err
 			}
-			tmp := full + ".remork-apply"
-			if err := os.WriteFile(tmp, ch.Content, 0o644); err != nil {
-				return Result{Applied: false}, err
-			}
-			if err := os.Rename(tmp, full); err != nil {
+			if err := writeReplacementFile(full, ch.Content); err != nil {
 				return Result{Applied: false}, err
 			}
 		case ChangeDelete:
@@ -72,10 +67,41 @@ func Apply(root string, cs Changeset) (Result, error) {
 	return Result{Applied: true}, nil
 }
 
+func writeReplacementFile(path string, content []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".remork-apply-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	removeTemp = false
+	return nil
+}
+
 func verify(root string, cs Changeset) ([]string, error) {
 	var conflicts []string
 	for _, ch := range cs.Changes {
-		full, err := paths.ResolveInsideWorkspace(root, ch.Path)
+		full, err := resolveMutationPath(root, ch.Path)
 		if err != nil {
 			return nil, err
 		}
