@@ -44,7 +44,7 @@ func watchEvents(ctx context.Context, cmd *cobra.Command, runCtx runContext) err
 			if _, err := syncForWatch(ctx, cmd, runCtx, ""); err != nil {
 				return err
 			}
-			manifest, err := runCtx.client.Manifest(runCtx.binding.RemoteRoot, ".")
+			manifest, err := runCtx.client.ManifestContext(ctx, runCtx.binding.RemoteRoot, ".")
 			if err != nil {
 				return err
 			}
@@ -57,7 +57,7 @@ func watchEvents(ctx context.Context, cmd *cobra.Command, runCtx runContext) err
 				return err
 			}
 			if needsWatchReconcile(ev) {
-				manifest, err := runCtx.client.Manifest(runCtx.binding.RemoteRoot, ".")
+				manifest, err := runCtx.client.ManifestContext(ctx, runCtx.binding.RemoteRoot, ".")
 				if err != nil {
 					return err
 				}

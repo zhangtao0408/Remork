@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -36,7 +35,7 @@ func addInitCommand(root *cobra.Command, opts Options) {
 			if !ok {
 				return fmt.Errorf("host %q is not configured", hostName)
 			}
-			status, err := opts.DaemonProbe.Status(context.Background(), host, cfg.ClientID)
+			status, err := opts.DaemonProbe.Status(cmd.Context(), host, cfg.ClientID)
 			if err != nil {
 				return err
 			}

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -87,7 +86,8 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 				}
 				return nil
 			}
-			result, err := runner.ApplyChangeset(changeset)
+			ctx := cmd.Context()
+			result, err := runner.ApplyChangesetContext(ctx, changeset)
 			if err != nil {
 				if isApplyConflict(err, result) {
 					writeApplyConflict(cmd, result.Conflicts, jsonOut)
@@ -99,7 +99,7 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 				writeApplyConflict(cmd, result.Conflicts, jsonOut)
 				return applyConflictError(result.Conflicts)
 			}
-			if _, err := runner.Sync(context.Background(), syncer.SyncOptions{Force: true}); err != nil {
+			if _, err := runner.Sync(ctx, syncer.SyncOptions{Force: true}); err != nil {
 				return err
 			}
 			if jsonOut {

@@ -50,7 +50,7 @@ func newDaemonStatusCommand(opts Options) *cobra.Command {
 			if clientID == "" {
 				clientID = "remork-cli"
 			}
-			status, err := client.NewWithOptions(client.Options{BaseURL: host.URL, ClientID: clientID, Token: token, NoProxy: host.NoProxy}).Status()
+			status, err := client.NewWithOptions(client.Options{BaseURL: host.URL, ClientID: clientID, Token: token, NoProxy: host.NoProxy}).StatusContext(cmd.Context())
 			if err != nil {
 				return err
 			}

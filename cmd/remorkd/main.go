@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"remork/internal/daemon"
+	"remork/internal/limits"
 )
 
 var version = "dev"
@@ -32,7 +33,13 @@ func main() {
 		log.Fatal(err)
 	}
 	srv := daemon.NewServer(daemon.Config{Version: version, Roots: []string{*root}, LargeThreshold: 128 << 20, Token: resolvedToken})
-	log.Fatal(http.ListenAndServe(*addr, srv.Handler()))
+	httpServer := &http.Server{
+		Addr:              *addr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: limits.DaemonReadHeaderTimeout,
+		IdleTimeout:       limits.DaemonIdleTimeout,
+	}
+	log.Fatal(httpServer.ListenAndServe())
 }
 
 func resolveToken(token, tokenFile string) (string, error) {

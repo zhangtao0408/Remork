@@ -87,7 +87,7 @@ func (r Runner) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	man, err := r.opts.Client.Manifest(r.opts.RemoteRoot, ".")
+	man, err := r.opts.Client.ManifestContext(ctx, r.opts.RemoteRoot, ".")
 	if err != nil {
 		return Status{}, err
 	}
@@ -192,7 +192,7 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	if target == "" {
 		target = "."
 	}
-	man, err := r.opts.Client.Manifest(r.opts.RemoteRoot, target)
+	man, err := r.opts.Client.ManifestContext(ctx, r.opts.RemoteRoot, target)
 	if err != nil {
 		return Result{}, err
 	}
@@ -213,7 +213,7 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 		switch op.Kind {
 		case planner.OpDownload:
 			previous := snap.Entries[op.Path]
-			data, err := r.opts.Client.Download(r.opts.RemoteRoot, op.Path)
+			data, err := r.opts.Client.DownloadContext(ctx, r.opts.RemoteRoot, op.Path)
 			if err != nil {
 				return result, err
 			}
@@ -313,7 +313,7 @@ func (r Runner) Pull(ctx context.Context, target string, opts PullOptions) (Resu
 		return Result{}, err
 	}
 	dirty = filterDirtyLocalOnly(dirty)
-	man, err := r.opts.Client.Manifest(r.opts.RemoteRoot, target)
+	man, err := r.opts.Client.ManifestContext(ctx, r.opts.RemoteRoot, target)
 	if err != nil {
 		return Result{}, err
 	}
@@ -352,7 +352,7 @@ func (r Runner) Pull(ctx context.Context, target string, opts PullOptions) (Resu
 		}
 		switch op.Kind {
 		case planner.OpDownload:
-			if err := r.downloadFile(op, &snap); err != nil {
+			if err := r.downloadFile(ctx, op, &snap); err != nil {
 				return result, err
 			}
 			result.Downloaded++
@@ -478,9 +478,9 @@ func needsLargeConfirmation(plan planner.Plan) bool {
 	return false
 }
 
-func (r Runner) downloadFile(op planner.Operation, snap *state.Snapshot) error {
+func (r Runner) downloadFile(ctx context.Context, op planner.Operation, snap *state.Snapshot) error {
 	previous := snap.Entries[op.Path]
-	data, err := r.opts.Client.Download(r.opts.RemoteRoot, op.Path)
+	data, err := r.opts.Client.DownloadContext(ctx, r.opts.RemoteRoot, op.Path)
 	if err != nil {
 		return err
 	}

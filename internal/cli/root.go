@@ -17,6 +17,7 @@ import (
 	"remork/internal/auth"
 	remorkclient "remork/internal/client"
 	"remork/internal/config"
+	"remork/internal/limits"
 )
 
 type Options struct {
@@ -151,7 +152,7 @@ func (p httpDaemonProbe) Status(ctx context.Context, host config.Host, clientID 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, limits.MaxErrorBodyBytes))
 		return api.StatusResponse{}, fmt.Errorf("daemon status failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	var status api.StatusResponse

@@ -26,7 +26,7 @@ func addLogCommand(root *cobra.Command, opts Options) {
 			if err != nil {
 				return err
 			}
-			entries, err := runCtx.client.Operations(runCtx.binding.RemoteRoot, limit)
+			entries, err := runCtx.client.OperationsContext(cmd.Context(), runCtx.binding.RemoteRoot, limit)
 			if err != nil {
 				return err
 			}

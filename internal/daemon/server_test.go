@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,64 @@ import (
 	"remork/internal/state"
 	"remork/internal/watch"
 )
+
+type blockingReadCloser struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newBlockingReadCloser() *blockingReadCloser {
+	return &blockingReadCloser{closed: make(chan struct{})}
+}
+
+func (b *blockingReadCloser) Read([]byte) (int, error) {
+	<-b.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (b *blockingReadCloser) Close() error {
+	b.once.Do(func() {
+		close(b.closed)
+	})
+	return nil
+}
+
+type chunkedSlowReadCloser struct {
+	chunks [][]byte
+	delay  time.Duration
+	closed bool
+}
+
+func newChunkedSlowReadCloser(chunks []string, delay time.Duration) *chunkedSlowReadCloser {
+	out := make([][]byte, 0, len(chunks))
+	for _, chunk := range chunks {
+		out = append(out, []byte(chunk))
+	}
+	return &chunkedSlowReadCloser{chunks: out, delay: delay}
+}
+
+func (r *chunkedSlowReadCloser) Read(p []byte) (int, error) {
+	if r.closed {
+		return 0, io.ErrClosedPipe
+	}
+	if len(r.chunks) == 0 {
+		return 0, io.EOF
+	}
+	time.Sleep(r.delay)
+	chunk := r.chunks[0]
+	n := copy(p, chunk)
+	if n == len(chunk) {
+		r.chunks = r.chunks[1:]
+	} else {
+		r.chunks[0] = chunk[n:]
+	}
+	return n, nil
+}
+
+func (r *chunkedSlowReadCloser) Close() error {
+	r.closed = true
+	return nil
+}
 
 func TestManifestEndpointReturnsEntries(t *testing.T) {
 	root := t.TempDir()
@@ -189,6 +248,129 @@ func TestApplyEndpointInvalidPathReturnsBadRequest(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestApplyEndpointTimesOutSlowBodyRead(t *testing.T) {
+	root := t.TempDir()
+	body := newBlockingReadCloser()
+	req := httptest.NewRequest(http.MethodPost, "/apply?root="+url.QueryEscape(root), body)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+
+	go func() {
+		NewServer(Config{
+			Roots:                []string{root},
+			ApplyBodyReadTimeout: 20 * time.Millisecond,
+		}).Handler().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("apply handler did not return after body read timeout")
+	}
+	if rec.Code != http.StatusRequestTimeout {
+		t.Fatalf("status = %d, want %d; body %q", rec.Code, http.StatusRequestTimeout, rec.Body.String())
+	}
+	select {
+	case <-body.closed:
+	default:
+		t.Fatal("apply body was not closed on read timeout")
+	}
+}
+
+func TestApplyEndpointAllowsSlowProgressingBody(t *testing.T) {
+	root := t.TempDir()
+	body := newChunkedSlowReadCloser([]string{
+		`{"changes":[`,
+		`{"path":"a.txt","kind":"create","content":"aGVsbG8="}`,
+		`]}`,
+	}, 15*time.Millisecond)
+	req := httptest.NewRequest(http.MethodPost, "/apply?root="+url.QueryEscape(root), body)
+	rec := httptest.NewRecorder()
+	start := time.Now()
+
+	NewServer(Config{
+		Roots:                []string{root},
+		ApplyBodyReadTimeout: 20 * time.Millisecond,
+	}).Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
+		t.Fatalf("test body did not exceed idle timeout wall time: %s", elapsed)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "a.txt"))
+	if err != nil {
+		t.Fatalf("read applied file: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("applied file = %q", data)
+	}
+}
+
+func TestApplyEndpointReturnsTooLargeForOversizedBody(t *testing.T) {
+	root := t.TempDir()
+	body := strings.NewReader(`{"changes":[]}`)
+	req := httptest.NewRequest(http.MethodPost, "/apply?root="+url.QueryEscape(root), body)
+	rec := httptest.NewRecorder()
+
+	NewServer(Config{
+		Roots:             []string{root},
+		MaxApplyBodyBytes: int64(len(`{"changes":[]}`) - 1),
+	}).Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+}
+
+func TestExecEndpointReturnsTooLargeForOversizedBody(t *testing.T) {
+	root := t.TempDir()
+	body := strings.NewReader(`{"root":"` + root + `","cwd":"` + root + `","command":["sh","-c","echo ok"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/exec", body)
+	rec := httptest.NewRecorder()
+
+	NewServer(Config{
+		Roots:            []string{root},
+		MaxExecBodyBytes: int64(len(`{"root":"` + root + `"`)),
+	}).Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; body %q", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+}
+
+func TestExecEndpointTimesOutSlowBodyRead(t *testing.T) {
+	root := t.TempDir()
+	body := newBlockingReadCloser()
+	req := httptest.NewRequest(http.MethodPost, "/exec", body)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+
+	go func() {
+		NewServer(Config{
+			Roots:               []string{root},
+			ExecBodyReadTimeout: 20 * time.Millisecond,
+		}).Handler().ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("exec handler did not return after body read timeout")
+	}
+	if rec.Code != http.StatusRequestTimeout {
+		t.Fatalf("status = %d, want %d; body %q", rec.Code, http.StatusRequestTimeout, rec.Body.String())
+	}
+	select {
+	case <-body.closed:
+	default:
+		t.Fatal("exec body was not closed on read timeout")
 	}
 }
 

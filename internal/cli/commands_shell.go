@@ -21,7 +21,10 @@ func addShellCommand(root *cobra.Command, opts Options) {
 		Short: "Open an interactive remote shell",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
 			runCtx, err := newRunContext(opts)
 			if err != nil {
 				return err
@@ -63,7 +66,7 @@ func addShellCommand(root *cobra.Command, opts Options) {
 				}
 			}
 
-			before, err := runCtx.client.Manifest(runCtx.binding.RemoteRoot, ".")
+			before, err := runCtx.client.ManifestContext(ctx, runCtx.binding.RemoteRoot, ".")
 			if err != nil {
 				return err
 			}
@@ -79,7 +82,7 @@ func addShellCommand(root *cobra.Command, opts Options) {
 			if err != nil {
 				return err
 			}
-			after, err := runCtx.client.Manifest(runCtx.binding.RemoteRoot, ".")
+			after, err := runCtx.client.ManifestContext(ctx, runCtx.binding.RemoteRoot, ".")
 			if err != nil {
 				return err
 			}

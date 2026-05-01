@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"path"
@@ -40,7 +39,7 @@ func addPullCommand(root *cobra.Command, opts Options) {
 			if err != nil {
 				return err
 			}
-			result, err := runner.Pull(context.Background(), target, syncer.PullOptions{
+			result, err := runner.Pull(cmd.Context(), target, syncer.PullOptions{
 				Force:        force,
 				Quiet:        quiet,
 				IncludeLarge: includeLarge,

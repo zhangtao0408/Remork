@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -55,7 +54,7 @@ func addSyncCommand(root *cobra.Command, opts Options) {
 				WorkspaceRef: workspaceRef,
 				RemoteRoot:   binding.RemoteRoot,
 			})
-			result, err := runner.Sync(context.Background(), syncer.SyncOptions{
+			result, err := runner.Sync(cmd.Context(), syncer.SyncOptions{
 				TargetPath: targetPath,
 				Force:      force,
 				Quiet:      quiet,

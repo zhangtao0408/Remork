@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -23,7 +24,11 @@ type SkippedChange struct {
 }
 
 func (r Runner) ApplyChangeset(cs apply.Changeset) (apply.Result, error) {
-	return r.opts.Client.Apply(r.opts.RemoteRoot, cs)
+	return r.ApplyChangesetContext(context.Background(), cs)
+}
+
+func (r Runner) ApplyChangesetContext(ctx context.Context, cs apply.Changeset) (apply.Result, error) {
+	return r.opts.Client.ApplyContext(ctx, r.opts.RemoteRoot, cs)
 }
 
 func BuildChangeset(localRoot string, snap state.Snapshot) (apply.Changeset, []SkippedChange, error) {

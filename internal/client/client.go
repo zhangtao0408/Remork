@@ -2,16 +2,19 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"remork/internal/api"
 	"remork/internal/apply"
 	execx "remork/internal/exec"
+	"remork/internal/limits"
 	"remork/internal/ops"
 )
 
@@ -47,12 +50,12 @@ func NewWithOptions(opts Options) Client {
 }
 
 func NewHTTPClient(noProxy bool) *http.Client {
-	if !noProxy {
-		return http.DefaultClient
-	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil
-	return &http.Client{Transport: transport}
+	transport.ResponseHeaderTimeout = limits.DefaultHTTPTimeout
+	if noProxy {
+		transport.Proxy = nil
+	}
+	return &http.Client{Transport: transport, Timeout: limits.DefaultHTTPTimeout}
 }
 
 func (c Client) endpoint(path string) string {
@@ -60,20 +63,25 @@ func (c Client) endpoint(path string) string {
 }
 
 func (c Client) Status() (api.StatusResponse, error) {
+	return c.StatusContext(context.Background())
+}
+
+func (c Client) StatusContext(ctx context.Context) (api.StatusResponse, error) {
+	ctx = contextOrBackground(ctx)
 	u, _ := url.Parse(c.endpoint("/status"))
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return api.StatusResponse{}, err
 	}
 	c.addHeaders(req)
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return api.StatusResponse{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return api.StatusResponse{}, &HTTPError{StatusCode: resp.StatusCode, Body: string(body)}
+		body := readErrorBody(resp.Body)
+		return api.StatusResponse{}, &HTTPError{StatusCode: resp.StatusCode, Body: body}
 	}
 	var out api.StatusResponse
 	err = json.NewDecoder(resp.Body).Decode(&out)
@@ -81,25 +89,30 @@ func (c Client) Status() (api.StatusResponse, error) {
 }
 
 func (c Client) Manifest(root, path string) (api.ManifestResponse, error) {
+	return c.ManifestContext(context.Background(), root, path)
+}
+
+func (c Client) ManifestContext(ctx context.Context, root, path string) (api.ManifestResponse, error) {
+	ctx = contextOrBackground(ctx)
 	u, _ := url.Parse(c.endpoint("/manifest"))
 	q := u.Query()
 	q.Set("root", root)
 	q.Set("path", path)
 	q.Set("recursive", "true")
 	u.RawQuery = q.Encode()
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return api.ManifestResponse{}, err
 	}
 	c.addHeaders(req)
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return api.ManifestResponse{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return api.ManifestResponse{}, &HTTPError{StatusCode: resp.StatusCode, Body: string(body)}
+		body := readErrorBody(resp.Body)
+		return api.ManifestResponse{}, &HTTPError{StatusCode: resp.StatusCode, Body: body}
 	}
 	var out api.ManifestResponse
 	err = json.NewDecoder(resp.Body).Decode(&out)
@@ -107,14 +120,28 @@ func (c Client) Manifest(root, path string) (api.ManifestResponse, error) {
 }
 
 func (c Client) Download(root, path string) ([]byte, error) {
-	return c.download(root, path, "")
+	return c.DownloadContext(context.Background(), root, path)
 }
 
 func (c Client) DownloadRange(root, path string, start, end int64) ([]byte, error) {
-	return c.download(root, path, fmt.Sprintf("bytes=%d-%d", start, end))
+	return c.DownloadRangeContext(context.Background(), root, path, start, end)
+}
+
+func (c Client) DownloadContext(ctx context.Context, root, path string) ([]byte, error) {
+	return c.download(ctx, root, path, "")
+}
+
+func (c Client) DownloadRangeContext(ctx context.Context, root, path string, start, end int64) ([]byte, error) {
+	return c.download(ctx, root, path, fmt.Sprintf("bytes=%d-%d", start, end))
 }
 
 func (c Client) Apply(root string, cs apply.Changeset) (apply.Result, error) {
+	return c.ApplyContext(context.Background(), root, cs)
+}
+
+func (c Client) ApplyContext(ctx context.Context, root string, cs apply.Changeset) (apply.Result, error) {
+	ctx, cancel := contextWithDefaultTimeout(ctx, limits.DefaultApplyTimeout)
+	defer cancel()
 	u, _ := url.Parse(c.endpoint("/apply"))
 	q := u.Query()
 	q.Set("root", root)
@@ -123,48 +150,67 @@ func (c Client) Apply(root string, cs apply.Changeset) (apply.Result, error) {
 	if err != nil {
 		return apply.Result{}, err
 	}
-	req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(data))
 	if err != nil {
 		return apply.Result{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.addHeaders(req)
-	resp, err := c.http.Do(req)
+	resp, err := c.doWithoutWholeRequestTimeout(req)
 	if err != nil {
 		return apply.Result{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body := readBodyBytes(resp.Body, limits.MaxApplyResultBodyBytes)
+		errorBody := boundedBodyString(body, limits.MaxErrorBodyBytes)
+		var result apply.Result
+		if err := json.Unmarshal(body, &result); err != nil {
+			return apply.Result{}, &HTTPError{StatusCode: resp.StatusCode, Body: errorBody}
+		}
+		return result, &HTTPError{StatusCode: resp.StatusCode, Body: errorBody}
+	}
 	var result apply.Result
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return apply.Result{}, err
-	}
-	if resp.StatusCode >= 300 {
-		return result, &HTTPError{StatusCode: resp.StatusCode, Body: "apply failed"}
 	}
 	return result, nil
 }
 
 func (c Client) Exec(root, cwd string, command []string, timeoutMillis int64) (execx.Result, error) {
+	return c.ExecContext(context.Background(), root, cwd, command, timeoutMillis)
+}
+
+func (c Client) ExecContext(ctx context.Context, root, cwd string, command []string, timeoutMillis int64) (execx.Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	u, _ := url.Parse(c.endpoint("/exec"))
 	reqBody := api.ExecRequest{Root: root, Cwd: cwd, Command: command, TimeoutMillis: timeoutMillis}
 	data, err := json.Marshal(reqBody)
 	if err != nil {
 		return execx.Result{}, err
 	}
-	req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(data))
+	timeout := limits.DefaultExecTimeout
+	if timeoutMillis > 0 {
+		timeout = time.Duration(timeoutMillis) * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout+limits.OperationTimeoutSlack)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(data))
 	if err != nil {
 		return execx.Result{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.addHeaders(req)
-	resp, err := c.http.Do(req)
+	resp, err := c.doWithoutWholeRequestTimeout(req)
 	if err != nil {
 		return execx.Result{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return execx.Result{}, &HTTPError{StatusCode: resp.StatusCode, Body: string(body)}
+		body := readErrorBody(resp.Body)
+		return execx.Result{}, &HTTPError{StatusCode: resp.StatusCode, Body: body}
 	}
 	var result execx.Result
 	err = json.NewDecoder(resp.Body).Decode(&result)
@@ -172,6 +218,11 @@ func (c Client) Exec(root, cwd string, command []string, timeoutMillis int64) (e
 }
 
 func (c Client) Operations(root string, limit int) ([]ops.Entry, error) {
+	return c.OperationsContext(context.Background(), root, limit)
+}
+
+func (c Client) OperationsContext(ctx context.Context, root string, limit int) ([]ops.Entry, error) {
+	ctx = contextOrBackground(ctx)
 	u, _ := url.Parse(c.endpoint("/operations"))
 	q := u.Query()
 	if root != "" {
@@ -181,19 +232,19 @@ func (c Client) Operations(root string, limit int) ([]ops.Entry, error) {
 		q.Set("limit", fmt.Sprintf("%d", limit))
 	}
 	u.RawQuery = q.Encode()
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
 	c.addHeaders(req)
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: string(body)}
+		body := readErrorBody(resp.Body)
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: body}
 	}
 	var out struct {
 		Entries []ops.Entry `json:"entries"`
@@ -204,13 +255,15 @@ func (c Client) Operations(root string, limit int) ([]ops.Entry, error) {
 	return out.Entries, nil
 }
 
-func (c Client) download(root, path, byteRange string) ([]byte, error) {
+func (c Client) download(ctx context.Context, root, path, byteRange string) ([]byte, error) {
+	ctx, cancel := contextWithDefaultTimeout(ctx, limits.DefaultTransferTimeout)
+	defer cancel()
 	u, _ := url.Parse(c.endpoint("/download"))
 	q := u.Query()
 	q.Set("root", root)
 	q.Set("path", path)
 	u.RawQuery = q.Encode()
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -218,16 +271,100 @@ func (c Client) download(root, path, byteRange string) ([]byte, error) {
 		req.Header.Set("Range", byteRange)
 	}
 	c.addHeaders(req)
-	resp, err := c.http.Do(req)
+	resp, err := c.doWithoutWholeRequestTimeout(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: string(body)}
+		body := readErrorBody(resp.Body)
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: body}
 	}
 	return io.ReadAll(resp.Body)
+}
+
+func readErrorBody(r io.Reader) string {
+	return string(readErrorBodyBytes(r))
+}
+
+func readErrorBodyBytes(r io.Reader) []byte {
+	return readBodyBytes(r, limits.MaxErrorBodyBytes)
+}
+
+func readBodyBytes(r io.Reader, maxBytes int64) []byte {
+	data, _ := io.ReadAll(io.LimitReader(r, maxBytes))
+	return data
+}
+
+func boundedBodyString(data []byte, maxBytes int64) string {
+	if int64(len(data)) > maxBytes {
+		data = data[:maxBytes]
+	}
+	return string(data)
+}
+
+func contextWithDefaultTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx = contextOrBackground(ctx)
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func contextOrBackground(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+func (c Client) do(req *http.Request) (*http.Response, error) {
+	if c.http == nil {
+		return NewHTTPClient(false).Do(req)
+	}
+	return c.http.Do(req)
+}
+
+func (c Client) doWithoutWholeRequestTimeout(req *http.Request) (*http.Response, error) {
+	httpClient := c.http
+	if httpClient == nil {
+		httpClient = NewHTTPClient(false)
+	}
+	clientWithoutWholeRequestTimeout := *httpClient
+	clientWithoutWholeRequestTimeout.Timeout = 0
+	var clonedTransport *http.Transport
+	if transport, ok := httpClient.Transport.(*http.Transport); ok {
+		longOperationTransport := transport.Clone()
+		longOperationTransport.ResponseHeaderTimeout = 0
+		clientWithoutWholeRequestTimeout.Transport = longOperationTransport
+		clonedTransport = longOperationTransport
+	}
+	resp, err := clientWithoutWholeRequestTimeout.Do(req)
+	if clonedTransport == nil {
+		return resp, err
+	}
+	if err != nil {
+		clonedTransport.CloseIdleConnections()
+		return resp, err
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body = closeIdleConnectionsOnClose{
+			ReadCloser: resp.Body,
+			transport:  clonedTransport,
+		}
+	}
+	return resp, nil
+}
+
+type closeIdleConnectionsOnClose struct {
+	io.ReadCloser
+	transport *http.Transport
+}
+
+func (b closeIdleConnectionsOnClose) Close() error {
+	err := b.ReadCloser.Close()
+	b.transport.CloseIdleConnections()
+	return err
 }
 
 type HTTPError struct {

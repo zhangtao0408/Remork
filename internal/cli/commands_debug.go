@@ -34,7 +34,7 @@ func newDebugManifestCommand(opts Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			manifest, err := runCtx.client.Manifest(runCtx.binding.RemoteRoot, ".")
+			manifest, err := runCtx.client.ManifestContext(cmd.Context(), runCtx.binding.RemoteRoot, ".")
 			if err != nil {
 				return err
 			}
@@ -86,8 +86,9 @@ func newDebugAPICommand(opts Options) *cobra.Command {
 				return err
 			}
 			var firstErr error
+			ctx := cmd.Context()
 			if err := printAPICheck(cmd, "status", func() (string, error) {
-				status, err := runCtx.client.Status()
+				status, err := runCtx.client.StatusContext(ctx)
 				if err != nil {
 					return "", err
 				}
@@ -96,7 +97,7 @@ func newDebugAPICommand(opts Options) *cobra.Command {
 				firstErr = err
 			}
 			if err := printAPICheck(cmd, "manifest", func() (string, error) {
-				manifest, err := runCtx.client.Manifest(runCtx.binding.RemoteRoot, ".")
+				manifest, err := runCtx.client.ManifestContext(ctx, runCtx.binding.RemoteRoot, ".")
 				if err != nil {
 					return "", err
 				}
@@ -105,7 +106,7 @@ func newDebugAPICommand(opts Options) *cobra.Command {
 				firstErr = err
 			}
 			if err := printAPICheck(cmd, "operations", func() (string, error) {
-				entries, err := runCtx.client.Operations(runCtx.binding.RemoteRoot, 5)
+				entries, err := runCtx.client.OperationsContext(ctx, runCtx.binding.RemoteRoot, 5)
 				if err != nil {
 					return "", err
 				}

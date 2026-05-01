@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -24,7 +23,7 @@ func addStatusCommand(root *cobra.Command, opts Options) {
 			if err != nil {
 				return err
 			}
-			status, err := runner.Status(context.Background())
+			status, err := runner.Status(cmd.Context())
 			if err != nil {
 				return err
 			}

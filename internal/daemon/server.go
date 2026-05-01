@@ -2,14 +2,17 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -18,6 +21,7 @@ import (
 	"remork/internal/apply"
 	"remork/internal/auth"
 	execx "remork/internal/exec"
+	"remork/internal/limits"
 	"remork/internal/manifest"
 	"remork/internal/ops"
 	"remork/internal/paths"
@@ -26,10 +30,14 @@ import (
 )
 
 type Config struct {
-	Version        string
-	Roots          []string
-	LargeThreshold int64
-	Token          string
+	Version              string
+	Roots                []string
+	LargeThreshold       int64
+	Token                string
+	ApplyBodyReadTimeout time.Duration
+	ExecBodyReadTimeout  time.Duration
+	MaxApplyBodyBytes    int64
+	MaxExecBodyBytes     int64
 }
 
 type Server struct {
@@ -162,10 +170,18 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		s.finishOperation(op, http.StatusForbidden, "error", "root not allowed")
 		return
 	}
-	var cs apply.Changeset
-	if err := json.NewDecoder(r.Body).Decode(&cs); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		s.finishOperation(op, http.StatusBadRequest, "error", err.Error())
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxApplyBodyBytes())
+	cs, err := s.decodeApplyChangeset(r.Context(), r.Body)
+	if err != nil {
+		status := http.StatusBadRequest
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			status = http.StatusRequestEntityTooLarge
+		} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			status = http.StatusRequestTimeout
+		}
+		http.Error(w, err.Error(), status)
+		s.finishOperation(op, status, "error", err.Error())
 		return
 	}
 	op.RequestSummary = summarizeChanges(cs)
@@ -191,6 +207,123 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	s.finishOperation(op, http.StatusOK, "success", "")
 }
 
+func (s *Server) maxApplyBodyBytes() int64 {
+	if s.cfg.MaxApplyBodyBytes > 0 {
+		return s.cfg.MaxApplyBodyBytes
+	}
+	return limits.MaxApplyBodyBytes
+}
+
+func (s *Server) decodeApplyChangeset(parent context.Context, body io.ReadCloser) (apply.Changeset, error) {
+	timeout := s.cfg.ApplyBodyReadTimeout
+	if timeout <= 0 {
+		timeout = limits.DefaultApplyBodyReadTimeout
+	}
+	var cs apply.Changeset
+	err := decodeJSONBody(parent, body, timeout, &cs)
+	return cs, err
+}
+
+func (s *Server) maxExecBodyBytes() int64 {
+	if s.cfg.MaxExecBodyBytes > 0 {
+		return s.cfg.MaxExecBodyBytes
+	}
+	return limits.MaxExecBodyBytes
+}
+
+func (s *Server) decodeExecRequest(parent context.Context, body io.ReadCloser) (api.ExecRequest, error) {
+	timeout := s.cfg.ExecBodyReadTimeout
+	if timeout <= 0 {
+		timeout = limits.DefaultExecBodyReadTimeout
+	}
+	var req api.ExecRequest
+	err := decodeJSONBody(parent, body, timeout, &req)
+	return req, err
+}
+
+func decodeJSONBody(parent context.Context, body io.ReadCloser, timeout time.Duration, target any) error {
+	idleBody := newIdleTimeoutReadCloser(parent, body, timeout)
+	defer idleBody.Close()
+	return json.NewDecoder(idleBody).Decode(target)
+}
+
+type idleTimeoutReadCloser struct {
+	body      io.ReadCloser
+	timeout   time.Duration
+	done      chan struct{}
+	closeOnce sync.Once
+	bodyOnce  sync.Once
+	mu        sync.Mutex
+	err       error
+}
+
+func newIdleTimeoutReadCloser(ctx context.Context, body io.ReadCloser, timeout time.Duration) *idleTimeoutReadCloser {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r := &idleTimeoutReadCloser{
+		body:    body,
+		timeout: timeout,
+		done:    make(chan struct{}),
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			r.setErr(ctx.Err())
+			_ = r.closeBody()
+		case <-r.done:
+		}
+	}()
+	return r
+}
+
+func (r *idleTimeoutReadCloser) Read(p []byte) (int, error) {
+	if err := r.currentErr(); err != nil {
+		return 0, err
+	}
+	timer := time.AfterFunc(r.timeout, func() {
+		r.setErr(context.DeadlineExceeded)
+		_ = r.closeBody()
+	})
+	n, err := r.body.Read(p)
+	timer.Stop()
+	if err != nil {
+		if storedErr := r.currentErr(); storedErr != nil {
+			return n, storedErr
+		}
+	}
+	return n, err
+}
+
+func (r *idleTimeoutReadCloser) Close() error {
+	r.closeOnce.Do(func() {
+		close(r.done)
+	})
+	return r.closeBody()
+}
+
+func (r *idleTimeoutReadCloser) closeBody() error {
+	var err error
+	r.bodyOnce.Do(func() {
+		err = r.body.Close()
+	})
+	return err
+}
+
+func (r *idleTimeoutReadCloser) setErr(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err == nil {
+		r.err = err
+	}
+}
+
+func (r *idleTimeoutReadCloser) currentErr() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.err
+}
+
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	op := s.startOperation(r, "exec", "", nil)
 	if r.Method != http.MethodPost {
@@ -198,10 +331,18 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		s.finishOperation(op, http.StatusMethodNotAllowed, "error", "method not allowed")
 		return
 	}
-	var req api.ExecRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		s.finishOperation(op, http.StatusBadRequest, "error", err.Error())
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxExecBodyBytes())
+	req, err := s.decodeExecRequest(r.Context(), r.Body)
+	if err != nil {
+		status := http.StatusBadRequest
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			status = http.StatusRequestEntityTooLarge
+		} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			status = http.StatusRequestTimeout
+		}
+		http.Error(w, err.Error(), status)
+		s.finishOperation(op, status, "error", err.Error())
 		return
 	}
 	op.Root = req.Root
@@ -224,7 +365,14 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		cwd = resolved
 	}
 	timeout := time.Duration(req.TimeoutMillis) * time.Millisecond
-	result, runErr := execx.Run(execx.Options{Cwd: cwd, Command: req.Command, Env: req.Env, Timeout: timeout})
+	result, runErr := execx.Run(execx.Options{
+		Context:        r.Context(),
+		Cwd:            cwd,
+		Command:        req.Command,
+		Env:            req.Env,
+		Timeout:        timeout,
+		MaxOutputBytes: limits.MaxExecOutputBytes,
+	})
 	if runErr != nil && !result.TimedOut && result.ExitCode == 0 {
 		result.ExitCode = 1
 	}

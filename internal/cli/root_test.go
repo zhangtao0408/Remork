@@ -11,6 +11,7 @@ import (
 
 	"remork/internal/api"
 	"remork/internal/config"
+	"remork/internal/limits"
 	"remork/internal/workspace"
 )
 
@@ -255,6 +256,26 @@ func TestInitDefaultProbeSendsTokenFromHostEnv(t *testing.T) {
 	}
 	if _, _, err := workspace.ResolveFrom(local); err != nil {
 		t.Fatalf("binding should be written after authenticated status check: %v", err)
+	}
+}
+
+func TestHTTPDaemonProbeStatusBoundsErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(strings.Repeat("x", limits.MaxErrorBodyBytes) + "SHOULD_NOT_APPEAR"))
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := (httpDaemonProbe{}).Status(context.Background(), config.Host{URL: server.URL}, "test-client")
+	if err == nil {
+		t.Fatal("expected daemon status error")
+	}
+	if strings.Contains(err.Error(), "SHOULD_NOT_APPEAR") {
+		t.Fatalf("error body was not bounded: %q", err.Error())
 	}
 }
 

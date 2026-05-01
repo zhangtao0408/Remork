@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	"remork/internal/auth"
 	"remork/internal/client"
 	"remork/internal/exitcode"
+	"remork/internal/limits"
 	"remork/internal/preflight"
 	"remork/internal/state"
 	"remork/internal/syncer"
@@ -36,7 +36,7 @@ func newRunCommand(opts Options) *cobra.Command {
 		Short: "Run a command in the remote workspace",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			runCtx, err := newRunContext(opts)
 			if err != nil {
 				return err
@@ -77,12 +77,18 @@ func newRunCommand(opts Options) *cobra.Command {
 			}
 
 			command := runCommandArgs(args)
-			result, err := runCtx.client.Exec(runCtx.binding.RemoteRoot, runCtx.binding.RemoteRoot, command, timeout.Milliseconds())
+			result, err := runCtx.client.ExecContext(ctx, runCtx.binding.RemoteRoot, runCtx.binding.RemoteRoot, command, timeout.Milliseconds())
 			if result.Stdout != "" {
 				fmt.Fprint(cmd.OutOrStdout(), result.Stdout)
 			}
 			if result.Stderr != "" {
 				fmt.Fprint(cmd.ErrOrStderr(), result.Stderr)
+			}
+			if result.StdoutTruncated {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: stdout truncated after %d bytes\n", limits.MaxExecOutputBytes)
+			}
+			if result.StderrTruncated {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: stderr truncated after %d bytes\n", limits.MaxExecOutputBytes)
 			}
 			if err != nil {
 				return err

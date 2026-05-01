@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -19,7 +20,7 @@ func addDoctorCommand(root *cobra.Command, opts Options) {
 		Short: "Check local and remote readiness",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := runDoctor(opts); err != nil {
+			if err := runDoctor(cmd.Context(), opts); err != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "FAILED: %s\n", err.reason)
 				fmt.Fprintf(cmd.OutOrStdout(), "Fix: %s\n", err.fix)
 				return codedCommandError{code: err.code, err: errors.New(err.reason)}
@@ -37,7 +38,10 @@ type doctorFailure struct {
 	code   int
 }
 
-func runDoctor(opts Options) *doctorFailure {
+func runDoctor(ctx context.Context, opts Options) *doctorFailure {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	store, err := configStore(opts)
 	if err != nil {
 		return configDoctorFailure(err, "set HOME or pass a valid remork home directory")
@@ -71,7 +75,7 @@ func runDoctor(opts Options) *doctorFailure {
 		}
 	}
 	c := clientForHost(host, cfg, token)
-	status, err := c.Status()
+	status, err := c.StatusContext(ctx)
 	if err != nil {
 		return networkDoctorFailure(err, "start remorkd and check remork host add URL")
 	}
@@ -82,10 +86,10 @@ func runDoctor(opts Options) *doctorFailure {
 			code:   exitcode.InvalidUsageOrConfig,
 		}
 	}
-	if _, err := c.Manifest(binding.RemoteRoot, "."); err != nil {
+	if _, err := c.ManifestContext(ctx, binding.RemoteRoot, "."); err != nil {
 		return networkDoctorFailure(err, "check remote root permissions and remorkd manifest access")
 	}
-	if _, err := c.Operations(binding.RemoteRoot, 1); err != nil {
+	if _, err := c.OperationsContext(ctx, binding.RemoteRoot, 1); err != nil {
 		return networkDoctorFailure(err, "check remorkd /operations access for this workspace")
 	}
 	return nil
