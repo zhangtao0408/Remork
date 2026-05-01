@@ -278,6 +278,10 @@ and covered with targeted tests:
 - sync handles remote file-to-directory replacements by deleting clean stale
   local/base-cache files before downloading child files, while dirty local
   replacements become conflicts and block child downloads;
+- sync handles the reverse remote directory-to-file replacement by deleting
+  clean tracked descendants and empty local/base-cache directories before
+  downloading the parent file, while dirty or untracked descendants become
+  conflicts;
 - operation logging rejects `.remork/log` symlink parents and symlinked
   `operations.jsonl` files so daemon logs cannot be redirected outside the
   workspace root.

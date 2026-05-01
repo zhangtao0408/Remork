@@ -455,6 +455,9 @@ func needsLargeConfirmation(plan planner.Plan) bool {
 
 func (r Runner) downloadFile(ctx context.Context, op planner.Operation, snap *state.Snapshot) error {
 	previous := snap.Entries[op.Path]
+	if err := r.prepareFileReplacement(op.Path); err != nil {
+		return err
+	}
 	if err := transfer.WriteFileWith(r.opts.LocalRoot, op.Path, func(w io.Writer) error {
 		_, err := r.opts.Client.DownloadToContext(ctx, r.opts.RemoteRoot, op.Path, w)
 		return err
@@ -499,6 +502,21 @@ func (r Runner) downloadFile(ctx context.Context, op planner.Operation, snap *st
 	return nil
 }
 
+func (r Runner) prepareFileReplacement(remotePath string) error {
+	localPath, err := transfer.LocalPath(r.opts.LocalRoot, remotePath)
+	if err != nil {
+		return err
+	}
+	if err := removeEmptyDirIfExists(localPath); err != nil {
+		return err
+	}
+	basePath, err := r.opts.StateStore.BasePath(remotePath)
+	if err != nil {
+		return err
+	}
+	return removeEmptyDirIfExists(basePath)
+}
+
 func (r Runner) writeLargeMeta(op planner.Operation, snap *state.Snapshot) error {
 	meta := manifest.BuildLargeMeta(r.opts.WorkspaceRef, op.Entry)
 	if err := transfer.WriteLargeMeta(r.opts.LocalRoot, op.Path, meta); err != nil {
@@ -527,6 +545,20 @@ func removeIfExists(path string) error {
 		return err
 	}
 	return nil
+}
+
+func removeEmptyDirIfExists(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	return os.Remove(path)
 }
 
 func writeExactFile(path string, data []byte) error {

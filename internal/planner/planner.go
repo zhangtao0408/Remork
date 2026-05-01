@@ -47,12 +47,26 @@ func PlanSync(manifest api.ManifestResponse, snap state.Snapshot, opts Options) 
 			remotePaths[entry.Path] = true
 		}
 	}
-	deleteOps := remoteDeleteOps(snap, remotePaths, opts)
+	blockedPrefixes := map[string]bool{}
+	for _, entry := range manifest.Entries {
+		if entry.Type == api.FileTypeFile && hasBlockingDirtyDescendant(entry.Path, dirty, snap, opts.Force) {
+			blockedPrefixes[strings.Trim(path.Clean(entry.Path), "/")] = true
+		}
+	}
+	deleteOps := filterOpsUnderBlockedPrefixes(remoteDeleteOps(snap, remotePaths, opts), blockedPrefixes)
 	ops = append(ops, deleteOps...)
-	blockedPrefixes := conflictPrefixSet(deleteOps)
+	for prefix := range conflictPrefixSet(deleteOps) {
+		blockedPrefixes[prefix] = true
+	}
 
 	for _, entry := range manifest.Entries {
 		if entry.Type != api.FileTypeFile {
+			continue
+		}
+		cleanEntryPath := strings.Trim(path.Clean(entry.Path), "/")
+		if blockedPrefixes[cleanEntryPath] {
+			ops = append(ops, Operation{Path: entry.Path, Kind: OpConflict, Reason: "local dirty descendant", Entry: entry})
+			blockedPrefixes[cleanEntryPath] = true
 			continue
 		}
 		if hasConflictAncestor(entry.Path, blockedPrefixes) {
@@ -128,10 +142,44 @@ func conflictPrefixSet(ops []Operation) map[string]bool {
 	return out
 }
 
+func filterOpsUnderBlockedPrefixes(ops []Operation, blocked map[string]bool) []Operation {
+	if len(blocked) == 0 {
+		return ops
+	}
+	out := make([]Operation, 0, len(ops))
+	for _, op := range ops {
+		if hasConflictAncestor(op.Path, blocked) {
+			continue
+		}
+		out = append(out, op)
+	}
+	return out
+}
+
 func hasConflictAncestor(filePath string, conflicts map[string]bool) bool {
 	cleanPath := strings.Trim(path.Clean(filePath), "/")
 	for prefix := range conflicts {
 		if prefix != "" && cleanPath != prefix && strings.HasPrefix(cleanPath, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasBlockingDirtyDescendant(filePath string, dirty map[string]bool, snap state.Snapshot, force bool) bool {
+	cleanPath := strings.Trim(path.Clean(filePath), "/")
+	if cleanPath == "" {
+		return false
+	}
+	for dirtyPath := range dirty {
+		cleanDirty := strings.Trim(path.Clean(dirtyPath), "/")
+		if cleanDirty == cleanPath || !strings.HasPrefix(cleanDirty, cleanPath+"/") {
+			continue
+		}
+		if !force {
+			return true
+		}
+		if _, tracked := snap.Entries[dirtyPath]; !tracked {
 			return true
 		}
 	}
@@ -185,7 +233,28 @@ func sortedOps(ops []Operation) []Operation {
 		if ops[i].Path == ops[j].Path {
 			return ops[i].Kind < ops[j].Kind
 		}
+		if shouldOrderByDependency(ops[i], ops[j]) {
+			return true
+		}
+		if shouldOrderByDependency(ops[j], ops[i]) {
+			return false
+		}
 		return ops[i].Path < ops[j].Path
 	})
 	return ops
+}
+
+func shouldOrderByDependency(first, second Operation) bool {
+	firstPath := strings.Trim(path.Clean(first.Path), "/")
+	secondPath := strings.Trim(path.Clean(second.Path), "/")
+	if firstPath == "" || secondPath == "" || firstPath == secondPath {
+		return false
+	}
+	if strings.HasPrefix(secondPath, firstPath+"/") {
+		return first.Kind == OpDelete && (second.Kind == OpDownload || second.Kind == OpWriteMeta)
+	}
+	if strings.HasPrefix(firstPath, secondPath+"/") {
+		return first.Kind == OpDelete && (second.Kind == OpDownload || second.Kind == OpWriteMeta)
+	}
+	return false
 }

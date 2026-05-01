@@ -142,6 +142,36 @@ func TestSyncDirtyFileReplacedByDirectoryBlocksChildren(t *testing.T) {
 	assertNoOp(t, plan, "a.txt/child.txt")
 }
 
+func TestSyncDirectoryReplacedByFileDeletesChildrenBeforeParentDownload(t *testing.T) {
+	manifest := api.ManifestResponse{Entries: []api.FileEntry{
+		{Path: "a", Type: api.FileTypeFile, Hash: "sha256:new", Revision: "rev-new"},
+	}}
+	snap := state.Snapshot{Entries: map[string]state.TrackedFile{
+		"a/child.txt": {Path: "a/child.txt", Type: api.FileTypeFile, BaseHash: "sha256:old", Revision: "rev-old"},
+	}}
+
+	plan := PlanSync(manifest, snap, Options{})
+
+	assertOp(t, plan, "a/child.txt", OpDelete)
+	assertOp(t, plan, "a", OpDownload)
+	assertBefore(t, plan, "a/child.txt", OpDelete, "a", OpDownload)
+}
+
+func TestSyncDirectoryReplacedByFileConflictsOnDirtyDescendant(t *testing.T) {
+	manifest := api.ManifestResponse{Entries: []api.FileEntry{
+		{Path: "a", Type: api.FileTypeFile, Hash: "sha256:new", Revision: "rev-new"},
+	}}
+	snap := state.Snapshot{Entries: map[string]state.TrackedFile{
+		"a/child.txt": {Path: "a/child.txt", Type: api.FileTypeFile, BaseHash: "sha256:old", Revision: "rev-old"},
+	}}
+
+	plan := PlanSync(manifest, snap, Options{Dirty: []state.DirtyChange{{Path: "a/extra.txt", Kind: state.ChangeCreate}}})
+
+	assertOp(t, plan, "a", OpConflict)
+	assertNoOpKind(t, plan, "a", OpDownload)
+	assertNoOp(t, plan, "a/child.txt")
+}
+
 func assertOp(t *testing.T, plan Plan, path string, kind OperationKind) {
 	t.Helper()
 	for _, op := range plan.Operations {
@@ -152,11 +182,37 @@ func assertOp(t *testing.T, plan Plan, path string, kind OperationKind) {
 	t.Fatalf("missing op %s %s in %#v", kind, path, plan.Operations)
 }
 
+func assertBefore(t *testing.T, plan Plan, firstPath string, firstKind OperationKind, secondPath string, secondKind OperationKind) {
+	t.Helper()
+	first := -1
+	second := -1
+	for i, op := range plan.Operations {
+		if op.Path == firstPath && op.Kind == firstKind {
+			first = i
+		}
+		if op.Path == secondPath && op.Kind == secondKind {
+			second = i
+		}
+	}
+	if first < 0 || second < 0 || first >= second {
+		t.Fatalf("want %s %s before %s %s in %#v", firstKind, firstPath, secondKind, secondPath, plan.Operations)
+	}
+}
+
 func assertNoOp(t *testing.T, plan Plan, path string) {
 	t.Helper()
 	for _, op := range plan.Operations {
 		if op.Path == path {
 			t.Fatalf("unexpected op for %s in %#v", path, plan.Operations)
+		}
+	}
+}
+
+func assertNoOpKind(t *testing.T, plan Plan, path string, kind OperationKind) {
+	t.Helper()
+	for _, op := range plan.Operations {
+		if op.Path == path && op.Kind == kind {
+			t.Fatalf("unexpected op %s for %s in %#v", kind, path, plan.Operations)
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"remork/internal/apply"
@@ -139,6 +140,94 @@ func TestSyncFileReplacedByDirectoryDeletesLocalFileBeforeChildDownload(t *testi
 	}
 	if string(got) != "child\n" {
 		t.Fatalf("child = %q", got)
+	}
+}
+
+func TestSyncDirectoryReplacedByFileDeletesChildrenBeforeParentDownload(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(remote, "a", "child.txt"), []byte("child\n"))
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}}).Handler())
+	defer srv.Close()
+
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   state.NewStore(filepath.Join(local, ".remork", "state")),
+		LocalRoot:    local,
+		WorkspaceRef: "lab:" + remote,
+		RemoteRoot:   remote,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+	if err := os.Remove(filepath.Join(remote, "a", "child.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(remote, "a")); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(remote, "a"), []byte("file\n"))
+
+	result, err := runner.Sync(context.Background(), SyncOptions{})
+	if err != nil {
+		t.Fatalf("sync replacement: %v", err)
+	}
+	if result.Deleted != 1 || result.Downloaded != 1 {
+		t.Fatalf("result = %#v, want one delete and one download", result)
+	}
+	got, err := os.ReadFile(filepath.Join(local, "a"))
+	if err != nil {
+		t.Fatalf("read replacement file: %v", err)
+	}
+	if string(got) != "file\n" {
+		t.Fatalf("a = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(local, "a", "child.txt")); !os.IsNotExist(err) && !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("old child should not exist: %v", err)
+	}
+}
+
+func TestSyncDirectoryReplacedByFileConflictsWithUntrackedDescendant(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(remote, "a", "child.txt"), []byte("child\n"))
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}}).Handler())
+	defer srv.Close()
+
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   state.NewStore(filepath.Join(local, ".remork", "state")),
+		LocalRoot:    local,
+		WorkspaceRef: "lab:" + remote,
+		RemoteRoot:   remote,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(local, "a", "extra.txt"), []byte("local-only\n"))
+	if err := os.Remove(filepath.Join(remote, "a", "child.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(remote, "a")); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(remote, "a"), []byte("file\n"))
+
+	result, err := runner.Sync(context.Background(), SyncOptions{})
+	if err != nil {
+		t.Fatalf("sync replacement with conflict should not error: %v", err)
+	}
+	if result.Conflicts != 1 || result.Downloaded != 0 || result.Deleted != 0 {
+		t.Fatalf("result = %#v, want one conflict only", result)
+	}
+	got, err := os.ReadFile(filepath.Join(local, "a", "extra.txt"))
+	if err != nil {
+		t.Fatalf("untracked descendant was removed: %v", err)
+	}
+	if string(got) != "local-only\n" {
+		t.Fatalf("extra = %q", got)
 	}
 }
 
