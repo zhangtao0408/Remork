@@ -3,6 +3,7 @@ package transfer
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -17,16 +18,52 @@ func WriteFile(localRoot, remotePath string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
 	}
-	tmp := full + ".remork-tmp"
-	if info, err := os.Lstat(tmp); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("temporary path %q is a symlink", tmp)
-	} else if err != nil && !os.IsNotExist(err) {
+	return writeFileAtomic(full, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+func WriteFileWith(localRoot, remotePath string, write func(io.Writer) error) error {
+	full, err := LocalPath(localRoot, remotePath)
+	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
 	}
-	return os.Rename(tmp, full)
+	return writeFileAtomic(full, write)
+}
+
+func writeFileAtomic(full string, write func(io.Writer) error) error {
+	parent := filepath.Dir(full)
+	tmpFile, err := os.CreateTemp(parent, "."+filepath.Base(full)+".remork-*")
+	if err != nil {
+		return err
+	}
+	tmp := tmpFile.Name()
+	keepTemp := false
+	defer func() {
+		if !keepTemp {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err := write(tmpFile); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Chmod(0o644); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, full); err != nil {
+		return err
+	}
+	keepTemp = true
+	return nil
 }
 
 func LocalPath(localRoot, remotePath string) (string, error) {

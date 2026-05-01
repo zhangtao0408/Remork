@@ -212,40 +212,8 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 		}
 		switch op.Kind {
 		case planner.OpDownload:
-			previous := snap.Entries[op.Path]
-			data, err := r.opts.Client.DownloadContext(ctx, r.opts.RemoteRoot, op.Path)
-			if err != nil {
+			if err := r.downloadFile(ctx, op, &snap); err != nil {
 				return result, err
-			}
-			if err := transfer.WriteFile(r.opts.LocalRoot, op.Path, data); err != nil {
-				return result, err
-			}
-			basePath, err := r.opts.StateStore.BasePath(op.Path)
-			if err != nil {
-				return result, err
-			}
-			if err := writeExactFile(basePath, data); err != nil {
-				return result, err
-			}
-			if previous.Large && previous.MetaPath != "" {
-				metaPath, err := transfer.LocalPath(r.opts.LocalRoot, previous.MetaPath)
-				if err != nil {
-					return result, err
-				}
-				if err := removeIfExists(metaPath); err != nil {
-					return result, err
-				}
-			}
-			hash := op.Entry.Hash
-			if hash == "" {
-				hash = state.HashBytes(data)
-			}
-			snap.Entries[op.Path] = state.TrackedFile{
-				Path:     op.Path,
-				Type:     op.Entry.Type,
-				BaseHash: hash,
-				Revision: op.Entry.Revision,
-				Large:    false,
 			}
 			result.Downloaded++
 		case planner.OpWriteMeta:
@@ -480,18 +448,21 @@ func needsLargeConfirmation(plan planner.Plan) bool {
 
 func (r Runner) downloadFile(ctx context.Context, op planner.Operation, snap *state.Snapshot) error {
 	previous := snap.Entries[op.Path]
-	data, err := r.opts.Client.DownloadContext(ctx, r.opts.RemoteRoot, op.Path)
-	if err != nil {
+	if err := transfer.WriteFileWith(r.opts.LocalRoot, op.Path, func(w io.Writer) error {
+		_, err := r.opts.Client.DownloadToContext(ctx, r.opts.RemoteRoot, op.Path, w)
+		return err
+	}); err != nil {
 		return err
 	}
-	if err := transfer.WriteFile(r.opts.LocalRoot, op.Path, data); err != nil {
+	localPath, err := transfer.LocalPath(r.opts.LocalRoot, op.Path)
+	if err != nil {
 		return err
 	}
 	basePath, err := r.opts.StateStore.BasePath(op.Path)
 	if err != nil {
 		return err
 	}
-	if err := writeExactFile(basePath, data); err != nil {
+	if err := copyExactFile(basePath, localPath); err != nil {
 		return err
 	}
 	if previous.Large && previous.MetaPath != "" {
@@ -505,7 +476,11 @@ func (r Runner) downloadFile(ctx context.Context, op planner.Operation, snap *st
 	}
 	hash := op.Entry.Hash
 	if hash == "" {
-		hash = state.HashBytes(data)
+		computedHash, err := state.HashFile(localPath)
+		if err != nil {
+			return err
+		}
+		hash = computedHash
 	}
 	snap.Entries[op.Path] = state.TrackedFile{
 		Path:     op.Path,
@@ -571,6 +546,41 @@ func writeExactFile(path string, data []byte) error {
 		return err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
+func copyExactFile(dst, src string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	parent := filepath.Dir(dst)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(parent, ".remork-base-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := io.Copy(tmp, in); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
 		return err
 	}
 	cleanup = false

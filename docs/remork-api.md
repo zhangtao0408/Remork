@@ -52,7 +52,9 @@ write `filename.meta` placeholders instead of downloading the content.
 `GET /download?root=<root>&path=<path>`
 
 Returns file bytes for a root-relative file. The endpoint supports byte ranges
-through the standard `Range` header.
+through the standard `Range` header. Product V1 clients enforce a bounded
+download body size. CLI sync and pull paths stream the response to disk instead
+of buffering full remote files in memory.
 
 ## Apply
 

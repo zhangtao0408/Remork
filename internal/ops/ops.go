@@ -66,6 +66,8 @@ type JSONLStore struct {
 	path string
 }
 
+const maxJSONLLineBytes = 16 << 20
+
 func NewJSONLStore(path string) *JSONLStore {
 	return &JSONLStore{path: path}
 }
@@ -104,6 +106,7 @@ func (s *JSONLStore) List(filter Filter) ([]Entry, error) {
 	defer f.Close()
 	var entries []Entry
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64<<10), maxJSONLLineBytes)
 	for scanner.Scan() {
 		var entry Entry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {

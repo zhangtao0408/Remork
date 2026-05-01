@@ -118,7 +118,7 @@ func HashFile(path string) (string, error) {
 }
 
 func revisionFor(info os.FileInfo) string {
-	return info.ModTime().UTC().Format("20060102150405") + "-" + strconv.FormatInt(info.Size(), 10)
+	return strconv.FormatInt(info.ModTime().UTC().UnixNano(), 10) + "-" + strconv.FormatInt(info.Size(), 10)
 }
 
 func manifestRevision(entries []api.FileEntry) string {

@@ -19,18 +19,20 @@ import (
 )
 
 type Client struct {
-	base     string
-	http     *http.Client
-	clientID string
-	token    string
+	base             string
+	http             *http.Client
+	clientID         string
+	token            string
+	maxDownloadBytes int64
 }
 
 type Options struct {
-	BaseURL  string
-	ClientID string
-	Token    string
-	HTTP     *http.Client
-	NoProxy  bool
+	BaseURL          string
+	ClientID         string
+	Token            string
+	HTTP             *http.Client
+	NoProxy          bool
+	MaxDownloadBytes int64
 }
 
 func New(base string) Client {
@@ -46,7 +48,11 @@ func NewWithOptions(opts Options) Client {
 	if httpClient == nil {
 		httpClient = NewHTTPClient(opts.NoProxy)
 	}
-	return Client{base: opts.BaseURL, http: httpClient, clientID: opts.ClientID, token: opts.Token}
+	maxDownloadBytes := opts.MaxDownloadBytes
+	if maxDownloadBytes <= 0 {
+		maxDownloadBytes = limits.MaxDownloadBodyBytes
+	}
+	return Client{base: opts.BaseURL, http: httpClient, clientID: opts.ClientID, token: opts.Token, maxDownloadBytes: maxDownloadBytes}
 }
 
 func NewHTTPClient(noProxy bool) *http.Client {
@@ -129,6 +135,10 @@ func (c Client) DownloadRange(root, path string, start, end int64) ([]byte, erro
 
 func (c Client) DownloadContext(ctx context.Context, root, path string) ([]byte, error) {
 	return c.download(ctx, root, path, "")
+}
+
+func (c Client) DownloadToContext(ctx context.Context, root, path string, dst io.Writer) (int64, error) {
+	return c.downloadTo(ctx, root, path, "", dst)
 }
 
 func (c Client) DownloadRangeContext(ctx context.Context, root, path string, start, end int64) ([]byte, error) {
@@ -309,6 +319,14 @@ func (c Client) KillShellSession(ctx context.Context, root, id string) error {
 }
 
 func (c Client) download(ctx context.Context, root, path, byteRange string) ([]byte, error) {
+	var buf bytes.Buffer
+	if _, err := c.downloadTo(ctx, root, path, byteRange, &buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func (c Client) downloadTo(ctx context.Context, root, path, byteRange string, dst io.Writer) (int64, error) {
 	ctx, cancel := contextWithDefaultTimeout(ctx, limits.DefaultTransferTimeout)
 	defer cancel()
 	u, _ := url.Parse(c.endpoint("/download"))
@@ -318,7 +336,7 @@ func (c Client) download(ctx context.Context, root, path, byteRange string) ([]b
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	if byteRange != "" {
 		req.Header.Set("Range", byteRange)
@@ -326,14 +344,25 @@ func (c Client) download(ctx context.Context, root, path, byteRange string) ([]b
 	c.addHeaders(req)
 	resp, err := c.doWithoutWholeRequestTimeout(req)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body := readErrorBody(resp.Body)
-		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: body}
+		return 0, &HTTPError{StatusCode: resp.StatusCode, Body: body}
 	}
-	return io.ReadAll(resp.Body)
+	if resp.ContentLength > c.maxDownloadBytes {
+		return 0, fmt.Errorf("download body exceeds %d bytes", c.maxDownloadBytes)
+	}
+	limited := io.LimitReader(resp.Body, c.maxDownloadBytes+1)
+	n, err := io.Copy(dst, limited)
+	if err != nil {
+		return n, err
+	}
+	if n > c.maxDownloadBytes {
+		return n, fmt.Errorf("download body exceeds %d bytes", c.maxDownloadBytes)
+	}
+	return n, nil
 }
 
 func readErrorBody(r io.Reader) string {

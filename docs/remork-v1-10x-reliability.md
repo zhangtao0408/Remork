@@ -255,3 +255,51 @@ smoke paths:
 ssh z00879328_docker 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
 ssh z00879328_docker_2.6 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
 ```
+
+## Final Review Hardening Follow-up
+
+Date: 2026-05-01
+
+The final code-quality review found additional robustness gaps. They were fixed
+and covered with targeted tests:
+
+- sync writes use unique temporary files and do not overwrite user files named
+  like `*.remork-tmp`;
+- stale `apply.lock` files with dead PIDs are reclaimed instead of wedging all
+  future applies;
+- shell session retention is enforced when sessions are listed, fetched, or new
+  sessions are started;
+- CLI sync and pull downloads stream to disk through a bounded client download
+  path;
+- large-file revisions include nanosecond mtime so same-size updates inside one
+  second are visible;
+- operation log reads accept large JSONL entries instead of failing at the
+  default scanner token limit.
+
+Verification after these fixes:
+
+```bash
+go test -count=1 ./internal/transfer ./internal/apply ./internal/pty ./internal/client ./internal/manifest ./internal/ops
+go test -count=1 ./internal/syncer ./internal/daemon ./test/e2e ./internal/cli ./cmd/remork ./cmd/remorkd
+go test -count=1 ./...
+go test -race -count=1 ./internal/daemon ./internal/client ./internal/syncer ./internal/preflight ./internal/shellclient ./internal/watch ./test/e2e
+scripts/build-release.sh dev
+(cd dist && shasum -a 256 -c checksums.txt)
+```
+
+Result: all commands passed.
+
+The rebuilt `dist/remorkd-linux-arm64` and `dist/remork-darwin-arm64` binaries
+were smoke-tested again on both provided hosts:
+
+```text
+z00879328_docker final remote smoke PASS
+z00879328_docker_2.6 final remote smoke PASS
+```
+
+Cleanup proof commands returned no output:
+
+```bash
+ssh z00879328_docker 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
+ssh z00879328_docker_2.6 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
+```

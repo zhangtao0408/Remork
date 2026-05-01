@@ -485,6 +485,29 @@ func TestClientDownloadContextUsesDefaultDeadlineWhenCallerHasNone(t *testing.T)
 	}
 }
 
+func TestClientDownloadContextRejectsBodyOverLimit(t *testing.T) {
+	c := NewWithOptions(Options{
+		BaseURL:          "http://example.test",
+		MaxDownloadBytes: 4,
+		HTTP: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("12345")),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		})},
+	})
+
+	_, err := c.DownloadContext(context.Background(), "/remote/root", "too-large.bin")
+	if err == nil {
+		t.Fatal("expected download limit error")
+	}
+	if !strings.Contains(err.Error(), "download body exceeds") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestClientApplyContextUsesDefaultDeadlineWhenCallerHasNone(t *testing.T) {
 	c := NewWithOptions(Options{
 		BaseURL: "http://example.test",

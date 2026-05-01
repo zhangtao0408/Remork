@@ -39,6 +39,19 @@ func TestManagerReapsIdleSession(t *testing.T) {
 	}
 }
 
+func TestManagerListReapsIdleSessionWithoutExplicitCall(t *testing.T) {
+	skipPTYIfRequested(t)
+	m := NewManager(10 * time.Millisecond)
+	_, err := m.Start(StartOptions{Command: []string{"sh"}, Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if len(m.List()) != 0 {
+		t.Fatal("List should enforce retention and reap idle session")
+	}
+}
+
 func TestCloseUnknownSessionIsNoop(t *testing.T) {
 	m := NewManager(time.Second)
 	if err := m.Close("missing"); err != nil {

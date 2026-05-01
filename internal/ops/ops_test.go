@@ -3,6 +3,7 @@ package ops
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,6 +41,30 @@ func TestJSONLStorePersistsAndFiltersEntries(t *testing.T) {
 	}
 	if len(other) != 0 {
 		t.Fatalf("unexpected entries: %#v", other)
+	}
+}
+
+func TestJSONLStoreListsLargeEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "operations.jsonl")
+	store := NewJSONLStore(path)
+	entry := Entry{
+		ID:             "op-large",
+		Root:           "/workspace",
+		Operation:      "apply",
+		RequestSummary: map[string]any{"paths": strings.Repeat("a", 80<<10)},
+		Result:         "success",
+		StatusCode:     200,
+	}
+	if err := store.Append(entry); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	got, err := store.List(Filter{Root: "/workspace"})
+	if err != nil {
+		t.Fatalf("list should handle large JSONL entries: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "op-large" {
+		t.Fatalf("entries = %#v", got)
 	}
 }
 

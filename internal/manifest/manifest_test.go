@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"remork/internal/api"
 )
@@ -110,6 +111,26 @@ func TestLargeThresholdBoundary(t *testing.T) {
 		t.Fatal("file above threshold should be large")
 	}
 }
+
+func TestRevisionIncludesNanosecondMTime(t *testing.T) {
+	a := fakeFileInfo{size: 128 << 20, modTime: time.Unix(100, 100).UTC()}
+	b := fakeFileInfo{size: 128 << 20, modTime: time.Unix(100, 200).UTC()}
+	if revisionFor(a) == revisionFor(b) {
+		t.Fatal("same-size files with different nanosecond mtimes need different revisions")
+	}
+}
+
+type fakeFileInfo struct {
+	size    int64
+	modTime time.Time
+}
+
+func (f fakeFileInfo) Name() string       { return "large.bin" }
+func (f fakeFileInfo) Size() int64        { return f.size }
+func (f fakeFileInfo) Mode() os.FileMode  { return 0o644 }
+func (f fakeFileInfo) ModTime() time.Time { return f.modTime }
+func (f fakeFileInfo) IsDir() bool        { return false }
+func (f fakeFileInfo) Sys() any           { return nil }
 
 func mustWrite(t *testing.T, path string, data []byte) {
 	t.Helper()

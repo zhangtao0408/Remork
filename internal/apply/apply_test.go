@@ -222,6 +222,36 @@ func TestApplyFailsWhenApplyLockExists(t *testing.T) {
 	}
 }
 
+func TestApplyReclaimsStalePidLockFile(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.txt"), []byte("before"))
+	lockDir := filepath.Join(root, ".remork", "lock")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lockFile := filepath.Join(lockDir, "apply.lock")
+	if err := os.WriteFile(lockFile, []byte("pid=999999999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Apply(root, Changeset{Changes: []Change{
+		{Path: "a.txt", Kind: ChangeUpdate, BaseHash: state.HashBytes([]byte("before")), Content: []byte("after")},
+	}})
+	if err != nil {
+		t.Fatalf("apply should reclaim stale lock: %v", err)
+	}
+	if !result.Applied {
+		t.Fatalf("result = %#v, want applied", result)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "after" {
+		t.Fatalf("file = %q, want after", data)
+	}
+}
+
 func TestApplyUpdateDoesNotFollowPredictableTempSymlink(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")

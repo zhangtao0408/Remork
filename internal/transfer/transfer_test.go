@@ -131,6 +131,33 @@ func TestWriteFileUsesTempThenFinalName(t *testing.T) {
 	}
 }
 
+func TestWriteFileDoesNotClobberExistingTempLikeFile(t *testing.T) {
+	root := t.TempDir()
+	tempLike := filepath.Join(root, "a.txt.remork-tmp")
+	if err := os.WriteFile(tempLike, []byte("user scratch"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteFile(root, "a.txt", []byte("remote")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(root, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "remote" {
+		t.Fatalf("a.txt = %q, want remote", got)
+	}
+	scratch, err := os.ReadFile(tempLike)
+	if err != nil {
+		t.Fatalf("temp-like user file was removed: %v", err)
+	}
+	if string(scratch) != "user scratch" {
+		t.Fatalf("temp-like user file = %q, want user scratch", scratch)
+	}
+}
+
 func TestWriteFileFailureDoesNotCreateFinalFile(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "blocked"), []byte("not a dir"), 0o644); err != nil {

@@ -8,6 +8,7 @@ const (
 	MaxApplyBodyBytes       = 256 << 20
 	MaxExecBodyBytes        = 1 << 20
 	MaxExecOutputBytes      = 8 << 20
+	MaxDownloadBodyBytes    = int64(16) << 30
 )
 
 const (

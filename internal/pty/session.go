@@ -163,6 +163,7 @@ func NewManager(retention time.Duration) *Manager {
 }
 
 func (m *Manager) Start(opts StartOptions) (*Session, error) {
+	m.reapIdle()
 	if len(opts.Command) == 0 {
 		opts.Command = []string{"sh"}
 	}
@@ -264,12 +265,14 @@ func (s *Session) wait() {
 }
 
 func (m *Manager) Get(id string) *Session {
+	m.reapIdle()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.sessions[id]
 }
 
 func (m *Manager) List() []Session {
+	m.reapIdle()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]Session, 0, len(m.sessions))
@@ -290,13 +293,7 @@ func (m *Manager) Close(id string) error {
 	s := m.sessions[id]
 	delete(m.sessions, id)
 	m.mu.Unlock()
-	if s == nil {
-		return nil
-	}
-	_ = s.file.Close()
-	if s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
-	}
+	closeSession(s)
 	return nil
 }
 
@@ -308,10 +305,38 @@ func (m *Manager) CloseSession(s *Session) error {
 }
 
 func (m *Manager) ReapIdle() {
-	for _, s := range m.List() {
-		if time.Since(s.LastActive) > m.retention {
-			_ = m.Close(s.ID)
+	m.reapIdle()
+}
+
+func (m *Manager) reapIdle() {
+	if m.retention <= 0 {
+		return
+	}
+	now := time.Now()
+	var expired []*Session
+	m.mu.Lock()
+	for id, s := range m.sessions {
+		s.mu.RLock()
+		idle := now.Sub(s.LastActive)
+		s.mu.RUnlock()
+		if idle > m.retention {
+			delete(m.sessions, id)
+			expired = append(expired, s)
 		}
+	}
+	m.mu.Unlock()
+	for _, s := range expired {
+		closeSession(s)
+	}
+}
+
+func closeSession(s *Session) {
+	if s == nil {
+		return
+	}
+	_ = s.file.Close()
+	if s.cmd.Process != nil {
+		_ = s.cmd.Process.Kill()
 	}
 }
 
