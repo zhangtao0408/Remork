@@ -2,6 +2,7 @@ package ptysession
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,6 +57,82 @@ func TestSessionWaitReturnsExitCode(t *testing.T) {
 	status := s.Wait()
 	if status.ExitCode != 7 {
 		t.Fatalf("exit code = %d, want 7; err=%v", status.ExitCode, status.Err)
+	}
+}
+
+func TestSessionOutputAfterReattachGoesToCurrentSubscriber(t *testing.T) {
+	skipPTYIfRequested(t)
+	m := NewManager(time.Second)
+	s, err := m.Start(StartOptions{Command: []string{"sh"}, Rows: 24, Cols: 80})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer m.CloseSession(s)
+
+	first, ok := s.Attach(0)
+	if !ok {
+		t.Fatal("first attach failed")
+	}
+	if _, err := s.Write([]byte("printf 'ready\\n'\n")); err != nil {
+		t.Fatalf("write ready: %v", err)
+	}
+	readOutputContaining(t, first, "ready")
+	first.Detach()
+
+	second, ok := s.Attach(0)
+	if !ok {
+		t.Fatal("second attach failed")
+	}
+	defer second.Detach()
+	first.Detach()
+
+	if _, err := s.Write([]byte("printf 'attached\\n'; exit\n")); err != nil {
+		t.Fatalf("write attached: %v", err)
+	}
+	readOutputContaining(t, second, "attached")
+}
+
+func TestSessionPublishBuffersWhenSubscriberTokenIsStale(t *testing.T) {
+	s := &Session{LastActive: time.Now()}
+	first, ok := s.Attach(0)
+	if !ok {
+		t.Fatal("first attach failed")
+	}
+
+	s.attachMu.Lock()
+	s.attachID++
+	s.attached = false
+	s.attachMu.Unlock()
+
+	s.publish(OutputFrame{Data: []byte("after-detach")})
+
+	select {
+	case frame := <-first.Frames:
+		t.Fatalf("stale subscriber received frame %q", string(frame.Data))
+	default:
+	}
+
+	second, ok := s.Attach(0)
+	if !ok {
+		t.Fatal("second attach failed")
+	}
+	readOutputContaining(t, second, "after-detach")
+}
+
+func readOutputContaining(t *testing.T, sub *OutputSubscription, want string) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	var transcript strings.Builder
+	for !strings.Contains(transcript.String(), want) {
+		select {
+		case frame := <-sub.Frames:
+			if frame.ExitStatus != nil {
+				t.Fatalf("session exited before %q; transcript:\n%s", want, transcript.String())
+			}
+			transcript.Write(frame.Data)
+		case <-deadline:
+			t.Fatalf("timed out waiting for %q; transcript:\n%s", want, transcript.String())
+		}
 	}
 }
 

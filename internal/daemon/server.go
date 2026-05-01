@@ -60,6 +60,7 @@ func NewServer(cfg Config) *Server {
 	s.mux.HandleFunc("/exec", s.withAuth(s.handleExec))
 	s.mux.HandleFunc("/events", s.withAuth(s.handleEvents))
 	s.mux.HandleFunc("/shell", s.withAuth(s.handleShell))
+	s.mux.HandleFunc("/shell/sessions", s.withAuth(s.handleShellSessions))
 	s.mux.HandleFunc("/operations", s.withAuth(s.handleOperations))
 	return s
 }
@@ -449,25 +450,57 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 	root := r.URL.Query().Get("root")
-	op := s.startOperation(r, "shell", root, map[string]any{"shell": "sh", "rows": 24, "cols": 80})
+	sessionID := r.URL.Query().Get("session")
+	op := s.startOperation(r, "shell", root, map[string]any{"shell": "sh", "rows": 24, "cols": 80, "session": sessionID})
 	if !s.allowedRoot(root) {
 		http.Error(w, "root not allowed", http.StatusForbidden)
 		s.finishOperation(op, http.StatusForbidden, "error", "root not allowed")
 		return
 	}
+	var session *ptysession.Session
+	var sub *ptysession.OutputSubscription
+	var err error
+	if sessionID != "" {
+		session = s.ptyManager.Get(sessionID)
+		if session == nil || session.Root != root {
+			http.Error(w, "shell session not found", http.StatusNotFound)
+			s.finishOperation(op, http.StatusNotFound, "error", "shell session not found")
+			return
+		}
+		var ok bool
+		sub, ok = session.Attach(250 * time.Millisecond)
+		if !ok {
+			http.Error(w, "shell session already attached", http.StatusConflict)
+			s.finishOperation(op, http.StatusConflict, "error", "shell session already attached")
+			return
+		}
+	}
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
+		if sub != nil {
+			sub.Detach()
+		}
 		s.finishOperation(op, http.StatusBadRequest, "error", err.Error())
 		return
 	}
 	defer conn.Close()
-	session, err := s.ptyManager.Start(ptysession.StartOptions{Command: []string{"sh"}, Cwd: root, Rows: 24, Cols: 80})
-	if err != nil {
-		_ = conn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
-		s.finishOperation(op, http.StatusInternalServerError, "error", err.Error())
-		return
+	if sessionID == "" {
+		session, err = s.ptyManager.Start(ptysession.StartOptions{Command: []string{"sh"}, Cwd: root, Root: root, Rows: 24, Cols: 80})
+		if err != nil {
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
+			s.finishOperation(op, http.StatusInternalServerError, "error", err.Error())
+			return
+		}
+		var ok bool
+		sub, ok = session.Attach(0)
+		if !ok {
+			_ = conn.WriteMessage(websocket.TextMessage, []byte("shell session already attached"))
+			s.finishOperation(op, http.StatusConflict, "error", "shell session already attached")
+			return
+		}
 	}
-	defer s.ptyManager.CloseSession(session)
+	defer sub.Detach()
+	op.RequestSummary["session"] = session.ID
 	statusCode := http.StatusOK
 	resultName := "success"
 	errorMessage := ""
@@ -487,18 +520,22 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 	done := make(chan ptysession.ExitStatus, 1)
 	go func() {
 		defer conn.Close()
-		buf := make([]byte, 4096)
 		for {
-			n, err := session.Read(buf)
-			if n > 0 {
-				if writeErr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); writeErr != nil {
+			select {
+			case frame := <-sub.Frames:
+				if len(frame.Data) > 0 {
+					if err := conn.WriteMessage(websocket.BinaryMessage, frame.Data); err != nil {
+						return
+					}
+				}
+				if frame.ExitStatus != nil {
+					_ = conn.WriteJSON(api.ShellFrame{Type: "exit", ExitCode: frame.ExitStatus.ExitCode})
+					done <- *frame.ExitStatus
 					return
 				}
-			}
-			if err != nil {
-				status := session.Wait()
-				_ = conn.WriteJSON(api.ShellFrame{Type: "exit", ExitCode: status.ExitCode})
-				done <- status
+			case <-sub.Done():
+				return
+			case <-r.Context().Done():
 				return
 			}
 		}
@@ -530,6 +567,45 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+}
+
+func (s *Server) handleShellSessions(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	if !s.allowedRoot(root) {
+		http.Error(w, "root not allowed", http.StatusForbidden)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		sessions := make([]api.ShellSessionInfo, 0)
+		for _, session := range s.ptyManager.List() {
+			if session.Root != root {
+				continue
+			}
+			sessions = append(sessions, api.ShellSessionInfo{
+				ID:         session.ID,
+				Command:    append([]string(nil), session.Command...),
+				LastActive: session.LastActive.UTC().Format(time.RFC3339Nano),
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"sessions": sessions})
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "id is required", http.StatusBadRequest)
+			return
+		}
+		session := s.ptyManager.Get(id)
+		if session == nil || session.Root != root {
+			http.Error(w, "shell session not found", http.StatusNotFound)
+			return
+		}
+		_ = s.ptyManager.Close(id)
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 

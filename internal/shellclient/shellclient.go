@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
@@ -21,16 +22,17 @@ import (
 )
 
 type Options struct {
-	BaseURL  string
-	Root     string
-	ClientID string
-	Token    string
-	NoProxy  bool
-	Stdin    io.Reader
-	Stdout   io.Writer
-	Rows     int
-	Cols     int
-	Dialer   *websocket.Dialer
+	BaseURL   string
+	Root      string
+	SessionID string
+	ClientID  string
+	Token     string
+	NoProxy   bool
+	Stdin     io.Reader
+	Stdout    io.Writer
+	Rows      int
+	Cols      int
+	Dialer    *websocket.Dialer
 }
 
 type ExitError struct {
@@ -45,7 +47,30 @@ func (e ExitError) ExitCode() int {
 	return e.Code
 }
 
-func BuildURL(baseURL, root string) (string, error) {
+type DisconnectError struct{}
+
+func (e DisconnectError) Error() string {
+	return "remote shell socket closed without an exit frame"
+}
+
+type copyResult struct {
+	stream string
+	err    error
+}
+
+type socketError struct {
+	err error
+}
+
+func (e socketError) Error() string {
+	return e.err.Error()
+}
+
+func (e socketError) Unwrap() error {
+	return e.err
+}
+
+func BuildURL(baseURL, root, sessionID string) (string, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return "", err
@@ -62,6 +87,9 @@ func BuildURL(baseURL, root string) (string, error) {
 	u.Path = strings.TrimRight(u.Path, "/") + "/shell"
 	q := u.Query()
 	q.Set("root", root)
+	if sessionID != "" {
+		q.Set("session", sessionID)
+	}
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
@@ -77,7 +105,7 @@ func Run(ctx context.Context, opts Options) error {
 	if dialer == nil {
 		dialer = NewDialer(opts.NoProxy)
 	}
-	wsURL, err := BuildURL(opts.BaseURL, opts.Root)
+	wsURL, err := BuildURL(opts.BaseURL, opts.Root, opts.SessionID)
 	if err != nil {
 		return err
 	}
@@ -104,10 +132,6 @@ func Run(ctx context.Context, opts Options) error {
 	stopInterrupt := watchInterrupt(ctx, conn, &writeMu)
 	defer stopInterrupt()
 
-	type copyResult struct {
-		stream string
-		err    error
-	}
 	errCh := make(chan copyResult, 2)
 	go func() {
 		errCh <- copyResult{stream: "input", err: copyInput(ctx, opts.Stdin, conn, &writeMu)}
@@ -125,12 +149,30 @@ func Run(ctx context.Context, opts Options) error {
 			if result.stream == "input" && result.err == nil {
 				continue
 			}
-			if result.err == nil || isSocketClosed(result.err) {
+			if result.err == nil {
 				return nil
 			}
-			return result.err
+			return classifyCopyResult(result)
 		}
 	}
+}
+
+func classifyCopyResult(result copyResult) error {
+	if result.err == nil {
+		return nil
+	}
+	var disconnectErr DisconnectError
+	if errors.As(result.err, &disconnectErr) {
+		return disconnectErr
+	}
+	var socketErr socketError
+	if errors.As(result.err, &socketErr) {
+		if isSocketClosed(socketErr.err) {
+			return DisconnectError{}
+		}
+		return socketErr.err
+	}
+	return result.err
 }
 
 func NewDialer(noProxy bool) *websocket.Dialer {
@@ -174,13 +216,13 @@ func copyInput(ctx context.Context, in io.Reader, conn *websocket.Conn, writeMu 
 		n, err := in.Read(buf)
 		if n > 0 {
 			if writeErr := writeMessage(writeMu, conn, websocket.BinaryMessage, buf[:n]); writeErr != nil {
-				return writeErr
+				return socketError{err: writeErr}
 			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if writeErr := writeMessage(writeMu, conn, websocket.BinaryMessage, []byte{4}); writeErr != nil {
-					return writeErr
+					return socketError{err: writeErr}
 				}
 				return nil
 			}
@@ -193,7 +235,7 @@ func copyOutput(out io.Writer, conn *websocket.Conn) error {
 	for {
 		messageType, msg, err := conn.ReadMessage()
 		if err != nil {
-			return err
+			return socketError{err: err}
 		}
 		if messageType == websocket.TextMessage {
 			var frame api.ShellFrame
@@ -261,7 +303,30 @@ func forwardInterrupts(signals <-chan os.Signal, done <-chan struct{}, write fun
 }
 
 func isSocketClosed(err error) bool {
-	return errors.Is(err, io.EOF) ||
-		errors.Is(err, net.ErrClosed) ||
-		websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived, websocket.CloseAbnormalClosure)
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived, websocket.CloseAbnormalClosure) {
+		return true
+	}
+	if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && strings.EqualFold(opErr.Op, "read") && isConnectionResetError(opErr.Err) {
+		return true
+	}
+	return isConnectionResetError(err)
+}
+
+func isConnectionResetError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "use of closed network connection")
 }

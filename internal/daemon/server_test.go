@@ -566,6 +566,152 @@ func TestShellSendsExitFrame(t *testing.T) {
 	}
 }
 
+func TestShellSessionSurvivesDisconnectAndCanBeKilled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty shell is not supported on windows")
+	}
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}, Token: "secret"}).Handler())
+	defer srv.Close()
+
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer secret")
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/shell?root=" + url.QueryEscape(root)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("printf 'durable-ready\\n'; sleep 30\n")); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var transcript strings.Builder
+	for !strings.Contains(transcript.String(), "durable-ready") {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read shell output: %v\ntranscript:\n%s", err, transcript.String())
+		}
+		transcript.Write(msg)
+	}
+	_ = conn.Close()
+
+	var sessions []api.ShellSessionInfo
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/shell/sessions?root="+url.QueryEscape(root), nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer secret")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("list sessions: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("list status %d: %s", resp.StatusCode, body)
+		}
+		var decoded struct {
+			Sessions []api.ShellSessionInfo `json:"sessions"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+			resp.Body.Close()
+			t.Fatalf("decode sessions: %v", err)
+		}
+		resp.Body.Close()
+		if len(decoded.Sessions) > 0 {
+			sessions = decoded.Sessions
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %#v, want one durable session", sessions)
+	}
+	if sessions[0].ID == "" || len(sessions[0].Command) == 0 || sessions[0].LastActive == "" {
+		t.Fatalf("session info missing fields: %#v", sessions[0])
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/shell/sessions?root="+url.QueryEscape(root)+"&id="+url.QueryEscape(sessions[0].ID), nil)
+	if err != nil {
+		t.Fatalf("new delete request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("delete status %d: %s", resp.StatusCode, body)
+	}
+}
+
+func TestShellCanAttachToExistingSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty shell is not supported on windows")
+	}
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/shell?root=" + url.QueryEscape(root)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("printf 'ready\\n'\n")); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var transcript strings.Builder
+	for !strings.Contains(transcript.String(), "ready") {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read shell output: %v\ntranscript:\n%s", err, transcript.String())
+		}
+		transcript.Write(msg)
+	}
+	_ = conn.Close()
+
+	var list struct {
+		Sessions []api.ShellSessionInfo `json:"sessions"`
+	}
+	resp, err := http.Get(srv.URL + "/shell/sessions?root=" + url.QueryEscape(root))
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		resp.Body.Close()
+		t.Fatalf("decode sessions: %v", err)
+	}
+	resp.Body.Close()
+	if len(list.Sessions) != 1 {
+		t.Fatalf("sessions = %#v, want one", list.Sessions)
+	}
+
+	attachURL := wsURL + "&session=" + url.QueryEscape(list.Sessions[0].ID)
+	attached, _, err := websocket.DefaultDialer.Dial(attachURL, nil)
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	defer attached.Close()
+	if err := attached.WriteMessage(websocket.TextMessage, []byte("printf 'attached\\n'; exit\n")); err != nil {
+		t.Fatalf("write attached command: %v", err)
+	}
+	_ = attached.SetReadDeadline(time.Now().Add(2 * time.Second))
+	transcript.Reset()
+	for !strings.Contains(transcript.String(), "attached") {
+		_, msg, err := attached.ReadMessage()
+		if err != nil {
+			t.Fatalf("read attached output: %v\ntranscript:\n%s", err, transcript.String())
+		}
+		transcript.Write(msg)
+	}
+}
+
 func TestOperationLogsAreScopedPerWorkspaceRoot(t *testing.T) {
 	rootA := t.TempDir()
 	rootB := t.TempDir()

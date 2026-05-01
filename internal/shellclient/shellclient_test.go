@@ -3,10 +3,12 @@ package shellclient
 import (
 	"bytes"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -34,7 +36,7 @@ func TestBuildShellURLIncludesRootAndUsesWebSocketScheme(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := BuildURL(tt.base, "/data/project")
+			got, err := BuildURL(tt.base, "/data/project", "")
 			if err != nil {
 				t.Fatalf("build url: %v", err)
 			}
@@ -42,6 +44,16 @@ func TestBuildShellURLIncludesRootAndUsesWebSocketScheme(t *testing.T) {
 				t.Fatalf("url = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildShellURLIncludesSessionWhenProvided(t *testing.T) {
+	got, err := BuildURL("http://127.0.0.1:17731", "/data/project", "abc123")
+	if err != nil {
+		t.Fatalf("build url: %v", err)
+	}
+	if got != "ws://127.0.0.1:17731/shell?root=%2Fdata%2Fproject&session=abc123" {
+		t.Fatalf("url = %q", got)
 	}
 }
 
@@ -86,13 +98,15 @@ func TestRunWaitsForSocketOutputAfterStdinEOF(t *testing.T) {
 	defer server.Close()
 
 	var out bytes.Buffer
-	if err := Run(t.Context(), Options{
+	err := Run(t.Context(), Options{
 		BaseURL: server.URL,
 		Root:    "/data/project",
 		Stdin:   strings.NewReader("exit\n"),
 		Stdout:  &out,
-	}); err != nil {
-		t.Fatalf("run: %v", err)
+	})
+	var disconnectErr DisconnectError
+	if !errors.As(err, &disconnectErr) {
+		t.Fatalf("run err = %v, want DisconnectError", err)
 	}
 	if got := out.String(); got != "after stdin eof\n" {
 		t.Fatalf("stdout = %q", got)
@@ -124,13 +138,15 @@ func TestRunSendsEOTAfterStdinEOF(t *testing.T) {
 	defer server.Close()
 
 	var out bytes.Buffer
-	if err := Run(t.Context(), Options{
+	err := Run(t.Context(), Options{
 		BaseURL: server.URL,
 		Root:    "/data/project",
 		Stdin:   strings.NewReader("echo hi\n"),
 		Stdout:  &out,
-	}); err != nil {
-		t.Fatalf("run: %v", err)
+	})
+	var disconnectErr DisconnectError
+	if !errors.As(err, &disconnectErr) {
+		t.Fatalf("run err = %v, want DisconnectError", err)
 	}
 }
 
@@ -167,6 +183,72 @@ func TestRunReturnsRemoteShellExitCode(t *testing.T) {
 	}
 	if exitErr.ExitCode() != 7 {
 		t.Fatalf("exit code = %d, want 7", exitErr.ExitCode())
+	}
+}
+
+func TestIsSocketClosedClassifiesReadDisconnects(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "websocket abnormal close",
+			err:  &websocket.CloseError{Code: websocket.CloseAbnormalClosure, Text: "unexpected EOF"},
+		},
+		{
+			name: "net err closed",
+			err:  net.ErrClosed,
+		},
+		{
+			name: "read connection reset",
+			err: &net.OpError{
+				Op:  "read",
+				Net: "tcp",
+				Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET},
+			},
+		},
+		{
+			name: "closed network connection text",
+			err: &net.OpError{
+				Op:  "read",
+				Net: "tcp",
+				Err: errors.New("use of closed network connection"),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !isSocketClosed(tt.err) {
+				t.Fatalf("isSocketClosed(%v) = false, want true", tt.err)
+			}
+		})
+	}
+}
+
+func TestClassifyCopyResultConvertsInputSocketWriteError(t *testing.T) {
+	err := classifyCopyResult(copyResult{
+		stream: "input",
+		err: socketError{err: &net.OpError{
+			Op:  "write",
+			Net: "tcp",
+			Err: &os.SyscallError{Syscall: "write", Err: syscall.ECONNRESET},
+		}},
+	})
+	var disconnectErr DisconnectError
+	if !errors.As(err, &disconnectErr) {
+		t.Fatalf("err = %v, want DisconnectError", err)
+	}
+}
+
+func TestClassifyCopyResultKeepsInputReaderError(t *testing.T) {
+	readerErr := errors.New("use of closed network connection")
+	err := classifyCopyResult(copyResult{stream: "input", err: readerErr})
+	if !errors.Is(err, readerErr) {
+		t.Fatalf("err = %v, want original reader error", err)
+	}
+	var disconnectErr DisconnectError
+	if errors.As(err, &disconnectErr) {
+		t.Fatalf("err = %v, did not want DisconnectError", err)
 	}
 }
 

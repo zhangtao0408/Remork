@@ -186,11 +186,15 @@ Use `shell` when you need an interactive session:
 
 ```bash
 remork shell
+remork shell --list
+remork shell --attach <session-id>
+remork shell --kill <session-id>
 ```
 
-For Product V1, shell sessions are live sessions. Detach and reattach are future
-workflow goals, so keep long-running critical jobs under a remote process manager
-if they must survive client disconnects.
+Shell sessions are retained by the daemon after a client disconnect. Use
+`remork shell --list` to find retained sessions, `--attach` to reconnect, and
+`--kill` to stop one. Idle sessions are retained for the daemon's configured
+shell retention window and may be reaped after that.
 
 ## Operation log
 
@@ -344,7 +348,6 @@ Current limitations:
 
 - no accounts, RBAC, or multi-tenant isolation;
 - no public-internet hardening;
-- no shell detach and attach workflow yet;
 - daemon config is primarily flag-based in Product V1;
 - local config is JSON under `~/.remork`, even though deployment examples may be
   documented as TOML templates.

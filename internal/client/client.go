@@ -255,6 +255,59 @@ func (c Client) OperationsContext(ctx context.Context, root string, limit int) (
 	return out.Entries, nil
 }
 
+func (c Client) ShellSessions(ctx context.Context, root string) ([]api.ShellSessionInfo, error) {
+	ctx = contextOrBackground(ctx)
+	u, _ := url.Parse(c.endpoint("/shell/sessions"))
+	q := u.Query()
+	q.Set("root", root)
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	c.addHeaders(req)
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body := readErrorBody(resp.Body)
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: body}
+	}
+	var out struct {
+		Sessions []api.ShellSessionInfo `json:"sessions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Sessions, nil
+}
+
+func (c Client) KillShellSession(ctx context.Context, root, id string) error {
+	ctx = contextOrBackground(ctx)
+	u, _ := url.Parse(c.endpoint("/shell/sessions"))
+	q := u.Query()
+	q.Set("root", root)
+	q.Set("id", id)
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	c.addHeaders(req)
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body := readErrorBody(resp.Body)
+		return &HTTPError{StatusCode: resp.StatusCode, Body: body}
+	}
+	return nil
+}
+
 func (c Client) download(ctx context.Context, root, path, byteRange string) ([]byte, error) {
 	ctx, cancel := contextWithDefaultTimeout(ctx, limits.DefaultTransferTimeout)
 	defer cancel()

@@ -63,4 +63,10 @@ type ShellFrame struct {
 	ExitCode int    `json:"exit_code,omitempty"`
 }
 
+type ShellSessionInfo struct {
+	ID         string   `json:"id"`
+	Command    []string `json:"command"`
+	LastActive string   `json:"last_active"`
+}
+
 const HeaderClientID = "X-Remork-Client-ID"
