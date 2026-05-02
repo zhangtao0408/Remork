@@ -132,11 +132,10 @@ Prefer the published release assets when they are available:
 
 ```bash
 VERSION=v0.1.0
-curl -L -o remorkd-linux-arm64.tar.gz \
-  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remorkd-${VERSION}-linux-arm64.tar.gz"
-mkdir -p remorkd-linux-arm64
-tar -xzf remorkd-linux-arm64.tar.gz -C remorkd-linux-arm64
-scp remorkd-linux-arm64/remorkd HOST:/tmp/remorkd
+curl -L -o remorkd \
+  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remorkd-linux-arm64"
+chmod 0755 remorkd
+scp remorkd HOST:/tmp/remorkd
 ssh HOST 'chmod +x /tmp/remorkd'
 ssh HOST 'nohup /tmp/remorkd --root /remote/root --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
 ```
@@ -145,11 +144,11 @@ For local-agent use on macOS, download the matching macOS client package:
 
 ```bash
 VERSION=v0.1.0
-curl -L -o remork-macos.tar.gz \
-  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-${VERSION}-darwin-arm64.tar.gz"
-mkdir -p remork-macos ~/bin
-tar -xzf remork-macos.tar.gz -C remork-macos
-install -m 0755 remork-macos/remork ~/bin/remork
+curl -L -o remork \
+  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-darwin-arm64"
+chmod 0755 remork
+mkdir -p ~/bin
+mv remork ~/bin/remork
 ```
 
 If a release asset is not available yet, build locally and use the generated
@@ -161,8 +160,12 @@ scp dist/remorkd-linux-arm64 HOST:/tmp/remorkd
 ```
 
 Do not install Go, npm, apt, brew, or internet-dependent dependencies on the
-remote host just to run Remork. The remote server only needs the extracted
+remote host just to run Remork. The remote server only needs the downloaded
 `remorkd` binary.
+
+GitHub releases intentionally upload only binaries. Read the release body for
+install commands and checksums; read `README.md` or `README_ZH.md` for the full
+human workflow.
 
 On shared VPNs or multi-user networks, start `remorkd` with `--token-file` and
 configure the local host with `remork host add --token-env`. Do not expose an

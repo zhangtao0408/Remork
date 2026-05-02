@@ -16,22 +16,21 @@ Remork V1 面向可信 VPN 或内网环境。它支持可选的共享 bearer tok
 
 ```bash
 VERSION=v0.1.0
-curl -L -o remork-macos.tar.gz \
-  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-${VERSION}-darwin-arm64.tar.gz"
-mkdir -p remork-macos ~/bin
-tar -xzf remork-macos.tar.gz -C remork-macos
-install -m 0755 remork-macos/remork ~/bin/remork
+curl -L -o remork \
+  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-darwin-arm64"
+chmod 0755 remork
+mkdir -p ~/bin
+mv remork ~/bin/remork
 
-curl -L -o remorkd-linux-arm64.tar.gz \
-  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remorkd-${VERSION}-linux-arm64.tar.gz"
-mkdir -p remorkd-linux-arm64
-tar -xzf remorkd-linux-arm64.tar.gz -C remorkd-linux-arm64
+curl -L -o remorkd \
+  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remorkd-linux-arm64"
+chmod 0755 remorkd
 ```
 
 把 daemon 拷贝到远端并启动：
 
 ```bash
-scp remorkd-linux-arm64/remorkd lab-a:/tmp/remorkd
+scp remorkd lab-a:/tmp/remorkd
 ssh lab-a 'chmod 0755 /tmp/remorkd'
 ssh lab-a 'nohup /tmp/remorkd --root /data/project-a --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
 ```
@@ -373,17 +372,16 @@ remork daemon install lab-a --root /data/project-a --ssh lab-a --platform linux-
 
 ## Release 下载和离线部署 daemon
 
-GitHub Release 会提供大多数用户需要的包：
+GitHub Release 只发布裸二进制文件：
 
 ```text
-remork-v0.1.0-darwin-arm64.tar.gz     # macOS 客户端，Apple Silicon
-remork-v0.1.0-darwin-amd64.tar.gz     # macOS 客户端，Intel
-remorkd-v0.1.0-linux-arm64.tar.gz     # Linux 服务端 daemon，arm64
-remorkd-v0.1.0-linux-amd64.tar.gz     # Linux 服务端 daemon，amd64
-checksums.txt
+remork-darwin-arm64     # macOS 客户端，Apple Silicon
+remork-darwin-amd64     # macOS 客户端，Intel
+remorkd-linux-arm64     # Linux 服务端 daemon，arm64
+remorkd-linux-amd64     # Linux 服务端 daemon，amd64
 ```
 
-本机下载匹配的 macOS client 包，远端下载或拷贝匹配的 Linux daemon 包即可。daemon 包里只包含 `remorkd` 运行时二进制、`remorkd.example.toml` 和一份简短 release README。远端服务器不需要安装 Go，也不需要联网。
+本机下载匹配的 macOS client 二进制，远端下载或拷贝匹配的 Linux daemon 二进制即可。远端服务器不需要安装 Go，也不需要联网。具体安装命令和 checksum 会写在 GitHub Release 正文里。
 
 如果你需要在本地自行构建 release：
 
@@ -404,12 +402,7 @@ dist/remorkd-linux-arm64
 dist/remorkd-linux-amd64
 dist/remorkd.example.toml
 dist/checksums.txt
-dist/README-release.md
-dist/RELEASE_NOTES.md
-dist/remork-v0.1.0-darwin-arm64.tar.gz
-dist/remork-v0.1.0-darwin-amd64.tar.gz
-dist/remorkd-v0.1.0-linux-arm64.tar.gz
-dist/remorkd-v0.1.0-linux-amd64.tar.gz
+dist/RELEASE_BODY.md
 ```
 
 例如远端是 Linux arm64：
