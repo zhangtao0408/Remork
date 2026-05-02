@@ -19,6 +19,7 @@ import (
 	"remork/internal/api"
 	"remork/internal/apply"
 	"remork/internal/client"
+	"remork/internal/ops"
 	"remork/internal/state"
 	"remork/internal/watch"
 )
@@ -219,6 +220,207 @@ func TestManifestUnknownRootReturnsForbidden(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestManifestAllowsChildWorkspaceUnderAllowedRoot(t *testing.T) {
+	base := t.TempDir()
+	child := filepath.Join(base, "11_Wan22_Adapt")
+	mustWrite(t, filepath.Join(child, "a.txt"), []byte("hello"))
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{base}}).Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/manifest?root=" + url.QueryEscape(child) + "&path=.&recursive=true")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d: %s", resp.StatusCode, body)
+	}
+}
+
+func TestManifestRejectsSiblingOfAllowedRoot(t *testing.T) {
+	parent := t.TempDir()
+	base := filepath.Join(parent, "user")
+	sibling := filepath.Join(parent, "user2")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{base}}).Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/manifest?root=" + url.QueryEscape(sibling) + "&path=.&recursive=true")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestOperationsUsesChildWorkspaceLog(t *testing.T) {
+	base := t.TempDir()
+	child := filepath.Join(base, "11_Wan22_Adapt")
+	mustWrite(t, filepath.Join(child, "a.txt"), []byte("hello"))
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{base}}).Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/manifest?root=" + url.QueryEscape(child) + "&path=.&recursive=true")
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("manifest status %d", resp.StatusCode)
+	}
+
+	opsResp, err := http.Get(srv.URL + "/operations?root=" + url.QueryEscape(child))
+	if err != nil {
+		t.Fatalf("operations: %v", err)
+	}
+	defer opsResp.Body.Close()
+	if opsResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(opsResp.Body)
+		t.Fatalf("operations status %d: %s", opsResp.StatusCode, body)
+	}
+	if _, err := os.Stat(filepath.Join(child, ".remork", "log", "operations.jsonl")); err != nil {
+		t.Fatalf("child operation log missing: %v", err)
+	}
+}
+
+func TestOperationsUsesCanonicalWorkspaceRoot(t *testing.T) {
+	child := t.TempDir()
+	mustWrite(t, filepath.Join(child, "a.txt"), []byte("hello"))
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{child}}).Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/manifest?root=" + url.QueryEscape(child+string(filepath.Separator)) + "&path=.&recursive=true")
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("manifest status %d", resp.StatusCode)
+	}
+
+	opsResp, err := http.Get(srv.URL + "/operations?root=" + url.QueryEscape(child) + "&limit=10")
+	if err != nil {
+		t.Fatalf("operations: %v", err)
+	}
+	defer opsResp.Body.Close()
+	var decoded struct {
+		Entries []ops.Entry `json:"entries"`
+	}
+	if err := json.NewDecoder(opsResp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode operations: %v", err)
+	}
+	if len(decoded.Entries) == 0 {
+		t.Fatal("operations should include manifest entry")
+	}
+	for _, entry := range decoded.Entries {
+		realChild, err := filepath.EvalSymlinks(child)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entry.Root != realChild {
+			t.Fatalf("operation root = %q, want canonical %q", entry.Root, realChild)
+		}
+	}
+}
+
+func TestStatusReportsRelativeConfiguredRootAsAbsolute(t *testing.T) {
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wd := t.TempDir()
+	if err := os.Chdir(wd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{"."}}).Handler())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/status")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	defer resp.Body.Close()
+	var status api.StatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	realWD, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Roots) != 1 || status.Roots[0] != realWD {
+		t.Fatalf("roots = %#v, want %q", status.Roots, realWD)
+	}
+}
+
+func TestManifestRejectsSymlinkEscapesAllowedRoot(t *testing.T) {
+	parent := t.TempDir()
+	base := filepath.Join(parent, "allowed")
+	target := filepath.Join(parent, "outside", "target")
+	secret := filepath.Join(parent, "outside", "secret")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(secret, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(base, "link")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{base}}).Handler())
+	defer srv.Close()
+
+	for _, root := range []string{
+		filepath.Join(base, "link"),
+		base + string(filepath.Separator) + "link" + string(filepath.Separator) + ".." + string(filepath.Separator) + "secret",
+	} {
+		resp, err := http.Get(srv.URL + "/manifest?root=" + url.QueryEscape(root) + "&path=.&recursive=true")
+		if err != nil {
+			t.Fatalf("get %q: %v", root, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("root %q status %d, want %d", root, resp.StatusCode, http.StatusForbidden)
+		}
+	}
+}
+
+func TestManifestRejectsMissingOrInvalidRoot(t *testing.T) {
+	root := t.TempDir()
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+
+	for _, query := range []string{
+		"/manifest?path=.&recursive=true",
+		"/manifest?root=relative/path&path=.&recursive=true",
+	} {
+		resp, err := http.Get(srv.URL + query)
+		if err != nil {
+			t.Fatalf("get %q: %v", query, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("query %q status %d, want %d", query, resp.StatusCode, http.StatusForbidden)
+		}
 	}
 }
 
@@ -875,6 +1077,26 @@ func TestExecEndpointRejectsCwdEscape(t *testing.T) {
 	}
 }
 
+func TestExecEndpointRejectsSymlinkCwdEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	body := strings.NewReader(`{"root":"` + root + `","cwd":"` + filepath.Join(root, "linked") + `","command":["sh","-c","pwd"]}`)
+	resp, err := http.Post(srv.URL+"/exec", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d, body %s", resp.StatusCode, data)
+	}
+}
+
 func TestEventsEndpointStreamsWorkspaceChanges(t *testing.T) {
 	root := t.TempDir()
 	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
@@ -1015,6 +1237,26 @@ func TestDownloadSymlinkEscapeReturnsBadRequest(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestDownloadSymlinkParentEscapeReturnsBadRequest(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	mustWrite(t, filepath.Join(outside, "secret.txt"), []byte("secret"))
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/download?root=" + url.QueryEscape(root) + "&path=linked/secret.txt")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d, body %s", resp.StatusCode, data)
 	}
 }
 

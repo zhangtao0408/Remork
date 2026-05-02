@@ -5,10 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -27,6 +27,8 @@ import (
 	"remork/internal/ops"
 	"remork/internal/paths"
 	ptysession "remork/internal/pty"
+	"remork/internal/remoteroot"
+	"remork/internal/securefs"
 	"remork/internal/watch"
 )
 
@@ -45,15 +47,28 @@ type Server struct {
 	cfg             Config
 	mux             *http.ServeMux
 	ptyManager      *ptysession.Manager
+	allowedRoots    []remoteroot.Root
+	operationMu     sync.Mutex
 	operationStores map[string]ops.Store
 }
 
 func NewServer(cfg Config) *Server {
-	stores := map[string]ops.Store{}
-	for _, root := range cfg.Roots {
-		stores[root] = ops.NewJSONLStore(operationLogPath(root))
+	normalizedRoots, err := normalizeConfiguredRoots(cfg.Roots)
+	if err != nil {
+		normalizedRoots = nil
 	}
-	s := &Server{cfg: cfg, mux: http.NewServeMux(), ptyManager: ptysession.NewManager(30 * time.Minute), operationStores: stores}
+	cfg.Roots = normalizedRoots
+	allowedRoots, err := remoteroot.NormalizeMany(normalizedRoots)
+	if err != nil {
+		allowedRoots = nil
+	}
+	s := &Server{
+		cfg:             cfg,
+		mux:             http.NewServeMux(),
+		ptyManager:      ptysession.NewManager(30 * time.Minute),
+		allowedRoots:    allowedRoots,
+		operationStores: map[string]ops.Store{},
+	}
 	s.mux.HandleFunc("/status", s.withAuth(s.handleStatus))
 	s.mux.HandleFunc("/manifest", s.withAuth(s.handleManifest))
 	s.mux.HandleFunc("/download", s.withAuth(s.handleDownload))
@@ -94,11 +109,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	root := r.URL.Query().Get("root")
 	op := s.startOperation(r, "manifest", root, map[string]any{"path": r.URL.Query().Get("path")})
-	if !s.allowedRoot(root) {
+	canonicalRoot, ok := s.canonicalRoot(root)
+	if !ok {
 		http.Error(w, "root not allowed", http.StatusForbidden)
 		s.finishOperation(op, http.StatusForbidden, "error", "root not allowed")
 		return
 	}
+	root = canonicalRoot
+	op.Root = root
 	path := r.URL.Query().Get("path")
 	if path == "" {
 		path = "."
@@ -125,21 +143,22 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	root := r.URL.Query().Get("root")
 	path := r.URL.Query().Get("path")
 	op := s.startOperation(r, "download", root, map[string]any{"path": path, "range": r.Header.Get("Range")})
-	if !s.allowedRoot(root) {
+	canonicalRoot, ok := s.canonicalRoot(root)
+	if !ok {
 		http.Error(w, "root not allowed", http.StatusForbidden)
 		s.finishOperation(op, http.StatusForbidden, "error", "root not allowed")
 		return
 	}
-	full, err := paths.ResolveExistingInsideWorkspace(root, path)
+	root = canonicalRoot
+	op.Root = root
+	f, err := securefs.OpenExistingFile(root, path)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		s.finishOperation(op, http.StatusBadRequest, "error", err.Error())
-		return
-	}
-	f, err := os.Open(full)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		s.finishOperation(op, http.StatusNotFound, "error", err.Error())
+		status := http.StatusNotFound
+		if errors.Is(err, paths.ErrPathEscape) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		s.finishOperation(op, status, "error", err.Error())
 		return
 	}
 	defer f.Close()
@@ -167,11 +186,14 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		s.finishOperation(op, http.StatusMethodNotAllowed, "error", "method not allowed")
 		return
 	}
-	if !s.allowedRoot(root) {
+	canonicalRoot, ok := s.canonicalRoot(root)
+	if !ok {
 		http.Error(w, "root not allowed", http.StatusForbidden)
 		s.finishOperation(op, http.StatusForbidden, "error", "root not allowed")
 		return
 	}
+	root = canonicalRoot
+	op.Root = root
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxApplyBodyBytes())
 	cs, err := s.decodeApplyChangeset(r.Context(), r.Body)
 	if err != nil {
@@ -349,18 +371,29 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		s.finishOperation(op, status, "error", err.Error())
 		return
 	}
-	op.Root = req.Root
+	rawRoot := req.Root
 	op.Command = append([]string(nil), req.Command...)
 	op.RequestSummary = map[string]any{"cwd": req.Cwd, "timeout_millis": req.TimeoutMillis}
-	if !s.allowedRoot(req.Root) {
+	canonicalRoot, ok := s.canonicalRoot(req.Root)
+	if !ok {
 		http.Error(w, "root not allowed", http.StatusForbidden)
 		s.finishOperation(op, http.StatusForbidden, "error", "root not allowed")
 		return
 	}
+	req.Root = canonicalRoot
+	op.Root = req.Root
 	cwd := req.Root
-	if req.Cwd != "" && req.Cwd != req.Root {
-		rel := strings.TrimPrefix(req.Cwd, req.Root+string(os.PathSeparator))
-		resolved, err := paths.ResolveInsideWorkspace(req.Root, rel)
+	if req.Cwd != "" && req.Cwd != rawRoot && req.Cwd != req.Root {
+		rel, ok := relativeToRoot(req.Cwd, rawRoot)
+		if !ok {
+			rel, ok = relativeToRoot(req.Cwd, req.Root)
+		}
+		if !ok {
+			http.Error(w, "cwd is outside root", http.StatusBadRequest)
+			s.finishOperation(op, http.StatusBadRequest, "error", "cwd is outside root")
+			return
+		}
+		resolved, err := paths.ResolveExistingInsideWorkspace(req.Root, rel)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			s.finishOperation(op, http.StatusBadRequest, "error", err.Error())
@@ -414,11 +447,14 @@ func allowEmptyOrSameOrigin(r *http.Request) bool {
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	root := r.URL.Query().Get("root")
 	op := s.startOperation(r, "events", root, nil)
-	if !s.allowedRoot(root) {
+	canonicalRoot, ok := s.canonicalRoot(root)
+	if !ok {
 		http.Error(w, "root not allowed", http.StatusForbidden)
 		s.finishOperation(op, http.StatusForbidden, "error", "root not allowed")
 		return
 	}
+	root = canonicalRoot
+	op.Root = root
 	watcher, err := watch.New(root)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -465,11 +501,14 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 	root := r.URL.Query().Get("root")
 	sessionID := r.URL.Query().Get("session")
 	op := s.startOperation(r, "shell", root, map[string]any{"shell": "sh", "rows": 24, "cols": 80, "session": sessionID})
-	if !s.allowedRoot(root) {
+	canonicalRoot, ok := s.canonicalRoot(root)
+	if !ok {
 		http.Error(w, "root not allowed", http.StatusForbidden)
 		s.finishOperation(op, http.StatusForbidden, "error", "root not allowed")
 		return
 	}
+	root = canonicalRoot
+	op.Root = root
 	var session *ptysession.Session
 	var sub *ptysession.OutputSubscription
 	var err error
@@ -585,7 +624,8 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleShellSessions(w http.ResponseWriter, r *http.Request) {
 	root := r.URL.Query().Get("root")
-	if !s.allowedRoot(root) {
+	canonicalRoot, ok := s.canonicalRoot(root)
+	if !ok {
 		http.Error(w, "root not allowed", http.StatusForbidden)
 		return
 	}
@@ -593,7 +633,7 @@ func (s *Server) handleShellSessions(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		sessions := make([]api.ShellSessionInfo, 0)
 		for _, session := range s.ptyManager.List() {
-			if session.Root != root {
+			if session.Root != canonicalRoot {
 				continue
 			}
 			sessions = append(sessions, api.ShellSessionInfo{
@@ -611,7 +651,7 @@ func (s *Server) handleShellSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		session := s.ptyManager.Get(id)
-		if session == nil || session.Root != root {
+		if session == nil || session.Root != canonicalRoot {
 			http.Error(w, "shell session not found", http.StatusNotFound)
 			return
 		}
@@ -647,7 +687,8 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "root is required", http.StatusBadRequest)
 		return
 	}
-	if !s.allowedRoot(root) {
+	canonicalRoot, ok := s.canonicalRoot(root)
+	if !ok {
 		http.Error(w, "root not allowed", http.StatusForbidden)
 		return
 	}
@@ -657,12 +698,12 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 			limit = parsed
 		}
 	}
-	store := s.operationStore(root)
+	store := s.operationStore(canonicalRoot)
 	if store == nil {
 		http.Error(w, "root not allowed", http.StatusForbidden)
 		return
 	}
-	entries, err := store.List(ops.Filter{Root: root, Limit: limit})
+	entries, err := store.List(ops.Filter{Root: canonicalRoot, Limit: limit})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -672,12 +713,16 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) allowedRoot(root string) bool {
-	for _, r := range s.cfg.Roots {
-		if r == root {
-			return true
-		}
+	_, ok := s.canonicalRoot(root)
+	return ok
+}
+
+func (s *Server) canonicalRoot(root string) (string, bool) {
+	canonical, ok, err := remoteroot.ResolveAllowed(s.allowedRoots, root)
+	if err != nil || !ok {
+		return "", false
 	}
-	return false
+	return canonical, true
 }
 
 func (s *Server) startOperation(r *http.Request, operation, root string, summary map[string]any) ops.Entry {
@@ -701,6 +746,9 @@ func (s *Server) finishOperation(entry ops.Entry, statusCode int, result string,
 	entry.StatusCode = statusCode
 	entry.Result = result
 	entry.ErrorMessage = errMsg
+	if canonical, ok := s.canonicalRoot(entry.Root); ok {
+		entry.Root = canonical
+	}
 	store := s.operationStore(entry.Root)
 	if store == nil {
 		return
@@ -709,7 +757,34 @@ func (s *Server) finishOperation(entry ops.Entry, statusCode int, result string,
 }
 
 func (s *Server) operationStore(root string) ops.Store {
-	return s.operationStores[root]
+	cleanRoot, ok := s.canonicalRoot(root)
+	if !ok {
+		return nil
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	store := s.operationStores[cleanRoot]
+	if store == nil {
+		store = ops.NewJSONLStore(operationLogPath(cleanRoot))
+		s.operationStores[cleanRoot] = store
+	}
+	return store
+}
+
+func relativeToRoot(candidate, root string) (string, bool) {
+	cleanRoot := filepath.Clean(root)
+	cleanCandidate := filepath.Clean(candidate)
+	rel, err := filepath.Rel(cleanRoot, cleanCandidate)
+	if err != nil {
+		return "", false
+	}
+	if rel == "." {
+		return ".", true
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
 }
 
 func summarizeChanges(cs apply.Changeset) map[string]any {
@@ -765,4 +840,22 @@ func statusResult(status int) string {
 
 func operationLogPath(root string) string {
 	return filepath.Join(root, ".remork", "log", "operations.jsonl")
+}
+
+func normalizeConfiguredRoots(roots []string) ([]string, error) {
+	normalized := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if root == "" {
+			return nil, fmt.Errorf("root is required")
+		}
+		if !filepath.IsAbs(root) {
+			abs, err := filepath.Abs(root)
+			if err != nil {
+				return nil, err
+			}
+			root = abs
+		}
+		normalized = append(normalized, filepath.Clean(root))
+	}
+	return normalized, nil
 }

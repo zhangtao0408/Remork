@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"remork/internal/config"
+	"remork/internal/remoteroot"
 	"remork/internal/workspace"
 )
 
@@ -39,8 +40,15 @@ func addInitCommand(root *cobra.Command, opts Options) {
 			if err != nil {
 				return err
 			}
-			if !containsRoot(status.Roots, remoteRoot) {
-				return fmt.Errorf("remote root %q is not advertised by host %q", remoteRoot, hostName)
+			ok, err = remoteRootAdvertised(status.Roots, remoteRoot)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("remote workspace %q is outside advertised allowed roots for host %q", remoteRoot, hostName)
+			}
+			if _, err := opts.DaemonProbe.Manifest(cmd.Context(), host, cfg, remoteRoot); err != nil {
+				return fmt.Errorf("remote workspace %q is advertised but cannot be served by host %q: %w", remoteRoot, hostName, err)
 			}
 			localRoot, err := filepath.Abs(opts.WorkingDir)
 			if err != nil {
@@ -66,13 +74,12 @@ func addInitCommand(root *cobra.Command, opts Options) {
 	})
 }
 
-func containsRoot(roots []string, root string) bool {
-	for _, candidate := range roots {
-		if candidate == root {
-			return true
-		}
+func remoteRootAdvertised(roots []string, remoteRoot string) (bool, error) {
+	allowed, err := remoteroot.NormalizeMany(roots)
+	if err != nil {
+		return false, err
 	}
-	return false
+	return remoteroot.Contains(allowed, remoteRoot)
 }
 
 func stableWorkspaceID(parts ...string) string {

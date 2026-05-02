@@ -12,15 +12,32 @@ import (
 	"remork/internal/api"
 	"remork/internal/config"
 	"remork/internal/limits"
+	"remork/internal/ops"
 	"remork/internal/workspace"
 )
 
 type fakeDaemonProbe struct {
-	Roots []string
+	Roots          []string
+	ManifestRoots  *[]string
+	OperationRoots *[]string
 }
 
 func (p fakeDaemonProbe) Status(ctx context.Context, host config.Host, clientID string) (api.StatusResponse, error) {
 	return api.StatusResponse{Roots: p.Roots}, nil
+}
+
+func (p fakeDaemonProbe) Manifest(ctx context.Context, host config.Host, cfg config.Config, root string) (api.ManifestResponse, error) {
+	if p.ManifestRoots != nil {
+		*p.ManifestRoots = append(*p.ManifestRoots, root)
+	}
+	return api.ManifestResponse{Root: root, Path: "."}, nil
+}
+
+func (p fakeDaemonProbe) Operations(ctx context.Context, host config.Host, cfg config.Config, root string, limit int) ([]ops.Entry, error) {
+	if p.OperationRoots != nil {
+		*p.OperationRoots = append(*p.OperationRoots, root)
+	}
+	return nil, nil
 }
 
 func TestVersionCommandPrintsVersion(t *testing.T) {
@@ -94,6 +111,28 @@ func TestDaemonCommandsAreRegistered(t *testing.T) {
 	}
 }
 
+func TestSubcommandHelpShowsCommandFlags(t *testing.T) {
+	cmd := NewRootCommand(Options{Version: "test"})
+	out, err := executeCommand(cmd, "daemon", "install", "--help")
+	if err != nil {
+		t.Fatalf("execute help: %v", err)
+	}
+	for _, want := range []string{"Flags:", "--root", "--ssh", "--url", "--platform", "--addr", "--execute", "--verify"} {
+		mustContain(t, out.String(), want)
+	}
+}
+
+func TestDaemonInstallAcceptsRepeatedRootFlags(t *testing.T) {
+	home := t.TempDir()
+	cmd := NewRootCommand(Options{Version: "test", HomeDir: home})
+	out, err := executeCommand(cmd, "daemon", "install", "lab", "--root", "/data", "--root", "/scratch", "--local-bin", "dist/remorkd-linux-arm64")
+	if err != nil {
+		t.Fatalf("daemon install: %v", err)
+	}
+	mustContain(t, out.String(), "/data")
+	mustContain(t, out.String(), "/scratch")
+}
+
 func TestExecAliasUsesRunPlaceholderHandler(t *testing.T) {
 	runCmd := NewRootCommand(Options{Version: "test"})
 	_, runErr := executeCommand(runCmd, "run")
@@ -153,11 +192,13 @@ func TestConfigStoreRequiresHomeDir(t *testing.T) {
 func TestInitWritesLocalBinding(t *testing.T) {
 	home := t.TempDir()
 	local := t.TempDir()
+	var manifestRoots []string
+	probe := fakeDaemonProbe{Roots: []string{"/data/project-a"}, ManifestRoots: &manifestRoots}
 	cmd := NewRootCommand(Options{
 		Version:     "test",
 		HomeDir:     home,
 		WorkingDir:  local,
-		DaemonProbe: fakeDaemonProbe{Roots: []string{"/data/project-a"}},
+		DaemonProbe: probe,
 	})
 	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://10.0.0.12:17731"); err != nil {
 		t.Fatalf("host add: %v", err)
@@ -181,6 +222,66 @@ func TestInitWritesLocalBinding(t *testing.T) {
 	}
 	if binding.Token != "" {
 		t.Fatal("binding should not contain token")
+	}
+	if got, want := manifestRoots, []string{"/data/project-a"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("manifest probes = %v, want %v", got, want)
+	}
+}
+
+func TestInitAcceptsWorkspaceUnderAdvertisedParentRoot(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	var manifestRoots []string
+	probe := fakeDaemonProbe{Roots: []string{"/home/z00879328"}, ManifestRoots: &manifestRoots}
+	cmd := NewRootCommand(Options{
+		Version:     "test",
+		HomeDir:     home,
+		WorkingDir:  local,
+		DaemonProbe: probe,
+	})
+	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://10.0.0.12:17731"); err != nil {
+		t.Fatalf("host add: %v", err)
+	}
+	if _, err := executeCommand(cmd, "init", "lab-a:/home/z00879328/11_Wan22_Adapt"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	binding, _, err := workspace.ResolveFrom(local)
+	if err != nil {
+		t.Fatalf("resolve binding: %v", err)
+	}
+	if binding.RemoteRoot != "/home/z00879328/11_Wan22_Adapt" {
+		t.Fatalf("remote root = %q", binding.RemoteRoot)
+	}
+	if got, want := manifestRoots, []string{"/home/z00879328/11_Wan22_Adapt"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("manifest probes = %v, want %v", got, want)
+	}
+}
+
+func TestInitRejectsWorkspaceSiblingOfAdvertisedRoot(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	var manifestRoots []string
+	probe := fakeDaemonProbe{Roots: []string{"/home/z00879328"}, ManifestRoots: &manifestRoots}
+	cmd := NewRootCommand(Options{
+		Version:     "test",
+		HomeDir:     home,
+		WorkingDir:  local,
+		DaemonProbe: probe,
+	})
+	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://10.0.0.12:17731"); err != nil {
+		t.Fatalf("host add: %v", err)
+	}
+	if _, err := executeCommand(cmd, "init", "lab-a:/home/z00879328_sibling"); err == nil {
+		t.Fatal("init should reject sibling prefix of advertised root")
+	} else {
+		mustContain(t, err.Error(), "outside advertised allowed roots")
+	}
+	if len(manifestRoots) != 0 {
+		t.Fatalf("manifest should not be probed for outside workspace, got %v", manifestRoots)
+	}
+	if _, _, err := workspace.ResolveFrom(local); err == nil {
+		t.Fatal("binding should not be written when the workspace is outside advertised roots")
 	}
 }
 
@@ -239,16 +340,22 @@ func TestInitUsesDefaultDaemonProbe(t *testing.T) {
 	local := t.TempDir()
 	var statusRequests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/status" {
+		switch r.URL.Path {
+		case "/status":
+			statusRequests++
+			if r.Header.Get(api.HeaderClientID) == "" {
+				t.Errorf("missing %s header", api.HeaderClientID)
+			}
+			if err := json.NewEncoder(w).Encode(api.StatusResponse{Roots: []string{"/data/project-a"}}); err != nil {
+				t.Errorf("encode status: %v", err)
+			}
+		case "/manifest":
+			if got := r.URL.Query().Get("root"); got != "/data/project-a" {
+				t.Errorf("manifest root = %q, want /data/project-a", got)
+			}
+			_ = json.NewEncoder(w).Encode(api.ManifestResponse{Root: "/data/project-a", Path: "."})
+		default:
 			http.NotFound(w, r)
-			return
-		}
-		statusRequests++
-		if r.Header.Get(api.HeaderClientID) == "" {
-			t.Errorf("missing %s header", api.HeaderClientID)
-		}
-		if err := json.NewEncoder(w).Encode(api.StatusResponse{Roots: []string{"/data/project-a"}}); err != nil {
-			t.Errorf("encode status: %v", err)
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -275,20 +382,27 @@ func TestInitDefaultProbeSendsTokenFromHostEnv(t *testing.T) {
 	t.Setenv("REMORK_TOKEN", "abc123")
 	var statusRequests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/status" {
+		switch r.URL.Path {
+		case "/status":
+			statusRequests++
+			if got := r.Header.Get(api.HeaderClientID); got == "" {
+				t.Errorf("missing %s header", api.HeaderClientID)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer abc123" {
+				http.Error(w, "missing bearer token", http.StatusUnauthorized)
+				return
+			}
+			if err := json.NewEncoder(w).Encode(api.StatusResponse{Roots: []string{"/data/project-a"}}); err != nil {
+				t.Errorf("encode status: %v", err)
+			}
+		case "/manifest":
+			if got := r.Header.Get("Authorization"); got != "Bearer abc123" {
+				http.Error(w, "missing bearer token", http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(api.ManifestResponse{Root: "/data/project-a", Path: "."})
+		default:
 			http.NotFound(w, r)
-			return
-		}
-		statusRequests++
-		if got := r.Header.Get(api.HeaderClientID); got == "" {
-			t.Errorf("missing %s header", api.HeaderClientID)
-		}
-		if got := r.Header.Get("Authorization"); got != "Bearer abc123" {
-			http.Error(w, "missing bearer token", http.StatusUnauthorized)
-			return
-		}
-		if err := json.NewEncoder(w).Encode(api.StatusResponse{Roots: []string{"/data/project-a"}}); err != nil {
-			t.Errorf("encode status: %v", err)
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -374,6 +488,8 @@ func TestInitDefaultProbeRejectsUnadvertisedRoot(t *testing.T) {
 	}
 	if _, err := executeCommand(cmd, "init", "lab-a:/data/project-a"); err == nil {
 		t.Fatal("init should reject a root that is not advertised by the daemon")
+	} else {
+		mustContain(t, err.Error(), "outside advertised allowed roots")
 	}
 
 	if statusRequests != 1 {

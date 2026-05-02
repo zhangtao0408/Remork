@@ -1,30 +1,94 @@
 # Remork
 
-## Remork 是什么
+Remork 让你可以在本地编辑一个远端项目目录。它会在远端服务器上运行一个很小的
+daemon，把本机的一个目录绑定到远端的一个项目目录；你先把文件同步下来，在本地
+编辑，然后明确执行 `remork apply` 才会把修改安全写回远端。
 
-Remork 让你可以在本地编辑一个远端目录。
+Remork V1 面向可信 VPN 或内网环境。它支持可选的共享 bearer token，但这不是账号
+系统，也不应该直接暴露在公网。
 
-典型流程是：在远端机器上启动 `remorkd`，在本机把一个本地目录绑定到远端 workspace，然后把远端文件同步到本地。本地文件可以正常编辑，但不会自动写回远端；只有在你明确运行 `remork apply` 时，本地修改才会经过安全检查后应用到远端。
+## 先理解几个概念
 
-远端机器只需要一个预编译好的 `remorkd` 二进制文件。不需要在远端安装 Go、npm、apt、brew，也不要求远端能联网。
+- **Remork host**：本机给 daemon endpoint 起的昵称，例如
+  `z00879328_docker_2.7`。
+- **SSH target**：Remork 安装或升级 daemon 时使用的 SSH 目标。它可以和 Remork
+  host 同名，但含义不同。
+- **Daemon URL**：安装完成后 CLI 访问 daemon 的 HTTP 地址，例如
+  `http://175.100.2.7:17731`。这不是 SSH，也不是 SSH 端口。
+- **Allowed root**：`remorkd` 在服务端声明的安全边界。daemon 只允许访问这些目录
+  下面的 workspace。
+- **Workspace root**：真正绑定到本地 working copy 的远端项目目录。
+- **Local working copy**：你在本机实际编辑的目录。
 
-Remork V1 面向可信 VPN 或内网环境。它支持可选的共享 bearer token，但这不是账号系统，也不应该直接暴露在公网。
+下面的 quickstart 里，`ALLOWED_ROOT` 是 allowed root，`WORKSPACE_ROOT` 是
+workspace root。
+
+## 开始前先确认
+
+你需要：
+
+- 本机是 macOS，并且可以使用 `curl`；
+- 本机能通过 SSH 登录远端服务器；
+- 本机能访问远端服务器的 VPN/内网 IP 或 DNS 名字，端口是 `17731`；
+- 远端是 Linux。ARM 服务器通常用 `linux-arm64`，x86_64 服务器通常用
+  `linux-amd64`；
+- 远端用户可以写入 `$HOME/.local/bin` 和 `$HOME/.remork`；
+- 远端 workspace 目录已经存在，并且位于 allowed root 下面。
+
+先填好这些值：
+
+```bash
+HOST_ALIAS=my-lab
+SSH_TARGET=my-lab
+DAEMON_URL=http://10.0.0.12:17731
+ALLOWED_ROOT=/home/me
+WORKSPACE_ROOT=/home/me/project
+LOCAL_WORKING_COPY=~/remork/project
+REMOTE_PLATFORM=linux-arm64
+CLIENT_PLATFORM=darwin-arm64
+```
+
+这些值分别表示：
+
+```text
+HOST_ALIAS          本机 Remork 使用的昵称
+SSH_TARGET          只用于安装或升级 daemon 的 SSH 目标
+DAEMON_URL          安装完成后本机访问 daemon 的 HTTP 地址
+ALLOWED_ROOT        remorkd 在远端允许访问的安全边界
+WORKSPACE_ROOT      你真正想编辑的远端项目目录
+LOCAL_WORKING_COPY  你在本机实际编辑的目录
+REMOTE_PLATFORM     linux-arm64 或 linux-amd64
+CLIENT_PLATFORM     Apple Silicon 用 darwin-arm64，Intel Mac 用 darwin-amd64
+```
+
+你也可以自动设置 `CLIENT_PLATFORM`：
+
+```bash
+case "$(uname -m)" in
+  arm64) CLIENT_PLATFORM=darwin-arm64 ;;
+  x86_64) CLIENT_PLATFORM=darwin-amd64 ;;
+  *) echo "unsupported local macOS architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+```
+
+安装前先检查远端：
+
+```bash
+ssh "$SSH_TARGET" 'uname -m; pwd'
+ssh "$SSH_TARGET" "test -d '$WORKSPACE_ROOT'"
+```
 
 ## 五分钟上手
 
-先从 GitHub Release 下载本机要用的 macOS 客户端和远端要用的 Linux daemon：
+先在本机安装 macOS client：
 
 ```bash
 VERSION=v0.1.0
 mkdir -p "$HOME/.local/bin"
 curl -L -o "$HOME/.local/bin/remork" \
-  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-darwin-arm64"
+  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-${CLIENT_PLATFORM}"
 chmod 0755 "$HOME/.local/bin/remork"
 export PATH="$HOME/.local/bin:$PATH"
-
-curl -L -o remorkd \
-  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remorkd-linux-arm64"
-chmod 0755 remorkd
 ```
 
 如果新打开的终端仍然找不到 `remork`，把下面这一行加入 `~/.zshrc`：
@@ -33,24 +97,47 @@ chmod 0755 remorkd
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-把 daemon 拷贝到远端并启动：
+通过本机 client 走 SSH 安装远端 daemon：
 
 ```bash
-scp remorkd lab-a:/tmp/remorkd
-ssh lab-a 'chmod 0755 /tmp/remorkd'
-ssh lab-a 'nohup /tmp/remorkd --root /data/project-a --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
+remork daemon install "$HOST_ALIAS" \
+  --ssh "$SSH_TARGET" \
+  --url "$DAEMON_URL" \
+  --root "$ALLOWED_ROOT" \
+  --platform "$REMOTE_PLATFORM" \
+  --execute --yes \
+  --verify \
+  --no-proxy
 ```
 
-`--addr 0.0.0.0:17731` 会让 Remork 对能访问该 VPN/内网地址的机器开放。如果这是共享 VPN 或多人网络，建议启动 `remorkd` 时使用 `--token-file`，并在本地通过 `remork host add --token-env` 配置 token。
+如果同一个 daemon 需要管理多个互相独立的基础目录，可以重复写 `--root`，例如
+`--root /home/me --root /scratch/me`。每个 workspace 都必须位于这些 advertised
+allowed roots 之一下面。
 
-在本机配置 CLI：
+这条命令会把匹配的 `remorkd` 二进制拷贝到远端的持久路径，例如
+`$HOME/.local/bin` 和 `$HOME/.remork` 下，启动 daemon，写入本机 Remork host 配置，
+并验证 daemon 状态。如果这是共享 VPN 或多人网络，建议给 daemon 加 `--token-file`，
+并在本地 host 配置里使用 `--token-env`，不要使用无认证 daemon。
+
+Daemon URL 里的 IP 应该是本机能访问的 VPN/内网 IP 或 DNS 名字，端口是 `17731`。
+它不是 SSH 端口。如果不确定，优先使用服务器的 VPN/内网地址，然后用下面命令确认：
 
 ```bash
-remork host add lab-a --url http://10.0.0.12:17731
-mkdir project-a && cd project-a
-remork init lab-a:/data/project-a
+remork daemon status "$HOST_ALIAS"
+```
+
+如果你给 daemon URL 换了端口，安装时也要传同一个端口，例如
+`--url http://HOST:18131` 要搭配 `--addr 0.0.0.0:18131`。
+
+创建本地 working copy，并绑定到远端 workspace root：
+
+```bash
+mkdir -p "$LOCAL_WORKING_COPY"
+cd "$LOCAL_WORKING_COPY"
+remork init "$HOST_ALIAS:$WORKSPACE_ROOT"
 remork sync
 remork status
+remork doctor
 ```
 
 之后你可以像普通本地目录一样编辑文件。编辑完成后，先看 diff，再明确应用到远端：
@@ -60,29 +147,26 @@ remork diff
 remork apply
 ```
 
-## 必须知道的六个命令
-
-### `remork init HOST:/absolute/remote/root`
-
-把当前本地目录绑定到某个已配置的 daemon host 和远端目录。
-
-绑定后，日常命令会从当前目录自动识别 workspace，不需要每次都写远端路径。
+## 日常命令
 
 ### `remork sync`
 
-把远端文件同步到本地 working copy，并记录一份本地 base state。
-
-默认情况下，大文件不会直接下载，而是生成 `.meta` 占位文件。
+把远端文件同步到本地 working copy，并记录一份用于冲突检查的 base state。默认情况
+下，大文件不会直接下载，而是生成 `.meta` 占位文件。
 
 ### `remork status`
 
-查看当前本地目录的状态：是否干净、是否有本地修改、是否有远端更新、是否存在冲突、是否有大文件占位。
+查看当前本地目录是否干净、是否有本地修改、是否有远端更新、是否存在冲突、是否有
+大文件占位。
+
+### `remork diff`
+
+查看本地修改和同步 base 之间的差异。
 
 ### `remork apply`
 
-把本地修改写回远端。
-
-`apply` 会带上同步时记录的 base hash。如果远端文件在你上次同步后已经变了，daemon 会拒绝覆盖并返回冲突。
+把本地修改写回远端 workspace。`apply` 会带上同步时记录的 base hash。如果远端文件
+在你上次同步后已经变了，daemon 会拒绝覆盖并返回冲突。
 
 ### `remork run -- COMMAND ...`
 
@@ -92,60 +176,51 @@ remork apply
 
 通过 daemon 打开一个交互式远端 shell。
 
-## 日常示例
+## 常见流程
 
-添加一个 daemon endpoint：
+添加或查看 daemon endpoint 昵称：
 
 ```bash
-remork host add lab-a --url http://10.0.0.12:17731
 remork host list
-```
-
-如果你的本地 shell 里有代理，而代理访问不到 VPN 地址，可以对这个 host 绕过代理：
-
-```bash
-remork host add lab-a --url http://10.0.0.12:17731 --no-proxy
+remork host add HOST --url http://VPN_OR_PRIVATE_IP:17731 --no-proxy
+remork host remove HOST
 ```
 
 使用共享 token，但不把密钥直接写进配置：
 
 ```bash
-export REMORK_LAB_TOKEN='replace-with-real-token'
-remork host add lab-a --url http://10.0.0.12:17731 --token-env REMORK_LAB_TOKEN
+export REMORK_TOKEN='replace-with-real-token'
+remork host add HOST --url http://VPN_OR_PRIVATE_IP:17731 --token-env REMORK_TOKEN
 ```
 
-绑定并同步一个 workspace：
+绑定同一个 allowed root 下面的另一个 child workspace：
 
 ```bash
-mkdir ~/work/project-a
-cd ~/work/project-a
-remork init lab-a:/data/project-a
+mkdir -p ~/remork/MY_PROJECT
+cd ~/remork/MY_PROJECT
+remork init HOST:/absolute/remote/workspace
 remork sync
 remork workspace
 ```
 
-运行远端检查：
-
-```bash
-remork run -- make test
-```
-
-应用一份本地修改：
+编辑后运行远端检查：
 
 ```bash
 remork status
 remork diff
 remork apply
+remork run -- make test
 ```
 
 ## 大文件
 
-超过 daemon 阈值的文件默认不会被下载。Remork Product V1 默认阈值是 `128MB`，除非启动 daemon 时另外指定。
+超过 daemon 阈值的文件默认不会被下载。Remork Product V1 默认阈值是 `128MB`，除非
+启动 daemon 时另外指定。
 
 如果远端 workspace 中有：
 
 ```text
-/data/project-a/checkpoints/model.tar.gz
+checkpoints/model.tar.gz
 ```
 
 本地 working copy 会收到：
@@ -154,25 +229,21 @@ remork apply
 checkpoints/model.tar.gz.meta
 ```
 
-这个 `.meta` 文件会记录远端路径、文件大小、版本信息和 pull 命令。只有当你确实需要完整内容时，再执行：
+这个 `.meta` 文件会记录远端路径、文件大小、版本信息和 pull 命令。只有当你确实需
+要完整内容时，再执行：
 
 ```bash
 remork pull checkpoints/model.tar.gz
 ```
 
-`.meta` 里记录的 pull 命令有时会是完整引用，例如：
-
-```text
-lab-a:/data/project-a/checkpoints/model.tar.gz
-```
-
-这样即使把 `.meta` 文件拷贝到绑定目录外，也仍然能知道它原本对应哪个远端文件。
-
 ## 安全地 apply
 
-Remork 把远端 workspace 当作事实来源。你可以在本地编辑文件，但本地修改不会自动推送到远端。
+Remork 把远端 workspace 当作事实来源。你可以在本地编辑文件，但本地修改不会自动
+推送到远端。
 
-`remork apply` 会发送一个 changeset，里面带着 `sync` 或 `pull` 时记录的 base hash。如果远端文件已经不再匹配这个 base hash，daemon 会返回冲突，并且不会继续覆盖该文件。
+`remork apply` 会发送一个 changeset，里面带着 `sync` 或 `pull` 时记录的 base hash。
+如果远端文件已经不再匹配这个 base hash，daemon 会返回冲突，并且不会继续覆盖该文
+件。
 
 这能避免几类常见问题：
 
@@ -187,7 +258,7 @@ remork status
 remork diff
 ```
 
-## 冲突恢复
+### 冲突恢复
 
 当本地修改和远端更新碰到同一个文件时，先看详细状态：
 
@@ -201,53 +272,27 @@ remork status --verbose
 remork conflict -- path/to/file
 ```
 
-查看你的本地修改和同步 base 之间的差异：
-
-```bash
-remork diff -- path/to/file
-```
-
-如果要丢弃这个文件上的本地修改，可以恢复到本地 base cache。注意，这并不是直接接受当前远端更新：
+如果要丢弃这个文件上的本地修改，可以恢复到本地 base cache。注意，这并不是直接接
+受当前远端更新：
 
 ```bash
 remork restore -- path/to/file
-```
-
-恢复后再检查状态：
-
-```bash
 remork status
-```
-
-如果远端仍然有更新，再同步下来：
-
-```bash
 remork sync
 ```
 
-之后继续 review 或 apply：
+之后继续检查差异，确认后再 apply。
 
-```bash
-remork apply
-```
+普通 `remork apply` 不会自动把新的本地文件创建到远端。要创建单个新文件，用
+`remork apply path/to/new-file`；要应用所有未被 ignore 的 untracked 文件，用
+`remork apply --include-untracked`。
 
-新的本地文件不会被宽泛的 `remork apply` 自动创建到远端。你需要明确选择它：
+Remork 会先读 `.remorkignore`，再读 `.gitignore`。本地缓存、密钥、生成产物、虚拟
+环境、agent 临时文件这类不应该写回远端的内容，建议放进 `.remorkignore`。
 
-```bash
-remork apply path/to/new-file
-```
+## 远端命令和 shell
 
-如果你确认要应用所有未跟踪文件，可以使用：
-
-```bash
-remork apply --include-untracked
-```
-
-Remork 会先读取 `.remorkignore`，再读取 `.gitignore`。建议用 `.remorkignore` 排除本地缓存、密钥、生成产物、虚拟环境、Agent 临时文件等不应该 apply 到远端的内容。
-
-## 运行命令和交互式 shell
-
-非交互式命令使用 `run`：
+非交互式命令用 `run`：
 
 ```bash
 remork run -- pwd
@@ -255,7 +300,7 @@ remork run -- make test
 remork run -- python scripts/check.py
 ```
 
-需要交互时使用 `shell`：
+需要交互时用 `shell`：
 
 ```bash
 remork shell
@@ -264,121 +309,39 @@ remork shell --attach <session-id>
 remork shell --kill <session-id>
 ```
 
-如果客户端断开，shell session 会在 daemon 侧保留一段时间。可以用 `remork shell --list` 查找保留的 session，用 `--attach` 重新连接，用 `--kill` 停止它。
+Shell session 在本地 client 断开后仍会由 daemon 保留。可以用 `--list` 找到保留的
+session，用 `--attach` 重新连接，用 `--kill` 停掉。
 
-空闲 session 会在 daemon 配置的保留窗口之后被回收。
-
-## 操作日志
-
-每个远端 workspace 都有自己的操作日志：
-
-```text
-<workspace>/.remork/log/operations.jsonl
-```
-
-daemon 扫描 manifest 时会跳过 `.remork`，所以这个日志不会同步到本地 working copy。
-
-日志可以用来查看 daemon 侧发生过的操作，例如 manifest、download、apply、exec、shell、operations 请求。
-
-查看最近日志：
-
-```bash
-remork log
-```
-
-## 后续学习的命令
-
-### `remork pull PATH`
-
-拉取指定文件或目录。大文件需要完整内容时主要用这个命令。
-
-### `remork diff`
-
-查看本地修改相对于同步 base 的差异。
-
-### `remork restore -- PATH`
-
-丢弃本地修改，恢复到同步 base cache，而不是当前远端最新内容。运行后建议再执行 `remork status`。如果远端仍有更新，再运行 `remork sync`。
-
-### `remork conflict -- PATH`
-
-显示某个冲突文件的本地 diff、restore、status、apply 等恢复指引。
-
-### `remork log`
-
-查看远端 workspace 的近期 Remork 操作日志。
-
-### `remork watch`
-
-监听 daemon 文件事件，让本地 working copy 持续跟随远端更新。
-
-### `remork host`
-
-管理 daemon endpoint alias。
-
-### `remork workspace`
-
-查看或移除当前本地目录的 workspace 绑定。
-
-常用维护命令：
-
-```bash
-remork host list
-remork host remove lab-a
-remork workspace
-remork workspace remove
-```
-
-## 调试和维护命令
+## 调试和维护
 
 ### `remork doctor`
 
-检查本地配置、当前 workspace 绑定、token 设置、daemon 可达性、远端 root 白名单、manifest 访问、操作日志访问等。
-
-### `remork debug manifest`
-
-拉取 daemon manifest，用于排查扫描、ignore、hash、大文件识别等问题。
-
-### `remork debug events`
-
-连接 daemon 文件事件流，并打印规范化后的事件信息。
-
-### `remork debug api`
-
-直接探测 daemon API，并输出简洁的传输层诊断。
+检查本地配置、当前 workspace 绑定、token 设置、daemon 可达性、allowed root 覆盖、
+manifest 访问、操作日志访问等。
 
 ### `remork daemon status HOST`
 
-读取本地配置中的 host，调用远端 `/status`，打印 daemon 版本、平台、允许访问的 roots、大文件阈值、watch 支持情况和本地认证状态。
+访问 `HOST` 配置的 daemon URL，打印 daemon 版本、平台、allowed roots、大文件阈
+值、watch 支持情况和本地认证状态。
 
-### `remork daemon install HOST --root /remote/root`
+### `remork daemon install HOST --root /allowed/root [--root /another/root]`
 
-打印离线安装 daemon 所需的 `scp` 和 `ssh` 命令。默认只打印，不执行。
-
-当默认值不合适时，可以配合这些参数：
-
-```bash
---ssh
---platform
---local-bin
---remote-bin
---addr
---token-file
-```
-
-如果要让 Remork 直接执行生成的安装命令：
-
-```bash
-remork daemon install lab-a --root /data/project-a --ssh lab-a --platform linux-arm64 --execute --yes
-```
+通过 SSH 安装或启动 `remorkd`。常用参数包括：`--ssh` 选择 SSH target，`--url` 写
+入本机 daemon URL，`--platform` 选择 daemon 二进制，`--execute --yes` 直接执行安
+装命令，`--verify` 安装后验证 daemon。如果一个 daemon 需要暴露多个 allowed base
+roots，可以重复传 `--root`。
 
 ### `remork daemon upgrade HOST`
 
-打印替换远端 daemon 二进制的命令。如果提供 `--root`，也会包含启动参数。加上 `--execute --yes` 后会直接执行。
+替换远端 daemon 二进制。加上 `--execute --yes` 后会直接执行生成的命令。
 
-## Release 下载和离线部署 daemon
+### `remork debug manifest`、`remork debug events`、`remork debug api`
 
-GitHub Release 只发布裸二进制文件：
+当 sync 或连接行为不清楚时，用这些命令检查 daemon 数据和传输层行为。
+
+## Release 下载和高级兜底部署
+
+GitHub Release 发布裸二进制文件：
 
 ```text
 remork-darwin-arm64     # macOS 客户端，Apple Silicon
@@ -387,7 +350,8 @@ remorkd-linux-arm64     # Linux 服务端 daemon，arm64
 remorkd-linux-amd64     # Linux 服务端 daemon，amd64
 ```
 
-本机下载匹配的 macOS client 二进制，远端下载或拷贝匹配的 Linux daemon 二进制即可。远端服务器不需要安装 Go，也不需要联网。具体安装命令和 checksum 会写在 GitHub Release 正文里。
+大多数用户只需要把本机 client 安装到 `~/.local/bin/remork`，然后用
+`remork daemon install` 把 daemon 部署到远端持久路径。
 
 如果你需要在本地自行构建 release：
 
@@ -395,99 +359,42 @@ remorkd-linux-amd64     # Linux 服务端 daemon，amd64
 scripts/build-release.sh v0.1.0
 ```
 
-本地构建还会在 `dist/` 下留下原始交叉编译二进制，方便测试和手动部署：
-
-```text
-dist/remork-darwin-arm64
-dist/remork-darwin-amd64
-dist/remork-linux-arm64
-dist/remork-linux-amd64
-dist/remorkd-darwin-arm64
-dist/remorkd-darwin-amd64
-dist/remorkd-linux-arm64
-dist/remorkd-linux-amd64
-dist/remorkd.example.toml
-dist/checksums.txt
-dist/RELEASE_BODY.md
-```
-
-例如远端是 Linux arm64：
+高级兜底：如果 client-driven install 不可用，可以手动拷贝 release daemon 并启动。
+下面例子只使用明确的占位符：
 
 ```bash
-scripts/build-release.sh v0.1.0
-remork daemon install lab-a --root /data/project-a --ssh lab-a --platform linux-arm64
+scp dist/remorkd-linux-arm64 SSH_TARGET:~/.local/bin/remorkd
+ssh SSH_TARGET 'chmod 0755 ~/.local/bin/remorkd'
+ssh SSH_TARGET 'mkdir -p ~/.remork/run ~/.remork/log'
+ssh SSH_TARGET 'nohup ~/.local/bin/remorkd --root /allowed/root --addr 0.0.0.0:17731 </dev/null >~/.remork/log/remorkd.log 2>&1 & echo $! >~/.remork/run/remorkd.pid'
+remork host add HOST --url http://VPN_OR_PRIVATE_IP:17731 --no-proxy
+remork daemon status HOST
 ```
 
-daemon install 默认只打印命令。如果要让 Remork 从本机直接执行生成的 `scp` 和 `ssh` 命令：
+如果要手动暴露多个 allowed base roots，也是在 `remorkd` 命令里重复写 `--root`。
 
-```bash
-remork daemon install lab-a --root /data/project-a --ssh lab-a --platform linux-arm64 --execute --yes
-```
+这里 SSH target 只用于安装辅助，也就是复制和启动 `remorkd`。Remork 正常运行时的
+传输是到 daemon URL 的 HTTP 或 WebSocket。
 
-这里 SSH 只用于安装辅助，也就是复制和启动 `remorkd`。Remork 正常运行时的传输仍然是 HTTP 到已配置的 `remorkd` 地址。
+## 安全模型和限制
 
-生成的命令大致等价于：
-
-```bash
-scp dist/remorkd-linux-arm64 lab-a:/tmp/remorkd
-ssh lab-a 'chmod 0755 /tmp/remorkd'
-ssh lab-a 'nohup /tmp/remorkd --root /data/project-a --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
-curl --noproxy '*' http://10.0.0.12:17731/status
-```
-
-再次提醒：`--addr 0.0.0.0:17731` 会让 Remork 对能访问该 VPN/内网地址的机器开放。共享 VPN 或多人网络中，请使用 `--token-file`，并在本地通过 `remork host add --token-env` 配置 token。
-
-也可以运行 smoke helper：
-
-```bash
-scripts/remote-smoke.sh \
-  --host lab-a \
-  --probe-host 10.0.0.12 \
-  --root /tmp/remork-e2e \
-  --port 17731 \
-  --binary dist/remorkd-linux-arm64
-```
-
-清理临时 daemon：
-
-```bash
-ssh lab-a 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; rm -f /tmp/remorkd.pid /tmp/remorkd.log /tmp/remorkd'
-```
-
-## 安全模型和当前限制
-
-Remork Product V1 的前提是：
+Remork Product V1 假设：
 
 - 使用可信 VPN 或内网；
-- 可选共享 token，通过环境变量或 token 文件提供；
-- daemon 启动时明确指定可访问的远端 roots；
-- 本地不会自动写入远端；
+- 可以通过环境变量或 token file 使用可选的共享 token；
+- `remorkd` 启动时明确指定 allowed roots；
+- 本地修改不会自动写回远端；
 - daemon 部署过程中不要求远端安装依赖或访问互联网。
 
 当前限制：
 
 - 没有账号、RBAC 或多租户隔离；
-- 没有面向公网暴露的安全加固；
-- Product V1 的 daemon 配置主要通过命令行 flags；
-- 本地配置是 `~/.remork` 下的 JSON，即使部署示例里可能会出现 TOML 模板。
+- 没有公网加固；
+- Product V1 中 daemon 配置主要通过启动参数完成；
+- 本地配置是 `~/.remork` 下的 JSON。
 
-## 开发者 API 说明
+## 开发者说明
 
-大多数用户只需要使用 CLI。daemon API 的细节和请求结构在：
+普通用户应该优先使用 CLI。Daemon API 细节和请求格式在 `docs/remork-api.md`。
 
-```text
-docs/remork-api.md
-```
-
-Agent 使用指引在：
-
-```text
-skills/remork/SKILL.md
-```
-
-运行核心验证：
-
-```bash
-go test ./...
-scripts/build-release.sh dev
-```
+Agent 使用 Remork 的操作指南在 `skills/remork/SKILL.md`。

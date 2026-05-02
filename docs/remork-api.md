@@ -17,48 +17,65 @@ Clients may send:
 When a host is configured with `remork host add --no-proxy`, the CLI bypasses
 local proxy environment variables for HTTP and WebSocket daemon calls.
 
+## Root semantics
+
+`GET /status` returns `roots`. These are allowed base roots advertised by the
+daemon, not necessarily project directories. They define the server-side safety
+boundary. A daemon may advertise one or more allowed base roots.
+
+Endpoint query parameters named `root=<workspace-root>` request one concrete
+workspace under an allowed root. For example, if `/home/z00879328` is advertised
+in `/status.roots`, a request may use:
+
+```text
+root=/home/z00879328/11_Wan22_Adapt
+```
+
+The daemon must reject workspace roots outside the advertised allowed base roots.
+The `path=<path>` parameters are relative to the requested workspace root.
+
 ## Endpoints
 
 ```text
 GET  /status
-GET  /manifest?root=<root>&path=<path>&recursive=true
-GET  /download?root=<root>&path=<path>
-POST /apply?root=<root>
+GET  /manifest?root=<workspace-root>&path=<path>&recursive=true
+GET  /download?root=<workspace-root>&path=<path>
+POST /apply?root=<workspace-root>
 POST /exec
-GET  /operations?root=<root>&limit=<n>
-GET  /events?root=<root>
-GET  /shell?root=<root>[&session=<id>]
-GET  /shell/sessions?root=<root>
-DELETE /shell/sessions?root=<root>&id=<id>
+GET  /operations?root=<workspace-root>&limit=<n>
+GET  /events?root=<workspace-root>
+GET  /shell?root=<workspace-root>[&session=<id>]
+GET  /shell/sessions?root=<workspace-root>
+DELETE /shell/sessions?root=<workspace-root>&id=<id>
 ```
 
 ## Status
 
 `GET /status`
 
-Returns daemon version, platform, allowlisted roots, large-file threshold,
+Returns daemon version, platform, allowed base roots, large-file threshold,
 watch support, and auth state.
 
 ## Manifest
 
-`GET /manifest?root=<root>&path=<path>&recursive=true`
+`GET /manifest?root=<workspace-root>&path=<path>&recursive=true`
 
-Returns normalized file entries for a root-relative path. Entries exclude
+Returns normalized file entries for a workspace-relative path. Entries exclude
 `.git` and `.remork`. Large files are represented with metadata so the CLI can
 write `filename.meta` placeholders instead of downloading the content.
 
 ## Download
 
-`GET /download?root=<root>&path=<path>`
+`GET /download?root=<workspace-root>&path=<path>`
 
-Returns file bytes for a root-relative file. The endpoint supports byte ranges
-through the standard `Range` header. Product V1 clients enforce a bounded
+Returns file bytes for a workspace-relative file. The endpoint supports byte
+ranges through the standard `Range` header. Product V1 clients enforce a bounded
 download body size. CLI sync and pull paths stream the response to disk instead
 of buffering full remote files in memory.
 
 ## Apply
 
-`POST /apply?root=<root>`
+`POST /apply?root=<workspace-root>`
 
 Writes a changeset to the remote workspace. Each update includes the base hash
 captured during sync or pull. If the remote file changed after that base was
@@ -90,7 +107,7 @@ Runs a non-interactive command in the remote workspace. The CLI exposes this as
 
 ## Operations
 
-`GET /operations?root=<root>&limit=<n>`
+`GET /operations?root=<workspace-root>&limit=<n>`
 
 Reads recent workspace operation log entries from:
 
@@ -100,18 +117,19 @@ Reads recent workspace operation log entries from:
 
 ## Events
 
-`GET /events?root=<root>`
+`GET /events?root=<workspace-root>`
 
 Opens a WebSocket stream of normalized daemon file events. The CLI exposes this
 as `remork watch`.
 
 ## Shell
 
-`GET /shell?root=<root>[&session=<id>]`
+`GET /shell?root=<workspace-root>[&session=<id>]`
 
 Opens a WebSocket-backed interactive shell session. Without `session`, the
-daemon starts a durable shell in the requested root. With `session`, the daemon
-reattaches the WebSocket to an existing retained session for the same root.
+daemon starts a durable shell in the requested workspace root. With `session`,
+the daemon reattaches the WebSocket to an existing retained session for the same
+workspace root.
 
 Shell WebSocket frames:
 
@@ -121,9 +139,9 @@ Shell WebSocket frames:
 - The daemon sends a JSON `ShellFrame` with `type: "exit"` and `exit_code` when
   the remote shell exits.
 
-`GET /shell/sessions?root=<root>`
+`GET /shell/sessions?root=<workspace-root>`
 
-Lists retained shell sessions for a root. The response is:
+Lists retained shell sessions for a workspace root. The response is:
 
 ```json
 {
@@ -137,7 +155,7 @@ Lists retained shell sessions for a root. The response is:
 }
 ```
 
-`DELETE /shell/sessions?root=<root>&id=<id>`
+`DELETE /shell/sessions?root=<workspace-root>&id=<id>`
 
 Stops and removes a retained shell session. The endpoint returns `204` when the
 session was found and closed. The CLI exposes these APIs as `remork shell`,

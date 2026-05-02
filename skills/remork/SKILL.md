@@ -11,20 +11,67 @@ Remork lets an agent edit a local working copy while treating the remote
 workspace as the source of truth. Sync first, inspect local changes, then use an
 explicit `remork apply` to write back to the remote server.
 
+## Terms
+
+- Remork host: local nickname for a daemon URL.
+- SSH target: SSH destination used only to install or upgrade `remorkd`.
+- Daemon URL: HTTP endpoint used after install; this is not SSH.
+- Allowed root: server-side boundary advertised by `/status.roots`.
+- Workspace root: actual remote project directory under an allowed root.
+- Local working copy: local directory the agent edits.
+
 ## First Checks
 
 1. Confirm the current directory is the intended local working copy.
 2. Run `remork status`.
-3. If the directory is not bound, ask for the intended host/root or run:
+3. If the directory is not bound, ask for the intended host and workspace root,
+   or bind it:
 
 ```bash
-remork host add HOST --url http://REMOTE_IP:17731 --no-proxy
-remork init HOST:/absolute/remote/root
+remork host add HOST --url http://VPN_OR_PRIVATE_IP:17731 --no-proxy
+remork init HOST:/absolute/remote/workspace
 remork sync
 ```
 
 Use `--no-proxy` when the remote address is reachable through VPN/private
 network and local proxy variables may not reach it.
+
+## Install Flow
+
+Prefer client-driven daemon install. The `--root` value is the allowed root, not
+necessarily the project workspace:
+
+```bash
+remork daemon install HOST \
+  --ssh SSH_TARGET \
+  --url http://VPN_OR_PRIVATE_IP:17731 \
+  --root /absolute/allowed/root \
+  --platform linux-arm64 \
+  --execute --yes \
+  --verify \
+  --no-proxy
+```
+
+Repeat `--root` if one daemon should advertise multiple independent allowed base
+roots. Every workspace root must be inside one advertised allowed root.
+
+Then bind a local working copy to the workspace root:
+
+```bash
+mkdir -p ~/remork/PROJECT
+cd ~/remork/PROJECT
+remork init HOST:/absolute/allowed/root/project-directory
+remork sync
+remork status
+```
+
+The daemon URL IP is the VPN/private IP or DNS name reachable from the local
+machine on port `17731`. Verify with `remork daemon status HOST`. If the URL
+uses a non-default port, pass the same port with `--addr 0.0.0.0:PORT` during
+`remork daemon install`.
+
+For additional projects on the same host, bind another child workspace under the
+same allowed root with a separate local working copy.
 
 ## Daily Workflow
 
@@ -69,11 +116,7 @@ file only when the task requires it:
 remork pull path/to/file
 ```
 
-Use `--force` only when overwriting the local copy is intentional:
-
-```bash
-remork pull --force path/to/file
-```
+Use `--force` only when overwriting the local copy is intentional.
 
 ## Remote Commands
 
@@ -120,56 +163,9 @@ remork debug events
 remork debug api
 ```
 
-The remote operation log lives under:
-
-```text
-<workspace>/.remork/log/operations.jsonl
-```
-
-## Offline Daemon Deployment
-
-Prefer the published release assets when they are available:
-
-```bash
-VERSION=v0.1.0
-curl -L -o remorkd \
-  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remorkd-linux-arm64"
-chmod 0755 remorkd
-scp remorkd HOST:/tmp/remorkd
-ssh HOST 'chmod +x /tmp/remorkd'
-ssh HOST 'nohup /tmp/remorkd --root /remote/root --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
-```
-
-For local-agent use on macOS, download the matching macOS client package:
-
-```bash
-VERSION=v0.1.0
-mkdir -p "$HOME/.local/bin"
-curl -L -o "$HOME/.local/bin/remork" \
-  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-darwin-arm64"
-chmod 0755 "$HOME/.local/bin/remork"
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-If a release asset is not available yet, build locally and use the generated
-`dist/` binaries:
-
-```bash
-scripts/build-release.sh v0.1.0
-scp dist/remorkd-linux-arm64 HOST:/tmp/remorkd
-```
-
-Do not install Go, npm, apt, brew, or internet-dependent dependencies on the
-remote host just to run Remork. The remote server only needs the downloaded
-`remorkd` binary.
-
-GitHub releases intentionally upload only binaries. Read the release body for
-install commands and checksums; read `README.md` or `README_ZH.md` for the full
-human workflow.
-
-On shared VPNs or multi-user networks, start `remorkd` with `--token-file` and
-configure the local host with `remork host add --token-env`. Do not expose an
-unauthenticated `0.0.0.0:17731` daemon outside a trusted private network.
+Manual daemon binary copy is an advanced fallback only. Prefer
+`remork daemon install` so the daemon goes to durable remote paths and the local
+host config can be verified.
 
 ## Completion Checklist
 

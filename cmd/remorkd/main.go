@@ -17,7 +17,8 @@ var version = "dev"
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:7731", "listen address")
-	root := flag.String("root", "", "workspace root")
+	var roots rootFlags
+	flag.Var(&roots, "root", "allowed base root; repeat to serve multiple base roots")
 	token := flag.String("token", "", "shared bearer token")
 	tokenFile := flag.String("token-file", "", "file containing shared bearer token")
 	showVersion := flag.Bool("version", false, "print version")
@@ -26,7 +27,7 @@ func main() {
 		fmt.Println("remorkd " + version)
 		return
 	}
-	if *root == "" {
+	if len(roots) == 0 {
 		log.Fatal("--root is required")
 	}
 	resolvedToken, err := resolveToken(*token, *tokenFile)
@@ -36,7 +37,7 @@ func main() {
 	if insecureNoTokenNonLoopbackListenAddr(*addr, resolvedToken != "") {
 		log.Printf("WARNING: remorkd is listening on a non-loopback or wildcard address without authentication; clients that can reach it can use apply/file access and writes, remote command execution, and shell endpoints. Use --token-file and configure clients with remork host add --token-env.")
 	}
-	srv := daemon.NewServer(daemon.Config{Version: version, Roots: []string{*root}, LargeThreshold: 128 << 20, Token: resolvedToken})
+	srv := daemon.NewServer(daemon.Config{Version: version, Roots: []string(roots), LargeThreshold: 128 << 20, Token: resolvedToken})
 	httpServer := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),
@@ -44,6 +45,21 @@ func main() {
 		IdleTimeout:       limits.DaemonIdleTimeout,
 	}
 	log.Fatal(httpServer.ListenAndServe())
+}
+
+type rootFlags []string
+
+func (r *rootFlags) String() string {
+	return strings.Join(*r, ",")
+}
+
+func (r *rootFlags) Set(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("--root cannot be empty")
+	}
+	*r = append(*r, value)
+	return nil
 }
 
 func insecureNoTokenNonLoopbackListenAddr(addr string, hasToken bool) bool {

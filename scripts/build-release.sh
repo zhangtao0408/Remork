@@ -19,19 +19,11 @@ build_binary() {
     -o "$out" "$package"
 }
 
-build_target() {
-  local goos="$1"
-  local goarch="$2"
-  build_binary ./cmd/remork remork "$goos" "$goarch"
-  build_binary ./cmd/remorkd remorkd "$goos" "$goarch"
-}
+build_binary ./cmd/remork remork darwin arm64
+build_binary ./cmd/remork remork darwin amd64
+build_binary ./cmd/remorkd remorkd linux arm64
+build_binary ./cmd/remorkd remorkd linux amd64
 
-build_target darwin arm64
-build_target darwin amd64
-build_target linux arm64
-build_target linux amd64
-
-cp "$repo_root/deploy/remorkd.example.toml" "$dist_dir/remorkd.example.toml"
 cat > "$dist_dir/RELEASE_BODY.md" <<EOF
 # Remork $version
 
@@ -46,6 +38,9 @@ This is the first product release of Remork.
 
 The server host only needs the downloaded \`remorkd\` binary. It does not need
 Go, npm, apt, brew, or internet access.
+
+Only upload the four binaries above as release assets. Keep this release body
+as the install guide; do not upload README files for each release.
 
 ## Install the macOS client
 
@@ -63,23 +58,52 @@ If a new terminal cannot find \`remork\`, add \`export PATH="\$HOME/.local/bin:\
 
 ## Install the server daemon
 
+Install the daemon from the client machine. This copies the prebuilt daemon over
+SSH, stores it under the remote user's \`~/.local/bin/remorkd\`, stores pid/log
+files under \`~/.remork\`, writes the local host config, and verifies the daemon.
+
 \`\`\`bash
-curl -L -o remorkd https://github.com/zhangtao0408/Remork/releases/download/$version/remorkd-linux-arm64
-chmod 0755 remorkd
-scp remorkd user@host:/tmp/remorkd
-ssh user@host 'nohup /tmp/remorkd --root /data/project --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo \$! >/tmp/remorkd.pid'
+HOST_ALIAS=my-server
+SSH_TARGET=user@my-server
+DAEMON_URL=http://10.0.0.12:17731
+ALLOWED_ROOT=/home/me
+REMOTE_PLATFORM=linux-arm64
+
+remork daemon install "\$HOST_ALIAS" \\
+  --ssh "\$SSH_TARGET" \\
+  --url "\$DAEMON_URL" \\
+  --root "\$ALLOWED_ROOT" \\
+  --platform "\$REMOTE_PLATFORM" \\
+  --execute --yes \\
+  --verify \\
+  --no-proxy
 \`\`\`
 
-Use \`remorkd-linux-amd64\` instead on x86_64 Linux servers.
+\`--root\` is an allowed base root. Any workspace under that directory can be
+bound later. Use \`REMOTE_PLATFORM=linux-amd64\` instead on x86_64 Linux servers.
+Repeat \`--root\` if one daemon should advertise multiple independent allowed
+base roots.
+If \`DAEMON_URL\` uses a non-default port, pass the same port with
+\`--addr 0.0.0.0:PORT\`.
 
 ## Use Remork
 
 \`\`\`bash
-remork host add lab-a --url http://10.0.0.12:17731
-mkdir project-a && cd project-a
-remork init lab-a:/data/project
+HOST_ALIAS=my-server
+WORKSPACE_ROOT=/home/me/project
+LOCAL_WORKING_COPY=~/remork/project
+
+mkdir -p "\$LOCAL_WORKING_COPY"
+cd "\$LOCAL_WORKING_COPY"
+remork init "\$HOST_ALIAS:\$WORKSPACE_ROOT"
 remork sync
 remork status
+remork run -- pwd
+
+# Edit files locally, then write those edits back to the remote workspace.
+remork status
+remork apply
+remork log --limit 5
 \`\`\`
 
 Read the full usage guide in the repository README:
@@ -94,7 +118,7 @@ EOF
 
 (
   cd "$dist_dir"
-  shasum -a 256 remork-* remorkd-* remorkd.example.toml > checksums.txt
+  shasum -a 256 remork-* remorkd-* > checksums.txt
   {
     echo
     echo "## SHA-256 checksums"

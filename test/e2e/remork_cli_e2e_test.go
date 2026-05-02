@@ -626,11 +626,15 @@ type cliHarness struct {
 
 func newCLIHarness(t *testing.T) *cliHarness {
 	t.Helper()
+	remote, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve remote temp dir: %v", err)
+	}
 	h := &cliHarness{
 		t:      t,
 		home:   t.TempDir(),
 		local:  t.TempDir(),
-		remote: t.TempDir(),
+		remote: remote,
 	}
 	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{h.remote}}).Handler())
 	t.Cleanup(srv.Close)

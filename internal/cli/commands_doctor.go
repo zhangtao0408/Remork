@@ -70,7 +70,7 @@ func runDoctor(ctx context.Context, opts Options) ([]string, *doctorFailure) {
 			code:   exitcode.InvalidUsageOrConfig,
 		}
 	}
-	token, err := auth.TokenFromEnv(host.TokenEnv)
+	_, err = auth.TokenFromEnv(host.TokenEnv)
 	if err != nil {
 		return nil, &doctorFailure{
 			reason: err.Error(),
@@ -82,22 +82,25 @@ func runDoctor(ctx context.Context, opts Options) ([]string, *doctorFailure) {
 	if host.TokenEnv == "" {
 		warnings = append(warnings, "host has no token configured; use only on trusted VPN/private networks")
 	}
-	c := clientForHost(host, cfg, token)
-	status, err := c.StatusContext(ctx)
+	status, err := opts.DaemonProbe.Status(ctx, host, cfg.ClientID)
 	if err != nil {
 		return nil, networkDoctorFailure(err, "start remorkd and check remork host add URL")
 	}
-	if !stringSliceContains(status.Roots, binding.RemoteRoot) {
+	ok, err = remoteRootAdvertised(status.Roots, binding.RemoteRoot)
+	if err != nil {
+		return nil, configDoctorFailure(err, "check remorkd advertised allowed roots")
+	}
+	if !ok {
 		return nil, &doctorFailure{
-			reason: fmt.Sprintf("remote root %q is not advertised by daemon", binding.RemoteRoot),
-			fix:    "restart remorkd with --root " + binding.RemoteRoot,
+			reason: fmt.Sprintf("remote workspace %q is outside advertised allowed roots", binding.RemoteRoot),
+			fix:    "restart remorkd with an allowed root containing " + binding.RemoteRoot,
 			code:   exitcode.InvalidUsageOrConfig,
 		}
 	}
-	if _, err := c.ManifestContext(ctx, binding.RemoteRoot, "."); err != nil {
+	if _, err := opts.DaemonProbe.Manifest(ctx, host, cfg, binding.RemoteRoot); err != nil {
 		return nil, networkDoctorFailure(err, "check remote root permissions and remorkd manifest access")
 	}
-	if _, err := c.OperationsContext(ctx, binding.RemoteRoot, 1); err != nil {
+	if _, err := opts.DaemonProbe.Operations(ctx, host, cfg, binding.RemoteRoot, 1); err != nil {
 		return nil, networkDoctorFailure(err, "check remorkd /operations access for this workspace")
 	}
 	return warnings, nil
@@ -118,13 +121,4 @@ func networkDoctorFailure(err error, fix string) *doctorFailure {
 		code = exitcode.PermissionDenied
 	}
 	return &doctorFailure{reason: err.Error(), fix: fix, code: code}
-}
-
-func stringSliceContains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

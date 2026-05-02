@@ -4,15 +4,15 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/remote-smoke.sh --host SSH_TARGET --root REMOTE_ROOT --port PORT --binary dist/remorkd-linux-arm64 [options]
+  scripts/remote-smoke.sh --host SSH_TARGET --root REMOTE_ALLOWED_ROOT --port PORT --binary dist/remorkd-linux-arm64 [options]
 
 Options:
-  --host SSH_TARGET       SSH target, for example root@10.0.0.12 or lab-a.
-  --root REMOTE_ROOT      Remote workspace root to create and expose.
+  --host SSH_TARGET       SSH target, for example user@my-server.
+  --root REMOTE_ROOT      Remote allowed root to create and expose.
   --port PORT             Daemon port to listen on.
   --binary PATH           Local prebuilt remorkd binary to copy.
   --probe-host HOST       Hostname or IP used for local HTTP probes. Defaults to --host without user@.
-  --remote-bin PATH       Remote daemon path. Defaults to /tmp/remorkd-smoke.
+  --remote-bin PATH       Remote daemon path. Defaults to .local/bin/remorkd-smoke under the remote home.
   --listen ADDR           Remote listen host. Defaults to 0.0.0.0.
   --keep                  Leave daemon and files in place; print cleanup command.
 
@@ -25,7 +25,7 @@ root=""
 port=""
 binary=""
 probe_host=""
-remote_bin="/tmp/remorkd-smoke"
+remote_bin=".local/bin/remorkd-smoke"
 listen_host="0.0.0.0"
 keep="false"
 
@@ -56,12 +56,26 @@ if [ -z "$probe_host" ]; then
   probe_host="${host#*@}"
 fi
 
-pid_file="/tmp/remorkd-smoke-${port}.pid"
-log_file="/tmp/remorkd-smoke-${port}.log"
+if [[ "$remote_bin" == /* ]]; then
+  remote_exec_bin="$remote_bin"
+  remote_scp_bin="$remote_bin"
+  remote_bin_dir="$(dirname "$remote_bin")"
+elif [[ "$remote_bin" == "~/"* ]]; then
+  remote_exec_bin="\$HOME/${remote_bin#~/}"
+  remote_scp_bin="$remote_bin"
+  remote_bin_dir="\$HOME/$(dirname "${remote_bin#~/}")"
+else
+  remote_exec_bin="\$HOME/${remote_bin#./}"
+  remote_scp_bin="${remote_bin#./}"
+  remote_bin_dir="\$HOME/$(dirname "${remote_bin#./}")"
+fi
+
+pid_file="\$HOME/.remork/run/remorkd-smoke-${port}.pid"
+log_file="\$HOME/.remork/log/remorkd-smoke-${port}.log"
 url="http://${probe_host}:${port}"
 status_file="$(mktemp)"
 
-remote_cleanup="if [ -f '$pid_file' ]; then kill \"\$(cat '$pid_file')\" 2>/dev/null || true; rm -f '$pid_file'; fi; rm -f '$remote_bin' '$log_file'"
+remote_cleanup="if [ -f \"$pid_file\" ]; then kill \"\$(cat \"$pid_file\")\" 2>/dev/null || true; rm -f \"$pid_file\"; fi; rm -f \"$remote_exec_bin\" \"$log_file\""
 cleanup() {
   rm -f "$status_file"
   if [ "$keep" = "false" ]; then
@@ -71,14 +85,14 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Preparing remote workspace $host:$root"
-ssh "$host" "mkdir -p '$root' && printf 'remork smoke\n' > '$root/remork-smoke.txt'"
+ssh "$host" "mkdir -p '$root' \"$remote_bin_dir\" \"\$HOME/.remork/run\" \"\$HOME/.remork/log\" && printf 'remork smoke\n' > '$root/remork-smoke.txt'"
 
-echo "Copying $binary to $host:$remote_bin"
-scp "$binary" "$host:$remote_bin" >/dev/null
-ssh "$host" "chmod 0755 '$remote_bin'"
+echo "Copying $binary to $host:$remote_scp_bin"
+scp "$binary" "$host:$remote_scp_bin" >/dev/null
+ssh "$host" "chmod 0755 \"$remote_exec_bin\""
 
 echo "Starting remorkd on $listen_host:$port"
-ssh "$host" "$remote_cleanup; nohup '$remote_bin' --root '$root' --addr '$listen_host:$port' </dev/null >'$log_file' 2>&1 & echo \$! > '$pid_file'"
+ssh "$host" "$remote_cleanup; nohup \"$remote_exec_bin\" --root '$root' --addr '$listen_host:$port' </dev/null >\"$log_file\" 2>&1 & echo \$! > \"$pid_file\""
 
 echo "Probing $url/status"
 for _ in 1 2 3 4 5; do

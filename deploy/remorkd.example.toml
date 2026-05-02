@@ -1,22 +1,22 @@
 # Example deployment values for remorkd.
 #
 # Product V1 starts remorkd with explicit flags, for example:
-#   remorkd --root /data/project --addr 0.0.0.0:17731 --token-file /etc/remorkd/token
+#   ~/.local/bin/remorkd --root /home/me --root /scratch/me --addr 0.0.0.0:17731 --token-file ~/.remork/remork.token
 #
 # Keep this file next to the binary as deployment documentation or translate it
 # into your service manager of choice.
 
 listen_addr = "0.0.0.0:17731"
-workspace_roots = ["/data/project"]
+allowed_roots = ["/home/me", "/scratch/me"]
 large_file_threshold = "128MB"
 
 # Optional shared-token auth. Prefer a root-readable file over putting secrets
 # directly in shell history.
-token_file = "/etc/remorkd/token"
+token_file = "$HOME/.remork/remork.token"
 
 # Suggested process files for a minimal nohup deployment.
-pid_file = "/tmp/remorkd.pid"
-log_file = "/tmp/remorkd.log"
+pid_file = "$HOME/.remork/run/remorkd.pid"
+log_file = "$HOME/.remork/log/remorkd.log"
 
 # Network model: bind only on a trusted VPN or loopback-tunneled interface. Do
 # not expose remorkd directly to the public internet.

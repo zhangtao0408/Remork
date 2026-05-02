@@ -68,3 +68,26 @@ func TestInsecureNoTokenNonLoopbackListenAddrCases(t *testing.T) {
 		})
 	}
 }
+
+func TestRootFlagsAcceptRepeatedRoots(t *testing.T) {
+	var roots rootFlags
+	if err := roots.Set("/data"); err != nil {
+		t.Fatalf("set first root: %v", err)
+	}
+	if err := roots.Set(" /scratch "); err != nil {
+		t.Fatalf("set second root: %v", err)
+	}
+	if got, want := roots.String(), "/data,/scratch"; got != want {
+		t.Fatalf("roots string = %q, want %q", got, want)
+	}
+	if len(roots) != 2 || roots[0] != "/data" || roots[1] != "/scratch" {
+		t.Fatalf("roots = %#v", roots)
+	}
+}
+
+func TestRootFlagsRejectEmptyRoot(t *testing.T) {
+	var roots rootFlags
+	if err := roots.Set(" \t"); err == nil {
+		t.Fatal("empty root should be rejected")
+	}
+}

@@ -2,14 +2,10 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -17,7 +13,7 @@ import (
 	"remork/internal/auth"
 	remorkclient "remork/internal/client"
 	"remork/internal/config"
-	"remork/internal/limits"
+	"remork/internal/ops"
 )
 
 type Options struct {
@@ -29,6 +25,8 @@ type Options struct {
 
 type DaemonProbe interface {
 	Status(ctx context.Context, host config.Host, clientID string) (api.StatusResponse, error)
+	Manifest(ctx context.Context, host config.Host, cfg config.Config, root string) (api.ManifestResponse, error)
+	Operations(ctx context.Context, host config.Host, cfg config.Config, root string, limit int) ([]ops.Entry, error)
 }
 
 const productHelpTemplate = `{{.Short}}
@@ -61,6 +59,13 @@ Debug and operations: doctor debug daemon
 
 Other:
   version     Print the remork version
+{{if .HasAvailableLocalFlags}}
+Flags:
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}
+{{end}}{{if .HasAvailableInheritedFlags}}
+Global Flags:
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}
+{{end}}
 `
 
 func NewRootCommand(opts Options) *cobra.Command {
@@ -124,44 +129,43 @@ type httpDaemonProbe struct {
 }
 
 func (p httpDaemonProbe) Status(ctx context.Context, host config.Host, clientID string) (api.StatusResponse, error) {
-	u, err := url.Parse(host.URL)
-	if err != nil {
-		return api.StatusResponse{}, err
-	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/status"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return api.StatusResponse{}, err
-	}
 	if clientID == "" {
 		clientID = "remork-cli"
 	}
-	req.Header.Set(api.HeaderClientID, clientID)
 	token, err := auth.TokenFromEnv(host.TokenEnv)
 	if err != nil {
 		return api.StatusResponse{}, err
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	httpClient := p.client
-	if httpClient == nil {
-		httpClient = remorkclient.NewHTTPClient(host.NoProxy)
-	}
-	resp, err := httpClient.Do(req)
+	c := p.clientFor(host, clientID, token)
+	return c.StatusContext(ctx)
+}
+
+func (p httpDaemonProbe) Manifest(ctx context.Context, host config.Host, cfg config.Config, root string) (api.ManifestResponse, error) {
+	token, err := auth.TokenFromEnv(host.TokenEnv)
 	if err != nil {
-		return api.StatusResponse{}, err
+		return api.ManifestResponse{}, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, limits.MaxErrorBodyBytes))
-		return api.StatusResponse{}, fmt.Errorf("daemon status failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	c := p.clientFor(host, cfg.ClientID, token)
+	return c.ManifestContext(ctx, root, ".")
+}
+
+func (p httpDaemonProbe) Operations(ctx context.Context, host config.Host, cfg config.Config, root string, limit int) ([]ops.Entry, error) {
+	token, err := auth.TokenFromEnv(host.TokenEnv)
+	if err != nil {
+		return nil, err
 	}
-	var status api.StatusResponse
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		return api.StatusResponse{}, err
-	}
-	return status, nil
+	c := p.clientFor(host, cfg.ClientID, token)
+	return c.OperationsContext(ctx, root, limit)
+}
+
+func (p httpDaemonProbe) clientFor(host config.Host, clientID string, token string) remorkclient.Client {
+	return remorkclient.NewWithOptions(remorkclient.Options{
+		BaseURL:  host.URL,
+		ClientID: clientID,
+		Token:    token,
+		HTTP:     p.client,
+		NoProxy:  host.NoProxy,
+	})
 }
 
 func clientForHost(host config.Host, cfg config.Config, token string) remorkclient.Client {

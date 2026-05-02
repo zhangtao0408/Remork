@@ -1,0 +1,152 @@
+package remoteroot
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+type Root struct {
+	Raw   string
+	Clean string
+}
+
+func Normalize(root string) (Root, error) {
+	if root == "" {
+		return Root{}, fmt.Errorf("root is required")
+	}
+	if !filepath.IsAbs(root) {
+		return Root{}, fmt.Errorf("root %q must be absolute", root)
+	}
+	return Root{Raw: root, Clean: filepath.Clean(root)}, nil
+}
+
+func NormalizeMany(roots []string) ([]Root, error) {
+	out := make([]Root, 0, len(roots))
+	for _, root := range roots {
+		normalized, err := Normalize(root)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, normalized)
+	}
+	return out, nil
+}
+
+func Contains(allowed []Root, candidate string) (bool, error) {
+	requested, err := Normalize(candidate)
+	if err != nil {
+		return false, err
+	}
+	return containsClean(allowed, requested.Clean)
+}
+
+func ContainsResolved(allowed []Root, candidate string) (bool, error) {
+	_, ok, err := ResolveAllowed(allowed, candidate)
+	return ok, err
+}
+
+func ResolveAllowed(allowed []Root, candidate string) (string, bool, error) {
+	if candidate == "" {
+		return "", false, fmt.Errorf("root is required")
+	}
+	if !filepath.IsAbs(candidate) {
+		return "", false, fmt.Errorf("root %q must be absolute", candidate)
+	}
+	requestedReal, err := evalSymlinksPreservingTraversal(candidate, 255)
+	if err != nil {
+		return "", false, err
+	}
+	realAllowed := make([]Root, 0, len(allowed))
+	for _, base := range allowed {
+		if err := validateAllowedRoot(base); err != nil {
+			return "", false, err
+		}
+		basePath := base.Raw
+		if basePath == "" {
+			basePath = base.Clean
+		}
+		if !filepath.IsAbs(basePath) {
+			return "", false, fmt.Errorf("allowed root %q must be absolute", basePath)
+		}
+		baseReal, err := evalSymlinksPreservingTraversal(basePath, 255)
+		if err != nil {
+			return "", false, err
+		}
+		realAllowed = append(realAllowed, Root{Raw: base.Raw, Clean: filepath.Clean(baseReal)})
+	}
+	canonical := filepath.Clean(requestedReal)
+	ok, err := containsClean(realAllowed, canonical)
+	return canonical, ok, err
+}
+
+func containsClean(allowed []Root, requestedClean string) (bool, error) {
+	for _, base := range allowed {
+		if err := validateAllowedRoot(base); err != nil {
+			return false, err
+		}
+		if requestedClean == base.Clean {
+			return true, nil
+		}
+		prefix := strings.TrimRight(base.Clean, string(filepath.Separator)) + string(filepath.Separator)
+		if strings.HasPrefix(requestedClean, prefix) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func validateAllowedRoot(root Root) error {
+	if root.Clean == "" {
+		return fmt.Errorf("allowed root is empty")
+	}
+	if !filepath.IsAbs(root.Clean) {
+		return fmt.Errorf("allowed root %q must be absolute", root.Clean)
+	}
+	if cleaned := filepath.Clean(root.Clean); cleaned != root.Clean {
+		return fmt.Errorf("allowed root %q is not clean", root.Clean)
+	}
+	return nil
+}
+
+func evalSymlinksPreservingTraversal(path string, linksRemaining int) (string, error) {
+	if linksRemaining <= 0 {
+		return "", fmt.Errorf("too many symlinks while resolving %q", path)
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("root %q must be absolute", path)
+	}
+	current := string(filepath.Separator)
+	for i, part := range strings.Split(path, string(filepath.Separator)) {
+		if i == 0 || part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			current = filepath.Dir(current)
+			continue
+		}
+		next := filepath.Join(current, part)
+		info, err := os.Lstat(next)
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			current = next
+			continue
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			target = current + string(filepath.Separator) + target
+		}
+		remaining := strings.Join(strings.Split(path, string(filepath.Separator))[i+1:], string(filepath.Separator))
+		if remaining != "" {
+			target += string(filepath.Separator) + remaining
+		}
+		return evalSymlinksPreservingTraversal(target, linksRemaining-1)
+	}
+	return filepath.Clean(current), nil
+}
