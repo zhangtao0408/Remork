@@ -144,11 +144,11 @@ For local-agent use on macOS, download the matching macOS client package:
 
 ```bash
 VERSION=v0.1.0
-curl -L -o remork \
+mkdir -p "$HOME/.local/bin"
+curl -L -o "$HOME/.local/bin/remork" \
   "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-darwin-arm64"
-chmod 0755 remork
-mkdir -p ~/bin
-mv remork ~/bin/remork
+chmod 0755 "$HOME/.local/bin/remork"
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 If a release asset is not available yet, build locally and use the generated

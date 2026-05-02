@@ -50,14 +50,16 @@ Go, npm, apt, brew, or internet access.
 ## Install the macOS client
 
 \`\`\`bash
-curl -L -o remork https://github.com/zhangtao0408/Remork/releases/download/$version/remork-darwin-arm64
-chmod 0755 remork
-mkdir -p ~/bin
-mv remork ~/bin/remork
+mkdir -p "\$HOME/.local/bin"
+curl -L -o "\$HOME/.local/bin/remork" https://github.com/zhangtao0408/Remork/releases/download/$version/remork-darwin-arm64
+chmod 0755 "\$HOME/.local/bin/remork"
+export PATH="\$HOME/.local/bin:\$PATH"
 remork version
 \`\`\`
 
 Use \`remork-darwin-amd64\` instead on Intel Macs.
+
+If a new terminal cannot find \`remork\`, add \`export PATH="\$HOME/.local/bin:\$PATH"\` to \`~/.zshrc\`.
 
 ## Install the server daemon
 

@@ -19,15 +19,21 @@ Download the macOS client and Linux server daemon from the GitHub release page:
 
 ```bash
 VERSION=v0.1.0
-curl -L -o remork \
+mkdir -p "$HOME/.local/bin"
+curl -L -o "$HOME/.local/bin/remork" \
   "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-darwin-arm64"
-chmod 0755 remork
-mkdir -p ~/bin
-mv remork ~/bin/remork
+chmod 0755 "$HOME/.local/bin/remork"
+export PATH="$HOME/.local/bin:$PATH"
 
 curl -L -o remorkd \
   "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remorkd-linux-arm64"
 chmod 0755 remorkd
+```
+
+If a new terminal cannot find `remork`, add this line to `~/.zshrc`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Copy the daemon to the remote host and start it:

@@ -16,15 +16,21 @@ Remork V1 面向可信 VPN 或内网环境。它支持可选的共享 bearer tok
 
 ```bash
 VERSION=v0.1.0
-curl -L -o remork \
+mkdir -p "$HOME/.local/bin"
+curl -L -o "$HOME/.local/bin/remork" \
   "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-darwin-arm64"
-chmod 0755 remork
-mkdir -p ~/bin
-mv remork ~/bin/remork
+chmod 0755 "$HOME/.local/bin/remork"
+export PATH="$HOME/.local/bin:$PATH"
 
 curl -L -o remorkd \
   "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remorkd-linux-arm64"
 chmod 0755 remorkd
+```
+
+如果新打开的终端仍然找不到 `remork`，把下面这一行加入 `~/.zshrc`：
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 把 daemon 拷贝到远端并启动：
