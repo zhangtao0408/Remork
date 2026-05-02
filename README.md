@@ -70,6 +70,11 @@ The daemon binary is copied to durable paths under the remote user's home
 directory. The remote server does not need Go installed and does not need
 internet access.
 
+During an executed install, Remork checks whether `remorkd` is already present
+on the remote host, reports the existing version when available, copies the new
+binary, verifies the copied binary version, and then verifies daemon `/status`
+when `--verify` is used.
+
 Use `linux-amd64` instead of `linux-arm64` for x86_64 servers. Repeat `--root`
 when one daemon should manage multiple base directories.
 
@@ -136,6 +141,9 @@ remork host list
 remork daemon status my-lab
 remork workspace
 ```
+
+Longer syncs print stage and operation progress unless `--quiet` or `--json` is
+used.
 
 ## Large Files
 

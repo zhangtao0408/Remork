@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"remork/internal/api"
+	"remork/internal/client"
 	"remork/internal/config"
 	"remork/internal/ops"
 )
@@ -20,8 +21,11 @@ type recordedCommand struct {
 }
 
 type fakeCommandRunner struct {
-	commands []recordedCommand
-	failAt   int
+	commands       []recordedCommand
+	outputCommands []recordedCommand
+	failAt         int
+	outputs        [][]byte
+	outputErrors   []error
 }
 
 func (f *fakeCommandRunner) Run(name string, args ...string) error {
@@ -30,6 +34,19 @@ func (f *fakeCommandRunner) Run(name string, args ...string) error {
 		return fmt.Errorf("command failed")
 	}
 	return nil
+}
+
+func (f *fakeCommandRunner) Output(name string, args ...string) ([]byte, error) {
+	f.outputCommands = append(f.outputCommands, recordedCommand{name: name, args: append([]string(nil), args...)})
+	idx := len(f.outputCommands) - 1
+	var out []byte
+	if idx < len(f.outputs) {
+		out = f.outputs[idx]
+	}
+	if idx < len(f.outputErrors) && f.outputErrors[idx] != nil {
+		return out, f.outputErrors[idx]
+	}
+	return out, nil
 }
 
 func TestDaemonDeployPlanWarnsForNonLoopbackNoToken(t *testing.T) {
@@ -91,6 +108,75 @@ func TestRunDaemonDeployExecuteRunsCommandsInOrder(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "daemon deploy executed") {
 		t.Fatalf("output should confirm execution, got:\n%s", out.String())
+	}
+}
+
+func TestRunDaemonDeployReportsRemoteBinaryStateAndChecksCopiedVersion(t *testing.T) {
+	var out bytes.Buffer
+	fake := &fakeCommandRunner{
+		outputs: [][]byte{
+			[]byte("remorkd v0.1.0\n"),
+			[]byte("remorkd v0.1.1.beta01\n"),
+		},
+	}
+
+	err := runDaemonDeploy(&out, daemonDeployOptions{
+		action:    "install",
+		hostName:  "lab",
+		sshTarget: "lab.example",
+		root:      "/data/project",
+		addr:      "127.0.0.1:17731",
+		remoteBin: ".local/bin/remorkd",
+		localBin:  "dist/remorkd-linux-arm64",
+		version:   "v0.1.1.beta01",
+		execute:   true,
+		yes:       true,
+		runner:    fake,
+	})
+	if err != nil {
+		t.Fatalf("runDaemonDeploy returned error: %v", err)
+	}
+	if len(fake.outputCommands) != 2 {
+		t.Fatalf("version checks = %d, want pre and post copy checks: %#v", len(fake.outputCommands), fake.outputCommands)
+	}
+	for _, want := range []string{
+		"remote binary: installed remorkd v0.1.0",
+		"will replace with v0.1.1.beta01",
+		"remote binary: installed remorkd v0.1.1.beta01",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output should contain %q, got:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestRunDaemonDeployRejectsCopiedVersionMismatch(t *testing.T) {
+	var out bytes.Buffer
+	fake := &fakeCommandRunner{
+		outputs: [][]byte{
+			[]byte("remorkd v0.1.0\n"),
+			[]byte("remorkd v0.1.0\n"),
+		},
+	}
+
+	err := runDaemonDeploy(&out, daemonDeployOptions{
+		action:    "install",
+		hostName:  "lab",
+		sshTarget: "lab.example",
+		root:      "/data/project",
+		addr:      "127.0.0.1:17731",
+		remoteBin: ".local/bin/remorkd",
+		localBin:  "dist/remorkd-linux-arm64",
+		version:   "v0.1.1.beta01",
+		execute:   true,
+		yes:       true,
+		runner:    fake,
+	})
+	if err == nil || !strings.Contains(err.Error(), "remote remorkd version mismatch after copy") || !strings.Contains(err.Error(), "want v0.1.1.beta01") {
+		t.Fatalf("runDaemonDeploy error = %v, want copied version mismatch", err)
+	}
+	if len(fake.commands) != 3 {
+		t.Fatalf("commands after mismatch = %d, want stop before start: %#v", len(fake.commands), fake.commands)
 	}
 }
 
@@ -413,6 +499,55 @@ func TestRunDaemonDeployVerifyRejectsUnadvertisedRoot(t *testing.T) {
 	}
 }
 
+func TestRunDaemonDeployVerifyRejectsDaemonVersionMismatch(t *testing.T) {
+	var out bytes.Buffer
+	probe := &recordingDaemonProbe{roots: []string{"/data"}, version: "v0.1.0"}
+	home := t.TempDir()
+
+	err := runDaemonDeploy(&out, daemonDeployOptions{
+		action:         "install",
+		hostName:       "lab",
+		sshTarget:      "lab.example",
+		root:           "/data/project",
+		addr:           "127.0.0.1:17731",
+		remoteBin:      ".local/bin/remorkd",
+		localBin:       "dist/remorkd-linux-arm64",
+		url:            "http://lab.example:17731",
+		verify:         true,
+		execute:        true,
+		yes:            true,
+		store:          config.NewStore(filepath.Join(home, ".remork")),
+		storeReady:     true,
+		probe:          probe,
+		verifyTimeout:  5 * time.Millisecond,
+		verifyInterval: time.Millisecond,
+		runner:         &fakeCommandRunner{outputs: [][]byte{[]byte("remorkd v0.1.1.beta01\n"), []byte("remorkd v0.1.1.beta01\n")}},
+		version:        "v0.1.1.beta01",
+	})
+	if err == nil || !strings.Contains(err.Error(), "daemon version mismatch") || !strings.Contains(err.Error(), "got v0.1.0") || !strings.Contains(err.Error(), "want v0.1.1.beta01") {
+		t.Fatalf("runDaemonDeploy error = %v, want daemon version mismatch", err)
+	}
+}
+
+func TestExplainDaemonStatusErrorGivesActionableReasons(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "auth", err: &client.HTTPError{StatusCode: 401, Body: "unauthorized"}, want: "auth failed"},
+		{name: "not remorkd endpoint", err: &client.HTTPError{StatusCode: 404, Body: "not found"}, want: "/status was not found"},
+		{name: "connection refused", err: fmt.Errorf("dial tcp 127.0.0.1:17731: connect: connection refused"), want: "not listening"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := explainDaemonStatusError(tt.err); !strings.Contains(got, tt.want) {
+				t.Fatalf("explainDaemonStatusError() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunDaemonDeployVerifyRetriesUntilReady(t *testing.T) {
 	var out bytes.Buffer
 	probe := &recordingDaemonProbe{roots: []string{"/data"}, statusErrorsBeforeSuccess: 2}
@@ -579,6 +714,7 @@ type recordingDaemonProbe struct {
 	statusCalls               int
 	statusHost                config.Host
 	roots                     []string
+	version                   string
 	statusErrorsBeforeSuccess int
 }
 
@@ -588,7 +724,7 @@ func (p *recordingDaemonProbe) Status(ctx context.Context, host config.Host, cli
 	if p.statusCalls <= p.statusErrorsBeforeSuccess {
 		return api.StatusResponse{}, fmt.Errorf("status not ready")
 	}
-	return api.StatusResponse{Roots: p.roots}, nil
+	return api.StatusResponse{Roots: p.roots, Version: p.version}, nil
 }
 
 func (p *recordingDaemonProbe) Manifest(ctx context.Context, host config.Host, cfg config.Config, root string) (api.ManifestResponse, error) {

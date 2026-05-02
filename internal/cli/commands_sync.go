@@ -7,6 +7,7 @@ import (
 
 	"remork/internal/auth"
 	"remork/internal/output"
+	"remork/internal/progress"
 	"remork/internal/state"
 	"remork/internal/syncer"
 	"remork/internal/workspace"
@@ -53,6 +54,7 @@ func addSyncCommand(root *cobra.Command, opts Options) {
 				LocalRoot:    localRoot,
 				WorkspaceRef: workspaceRef,
 				RemoteRoot:   binding.RemoteRoot,
+				Progress:     progress.NewTextReporter(cmd.ErrOrStderr(), progress.Options{Quiet: quiet || jsonOut}),
 			})
 			result, err := runner.Sync(cmd.Context(), syncer.SyncOptions{
 				TargetPath: targetPath,

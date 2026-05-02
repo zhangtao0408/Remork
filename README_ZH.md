@@ -65,6 +65,10 @@ remork daemon install my-lab \
 daemon 二进制会被复制到远端用户 home 下的持久路径。远端不需要安装 Go，也不需要
 能访问互联网。
 
+执行安装时，Remork 会检查远端是否已经存在 `remorkd`，在可用时报告已有版本，复制
+新二进制后验证远端二进制版本；如果使用了 `--verify`，还会继续校验 daemon
+`/status` 的版本和 allowed roots。
+
 x86_64 服务器把 `linux-arm64` 换成 `linux-amd64`。如果一个 daemon 需要管理多个
 基础目录，可以重复传 `--root`。
 
@@ -131,6 +135,8 @@ remork host list
 remork daemon status my-lab
 remork workspace
 ```
+
+耗时较长的 `sync` 会显示阶段和操作进度；`--quiet` 或 `--json` 会关闭这些文本提示。
 
 ## 大文件
 

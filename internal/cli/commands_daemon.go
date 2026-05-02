@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"runtime"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"remork/internal/auth"
 	"remork/internal/client"
 	"remork/internal/config"
+	"remork/internal/output"
 	"remork/internal/safety"
 )
 
@@ -83,6 +86,7 @@ func newDaemonDeployCommand(action string, opts Options) *cobra.Command {
 		addr:      "0.0.0.0:17731",
 		remoteBin: ".local/bin/remorkd",
 		probe:     opts.DaemonProbe,
+		version:   opts.Version,
 	}
 	cmd := &cobra.Command{
 		Use:   action + " HOST --root /absolute/allowed/root [--root /another/root]",
@@ -170,6 +174,7 @@ type daemonDeployOptions struct {
 	verifyTimeout  time.Duration
 	verifyInterval time.Duration
 	runner         commandRunner
+	version        string
 }
 
 func loadConfiguredHost(opts Options, name string) (config.Host, bool, error) {
@@ -193,7 +198,7 @@ func printDaemonDeployPlan(out interface{ Write([]byte) (int, error) }, deploy d
 	startCmd := remoteStartCommand(deploy)
 	fmt.Fprintf(out, "remorkd %s plan for %s\n\n", deploy.action, deploy.hostName)
 	if insecureNoTokenNonLoopbackAddr(deploy.addr, deploy.tokenFile != "") {
-		fmt.Fprintln(out, "WARNING: this plan starts remorkd on a non-loopback or wildcard address without authentication.")
+		fmt.Fprintf(out, "%s this plan starts remorkd on a non-loopback or wildcard address without authentication.\n", output.Warning(out, "WARNING:"))
 		fmt.Fprintln(out, "Anyone who can reach that address can use apply/file access and writes, remote command execution, and shell endpoints.")
 		fmt.Fprintln(out, "Use --token-file for remorkd and configure the CLI with remork host add --token-env before using this on shared VPNs or multi-user networks.")
 		fmt.Fprintln(out)
@@ -233,17 +238,40 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 	if remote == "" {
 		remote = deploy.hostName
 	}
-	if err := runner.Run("ssh", remote, remotePrepareCommand(deploy)); err != nil {
+
+	if deploy.version != "" {
+		state, err := remoteBinaryState(runner, remote, deploy)
+		if err != nil {
+			return fmt.Errorf("remote remorkd preflight failed on %s: %w", remote, err)
+		}
+		printRemoteBinaryState(out, state, deploy.version, "before")
+	}
+
+	if err := runDeployStep(out, runner, "prepare remote directories", "ssh", remote, remotePrepareCommand(deploy)); err != nil {
 		return err
 	}
-	if err := runner.Run("scp", deploy.localBin, remote+":"+remoteSCPDestinationPath(deploy.remoteBin)); err != nil {
+	if err := runDeployStep(out, runner, "copy remorkd binary", "scp", deploy.localBin, remote+":"+remoteSCPDestinationPath(deploy.remoteBin)); err != nil {
 		return err
 	}
-	if err := runner.Run("ssh", remote, remoteChmodCommand(deploy.remoteBin)); err != nil {
+	if err := runDeployStep(out, runner, "mark remorkd executable", "ssh", remote, remoteChmodCommand(deploy.remoteBin)); err != nil {
 		return err
+	}
+	if want := expectedDaemonVersion(deploy.version); want != "" {
+		state, err := remoteBinaryState(runner, remote, deploy)
+		if err != nil {
+			return fmt.Errorf("remote remorkd version check after copy failed on %s: %w", remote, err)
+		}
+		printRemoteBinaryState(out, state, deploy.version, "after")
+		if !state.Installed || state.Version != want {
+			got := state.Version
+			if got == "" {
+				got = "not installed"
+			}
+			return fmt.Errorf("remote remorkd version mismatch after copy: got %s, want %s", got, want)
+		}
 	}
 	if startCmd := remoteStartCommand(deploy); startCmd != "" {
-		if err := runner.Run("ssh", remote, startCmd); err != nil {
+		if err := runDeployStep(out, runner, "start remorkd daemon", "ssh", remote, startCmd); err != nil {
 			return err
 		}
 	}
@@ -251,7 +279,7 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 		if err := saveDeployHost(deploy); err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "host %s configured: %s\n", deploy.hostName, deploy.url)
+		fmt.Fprintf(out, "%s host %s configured: %s\n", output.Success(out, "ok"), deploy.hostName, deploy.url)
 	}
 	if deploy.verify {
 		ctx := deploy.ctx
@@ -261,10 +289,101 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 		if err := verifyDeployHostReady(ctx, deploy); err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "daemon status verified for %s\n", deploy.hostName)
+		fmt.Fprintf(out, "%s daemon status verified for %s\n", output.Success(out, "ok"), deploy.hostName)
 	}
-	fmt.Fprintln(out, "daemon deploy executed")
+	fmt.Fprintf(out, "%s daemon deploy executed\n", output.Success(out, "ok"))
 	return nil
+}
+
+func runDeployStep(out interface{ Write([]byte) (int, error) }, runner commandRunner, label, name string, args ...string) error {
+	fmt.Fprintf(out, "%s %s...\n", output.Info(out, "->"), label)
+	if err := runner.Run(name, args...); err != nil {
+		return fmt.Errorf("%s failed: %w", label, err)
+	}
+	fmt.Fprintf(out, "   %s %s\n", output.Success(out, "ok"), label)
+	return nil
+}
+
+type remoteBinaryInfo struct {
+	Installed bool
+	Path      string
+	Line      string
+	Version   string
+}
+
+func remoteBinaryState(runner commandRunner, remote string, deploy daemonDeployOptions) (remoteBinaryInfo, error) {
+	out, err := runner.Output("ssh", remote, remoteBinaryProbeCommand(deploy.remoteBin))
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return remoteBinaryInfo{}, fmt.Errorf("%w: %s", err, msg)
+		}
+		return remoteBinaryInfo{}, err
+	}
+	return parseRemoteBinaryProbeOutput(string(out)), nil
+}
+
+func remoteBinaryProbeCommand(remoteBin string) string {
+	path := remotePathShellArg(remoteCommandPath(remoteBin))
+	return "if [ -x " + path + " ]; then printf 'installed\\t'; " + path + " --version; else printf 'missing\\t%s\\n' " + path + "; fi"
+}
+
+func parseRemoteBinaryProbeOutput(out string) remoteBinaryInfo {
+	line := strings.TrimSpace(out)
+	info := remoteBinaryInfo{Line: line}
+	if rest, ok := strings.CutPrefix(line, "installed\t"); ok {
+		info.Installed = true
+		info.Line = strings.TrimSpace(rest)
+		info.Version = parseRemorkdVersion(rest)
+		return info
+	}
+	if version := parseRemorkdVersion(line); version != "" {
+		info.Installed = true
+		info.Version = version
+		return info
+	}
+	if rest, ok := strings.CutPrefix(line, "missing\t"); ok {
+		info.Path = strings.TrimSpace(rest)
+	}
+	return info
+}
+
+func parseRemorkdVersion(line string) string {
+	line = strings.TrimSpace(line)
+	if rest, ok := strings.CutPrefix(line, "remorkd "); ok {
+		return strings.TrimSpace(rest)
+	}
+	return ""
+}
+
+func printRemoteBinaryState(out interface{ Write([]byte) (int, error) }, state remoteBinaryInfo, expected, phase string) {
+	if !state.Installed {
+		if state.Path == "" {
+			fmt.Fprintln(out, "remote binary: not installed")
+			return
+		}
+		fmt.Fprintf(out, "remote binary: not installed at %s\n", state.Path)
+		return
+	}
+	line := state.Line
+	if line == "" {
+		line = "installed but version is unknown"
+	}
+	if phase == "before" {
+		if want := expectedDaemonVersion(expected); want != "" && state.Version != "" && state.Version != want {
+			fmt.Fprintf(out, "%s remote binary: installed %s (will replace with %s)\n", output.Warning(out, "warn"), line, want)
+			return
+		}
+	}
+	fmt.Fprintf(out, "%s remote binary: installed %s\n", output.Success(out, "ok"), line)
+}
+
+func expectedDaemonVersion(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" || version == "dev" {
+		return ""
+	}
+	return version
 }
 
 func remotePrepareCommand(deploy daemonDeployOptions) string {
@@ -408,7 +527,15 @@ func verifyDeployHost(ctx context.Context, deploy daemonDeployOptions) error {
 	}
 	status, err := probe.Status(ctx, host, clientID)
 	if err != nil {
-		return err
+		return fmt.Errorf("status check failed for %s: %s", host.URL, explainDaemonStatusError(err))
+	}
+	if want := expectedDaemonVersion(deploy.version); want != "" {
+		if status.Version == "" {
+			return fmt.Errorf("daemon version mismatch at %s: got unknown, want %s", host.URL, want)
+		}
+		if status.Version != want {
+			return fmt.Errorf("daemon version mismatch at %s: got %s, want %s", host.URL, status.Version, want)
+		}
 	}
 	for _, root := range deployAllowedRoots(deploy) {
 		ok, err := remoteRootAdvertised(status.Roots, root)
@@ -420,6 +547,40 @@ func verifyDeployHost(ctx context.Context, deploy daemonDeployOptions) error {
 		}
 	}
 	return nil
+}
+
+func explainDaemonStatusError(err error) string {
+	var httpErr *client.HTTPError
+	if errors.As(err, &httpErr) {
+		switch httpErr.StatusCode {
+		case 401, 403:
+			return fmt.Sprintf("auth failed with HTTP %d; check --token-file and --token-env", httpErr.StatusCode)
+		case 404:
+			return "daemon URL is reachable but /status was not found; check the URL and port"
+		default:
+			body := strings.TrimSpace(httpErr.Body)
+			if body == "" {
+				body = "empty response body"
+			}
+			return fmt.Sprintf("daemon returned HTTP %d: %s", httpErr.StatusCode, body)
+		}
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "connection timed out; check VPN reachability, host, firewall, and daemon port"
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "connection refused"):
+		return "connection refused; remorkd is not listening on that host/port or the port is wrong"
+	case strings.Contains(lower, "no such host"):
+		return "host name could not be resolved; check the daemon URL host"
+	case strings.Contains(lower, "i/o timeout"):
+		return "connection timed out; check VPN reachability, host, firewall, and daemon port"
+	default:
+		return msg
+	}
 }
 
 func deployAllowedRoots(deploy daemonDeployOptions) []string {

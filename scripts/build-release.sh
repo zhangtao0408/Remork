@@ -61,6 +61,8 @@ If a new terminal cannot find \`remork\`, add \`export PATH="\$HOME/.local/bin:\
 Install the daemon from the client machine. This copies the prebuilt daemon over
 SSH, stores it under the remote user's \`~/.local/bin/remorkd\`, stores pid/log
 files under \`~/.remork\`, writes the local host config, and verifies the daemon.
+The install command reports any existing remote \`remorkd\` version, verifies the
+copied binary version, and checks daemon \`/status\` when \`--verify\` is used.
 
 \`\`\`bash
 HOST_ALIAS=my-server
@@ -105,6 +107,9 @@ remork status
 remork apply
 remork log --limit 5
 \`\`\`
+
+\`remork sync\` prints stage and operation progress unless \`--quiet\` or
+\`--json\` is used.
 
 Read the full usage guide in the repository README for this tag:
 https://github.com/zhangtao0408/Remork/blob/$version/README.md

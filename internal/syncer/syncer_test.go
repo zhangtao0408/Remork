@@ -72,6 +72,43 @@ func TestSyncMaterializesSmallFilesAndLargeMeta(t *testing.T) {
 	}
 }
 
+func TestSyncReportsStagesAndOperationProgress(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(remote, "src", "main.txt"), []byte("hey"))
+	mustWriteFile(t, filepath.Join(remote, "README.md"), []byte("readme"))
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}}).Handler())
+	defer srv.Close()
+
+	reporter := &recordingProgressReporter{}
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   state.NewStore(filepath.Join(local, ".remork", "state")),
+		LocalRoot:    local,
+		WorkspaceRef: "lab:" + remote,
+		RemoteRoot:   remote,
+		Progress:     reporter,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	for _, want := range []string{
+		"sync: loading local state",
+		"sync: scanning local changes",
+		"sync: fetching remote manifest",
+		"sync: applying remote changes",
+	} {
+		if !reporter.hasStart(want) {
+			t.Fatalf("missing progress stage %q in %#v", want, reporter.events)
+		}
+	}
+	if reporter.advances == 0 {
+		t.Fatalf("expected operation progress advances, got %#v", reporter.events)
+	}
+}
+
 func TestStatusReportsRemoteFileReplacedByDirectory(t *testing.T) {
 	remote := t.TempDir()
 	local := t.TempDir()
@@ -976,6 +1013,40 @@ func containsSkipped(values []SkippedChange, want string) bool {
 func containsChange(values []apply.Change, want string) bool {
 	for _, value := range values {
 		if value.Path == want {
+			return true
+		}
+	}
+	return false
+}
+
+type progressEvent struct {
+	kind  string
+	label string
+	total int64
+	delta int64
+}
+
+type recordingProgressReporter struct {
+	events   []progressEvent
+	advances int
+}
+
+func (r *recordingProgressReporter) Start(label string, total int64) {
+	r.events = append(r.events, progressEvent{kind: "start", label: label, total: total})
+}
+
+func (r *recordingProgressReporter) Advance(delta int64) {
+	r.advances++
+	r.events = append(r.events, progressEvent{kind: "advance", delta: delta})
+}
+
+func (r *recordingProgressReporter) Done() {
+	r.events = append(r.events, progressEvent{kind: "done"})
+}
+
+func (r *recordingProgressReporter) hasStart(label string) bool {
+	for _, ev := range r.events {
+		if ev.kind == "start" && ev.label == label {
 			return true
 		}
 	}

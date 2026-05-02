@@ -55,6 +55,12 @@ remork daemon install HOST \
 Repeat `--root` if one daemon should advertise multiple independent allowed base
 roots. Every workspace root must be inside one advertised allowed root.
 
+An executed install reports whether a remote `remorkd` binary already exists,
+shows its version when available, verifies the copied binary version, and then
+checks daemon `/status` when `--verify` is used. Treat version mismatch,
+connection refused, timeout, auth failure, or missing advertised roots as setup
+blockers, not as normal warnings.
+
 Then bind a local working copy to the workspace root:
 
 ```bash
@@ -81,6 +87,10 @@ Before reading or editing remote-backed files:
 remork sync
 remork status
 ```
+
+`remork sync` prints stage and operation progress unless `--quiet` or `--json`
+is used. If it is slow, use those progress lines to distinguish manifest fetch,
+local scan, file transfer, and state save delays.
 
 After editing locally:
 

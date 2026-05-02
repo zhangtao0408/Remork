@@ -178,24 +178,30 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
+	r.progressStart("sync: loading local state", 1)
 	snap, err := r.loadSnapshot()
 	if err != nil {
 		return Result{}, err
 	}
+	r.progressDone()
 
+	r.progressStart("sync: scanning local changes", 1)
 	dirty, err := state.DetectDirty(r.opts.LocalRoot, snap)
 	if err != nil {
 		return Result{}, err
 	}
 	dirty = filterDirtyLocalOnly(dirty)
+	r.progressDone()
 	target := opts.TargetPath
 	if target == "" {
 		target = "."
 	}
+	r.progressStart("sync: fetching remote manifest", 1)
 	man, err := r.opts.Client.ManifestContext(ctx, r.opts.RemoteRoot, target)
 	if err != nil {
 		return Result{}, err
 	}
+	r.progressDone()
 	filteredSnap := filterSnapshotLocalOnly(snap)
 	plan := planner.PlanSync(normalizePulledLargeManifest(filterManifestLocalOnly(man), filteredSnap), filteredSnap, planner.Options{
 		WorkspaceRef: r.opts.WorkspaceRef,
@@ -206,6 +212,7 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 	})
 
 	var result Result
+	r.progressStart("sync: applying remote changes", int64(len(plan.Operations)))
 	for _, op := range plan.Operations {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -268,10 +275,14 @@ func (r Runner) Sync(ctx context.Context, opts SyncOptions) (Result, error) {
 		case planner.OpSkip:
 			result.Skipped++
 		}
+		r.progressAdvance(1)
 	}
+	r.progressDone()
+	r.progressStart("sync: saving local state", 1)
 	if err := r.opts.StateStore.Save(snap); err != nil {
 		return result, err
 	}
+	r.progressDone()
 	return result, nil
 }
 
@@ -538,6 +549,27 @@ func (r Runner) writeLargeMeta(op planner.Operation, snap *state.Snapshot) error
 		Large:    true,
 	}
 	return nil
+}
+
+func (r Runner) progressStart(label string, total int64) {
+	if r.opts.Progress == nil {
+		return
+	}
+	r.opts.Progress.Start(label, total)
+}
+
+func (r Runner) progressAdvance(delta int64) {
+	if r.opts.Progress == nil {
+		return
+	}
+	r.opts.Progress.Advance(delta)
+}
+
+func (r Runner) progressDone() {
+	if r.opts.Progress == nil {
+		return
+	}
+	r.opts.Progress.Done()
 }
 
 func removeIfExists(path string) error {
