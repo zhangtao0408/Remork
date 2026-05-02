@@ -12,16 +12,26 @@ Remork V1 面向可信 VPN 或内网环境。它支持可选的共享 bearer tok
 
 ## 五分钟上手
 
-先在本机打包 release 二进制：
+先从 GitHub Release 下载本机要用的 macOS 客户端和远端要用的 Linux daemon：
 
 ```bash
-scripts/build-release.sh dev
+VERSION=v0.1.0
+curl -L -o remork-macos.tar.gz \
+  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-${VERSION}-darwin-arm64.tar.gz"
+mkdir -p remork-macos ~/bin
+tar -xzf remork-macos.tar.gz -C remork-macos
+install -m 0755 remork-macos/remork ~/bin/remork
+
+curl -L -o remorkd-linux-arm64.tar.gz \
+  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remorkd-${VERSION}-linux-arm64.tar.gz"
+mkdir -p remorkd-linux-arm64
+tar -xzf remorkd-linux-arm64.tar.gz -C remorkd-linux-arm64
 ```
 
 把 daemon 拷贝到远端并启动：
 
 ```bash
-scp dist/remorkd-linux-arm64 lab-a:/tmp/remorkd
+scp remorkd-linux-arm64/remorkd lab-a:/tmp/remorkd
 ssh lab-a 'chmod 0755 /tmp/remorkd'
 ssh lab-a 'nohup /tmp/remorkd --root /data/project-a --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
 ```
@@ -31,11 +41,11 @@ ssh lab-a 'nohup /tmp/remorkd --root /data/project-a --addr 0.0.0.0:17731 </dev/
 在本机配置 CLI：
 
 ```bash
-dist/remork-darwin-arm64 host add lab-a --url http://10.0.0.12:17731
+remork host add lab-a --url http://10.0.0.12:17731
 mkdir project-a && cd project-a
-../dist/remork-darwin-arm64 init lab-a:/data/project-a
-../dist/remork-darwin-arm64 sync
-../dist/remork-darwin-arm64 status
+remork init lab-a:/data/project-a
+remork sync
+remork status
 ```
 
 之后你可以像普通本地目录一样编辑文件。编辑完成后，先看 diff，再明确应用到远端：
@@ -361,9 +371,27 @@ remork daemon install lab-a --root /data/project-a --ssh lab-a --platform linux-
 
 打印替换远端 daemon 二进制的命令。如果提供 `--root`，也会包含启动参数。加上 `--execute --yes` 后会直接执行。
 
-## 离线部署 daemon
+## Release 下载和离线部署 daemon
 
-Release 打包会生成这些文件：
+GitHub Release 会提供大多数用户需要的包：
+
+```text
+remork-v0.1.0-darwin-arm64.tar.gz     # macOS 客户端，Apple Silicon
+remork-v0.1.0-darwin-amd64.tar.gz     # macOS 客户端，Intel
+remorkd-v0.1.0-linux-arm64.tar.gz     # Linux 服务端 daemon，arm64
+remorkd-v0.1.0-linux-amd64.tar.gz     # Linux 服务端 daemon，amd64
+checksums.txt
+```
+
+本机下载匹配的 macOS client 包，远端下载或拷贝匹配的 Linux daemon 包即可。daemon 包里只包含 `remorkd` 运行时二进制、`remorkd.example.toml` 和一份简短 release README。远端服务器不需要安装 Go，也不需要联网。
+
+如果你需要在本地自行构建 release：
+
+```bash
+scripts/build-release.sh v0.1.0
+```
+
+本地构建还会在 `dist/` 下留下原始交叉编译二进制，方便测试和手动部署：
 
 ```text
 dist/remork-darwin-arm64
@@ -377,12 +405,17 @@ dist/remorkd-linux-amd64
 dist/remorkd.example.toml
 dist/checksums.txt
 dist/README-release.md
+dist/RELEASE_NOTES.md
+dist/remork-v0.1.0-darwin-arm64.tar.gz
+dist/remork-v0.1.0-darwin-amd64.tar.gz
+dist/remorkd-v0.1.0-linux-arm64.tar.gz
+dist/remorkd-v0.1.0-linux-amd64.tar.gz
 ```
 
 例如远端是 Linux arm64：
 
 ```bash
-scripts/build-release.sh dev
+scripts/build-release.sh v0.1.0
 remork daemon install lab-a --root /data/project-a --ssh lab-a --platform linux-arm64
 ```
 

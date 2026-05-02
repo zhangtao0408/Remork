@@ -128,17 +128,45 @@ The remote operation log lives under:
 
 ## Offline Daemon Deployment
 
-The remote server only needs a prebuilt `remorkd` binary:
+Prefer the published release assets when they are available:
 
 ```bash
-scripts/build-release.sh dev
-scp dist/remorkd-linux-arm64 HOST:/tmp/remorkd
+VERSION=v0.1.0
+curl -L -o remorkd-linux-arm64.tar.gz \
+  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remorkd-${VERSION}-linux-arm64.tar.gz"
+mkdir -p remorkd-linux-arm64
+tar -xzf remorkd-linux-arm64.tar.gz -C remorkd-linux-arm64
+scp remorkd-linux-arm64/remorkd HOST:/tmp/remorkd
 ssh HOST 'chmod +x /tmp/remorkd'
 ssh HOST 'nohup /tmp/remorkd --root /remote/root --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
 ```
 
+For local-agent use on macOS, download the matching macOS client package:
+
+```bash
+VERSION=v0.1.0
+curl -L -o remork-macos.tar.gz \
+  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-${VERSION}-darwin-arm64.tar.gz"
+mkdir -p remork-macos ~/bin
+tar -xzf remork-macos.tar.gz -C remork-macos
+install -m 0755 remork-macos/remork ~/bin/remork
+```
+
+If a release asset is not available yet, build locally and use the generated
+`dist/` binaries:
+
+```bash
+scripts/build-release.sh v0.1.0
+scp dist/remorkd-linux-arm64 HOST:/tmp/remorkd
+```
+
 Do not install Go, npm, apt, brew, or internet-dependent dependencies on the
-remote host just to run Remork.
+remote host just to run Remork. The remote server only needs the extracted
+`remorkd` binary.
+
+On shared VPNs or multi-user networks, start `remorkd` with `--token-file` and
+configure the local host with `remork host add --token-env`. Do not expose an
+unauthenticated `0.0.0.0:17731` daemon outside a trusted private network.
 
 ## Completion Checklist
 

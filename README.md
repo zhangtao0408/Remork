@@ -15,16 +15,26 @@ exposed directly to the public internet.
 
 ## Five-minute workflow
 
-Build release binaries locally:
+Download the macOS client and Linux server daemon from the GitHub release page:
 
 ```bash
-scripts/build-release.sh dev
+VERSION=v0.1.0
+curl -L -o remork-macos.tar.gz \
+  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-${VERSION}-darwin-arm64.tar.gz"
+mkdir -p remork-macos ~/bin
+tar -xzf remork-macos.tar.gz -C remork-macos
+install -m 0755 remork-macos/remork ~/bin/remork
+
+curl -L -o remorkd-linux-arm64.tar.gz \
+  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remorkd-${VERSION}-linux-arm64.tar.gz"
+mkdir -p remorkd-linux-arm64
+tar -xzf remorkd-linux-arm64.tar.gz -C remorkd-linux-arm64
 ```
 
 Copy the daemon to the remote host and start it:
 
 ```bash
-scp dist/remorkd-linux-arm64 lab-a:/tmp/remorkd
+scp remorkd-linux-arm64/remorkd lab-a:/tmp/remorkd
 ssh lab-a 'chmod 0755 /tmp/remorkd'
 ssh lab-a 'nohup /tmp/remorkd --root /data/project-a --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
 ```
@@ -36,11 +46,11 @@ with `--token-file` and configure the CLI with `remork host add --token-env`.
 Configure the local CLI:
 
 ```bash
-dist/remork-darwin-arm64 host add lab-a --url http://10.0.0.12:17731
+remork host add lab-a --url http://10.0.0.12:17731
 mkdir project-a && cd project-a
-../dist/remork-darwin-arm64 init lab-a:/data/project-a
-../dist/remork-darwin-arm64 sync
-../dist/remork-darwin-arm64 status
+remork init lab-a:/data/project-a
+remork sync
+remork status
 ```
 
 Edit files locally, review the diff, then apply:
@@ -347,9 +357,31 @@ Prints exact commands for replacing the remote daemon binary. Start flags are
 included when `--root` is provided. Add `--execute --yes` to run the generated
 commands.
 
-## Offline daemon deployment
+## Release downloads and offline daemon deployment
 
-Release packaging creates these files:
+GitHub releases provide the packages most users need:
+
+```text
+remork-v0.1.0-darwin-arm64.tar.gz     # macOS client, Apple Silicon
+remork-v0.1.0-darwin-amd64.tar.gz     # macOS client, Intel
+remorkd-v0.1.0-linux-arm64.tar.gz     # Linux server daemon, arm64
+remorkd-v0.1.0-linux-amd64.tar.gz     # Linux server daemon, amd64
+checksums.txt
+```
+
+Pick the macOS client package for your local machine and the Linux daemon
+package for the remote server. The daemon package contains only the `remorkd`
+runtime binary, `remorkd.example.toml`, and a short release README. The remote
+server does not need Go or internet access.
+
+If you need to build a release locally, run:
+
+```bash
+scripts/build-release.sh v0.1.0
+```
+
+The local build also leaves raw cross-compiled binaries in `dist/` for testing
+and manual deployment:
 
 ```text
 dist/remork-darwin-arm64
@@ -363,12 +395,17 @@ dist/remorkd-linux-amd64
 dist/remorkd.example.toml
 dist/checksums.txt
 dist/README-release.md
+dist/RELEASE_NOTES.md
+dist/remork-v0.1.0-darwin-arm64.tar.gz
+dist/remork-v0.1.0-darwin-amd64.tar.gz
+dist/remorkd-v0.1.0-linux-arm64.tar.gz
+dist/remorkd-v0.1.0-linux-amd64.tar.gz
 ```
 
 For a Linux arm64 remote:
 
 ```bash
-scripts/build-release.sh dev
+scripts/build-release.sh v0.1.0
 remork daemon install lab-a --root /data/project-a --ssh lab-a --platform linux-arm64
 ```
 
