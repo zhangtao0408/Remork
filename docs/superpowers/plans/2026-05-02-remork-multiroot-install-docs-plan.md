@@ -17,15 +17,15 @@
 - `remorkd` currently checks every API request root with exact string equality in `internal/daemon/server.go`.
 - `remorkd` operation log stores are pre-created only for the exact startup roots, so arbitrary child workspace roots also require dynamic operation store resolution.
 - `remork daemon install` exists, but it defaults to `/tmp/remorkd`, `/tmp/remorkd.log`, and `/tmp/remorkd.pid`, which is not a durable product install path.
-- The README uses `lab-a`, `project-a`, `/data/project-a`, and `http://10.0.0.12:17731` without clearly defining which value is a local alias, an SSH target, a daemon HTTP URL, a daemon allowed root, or a workspace root.
+- The README uses `lab-a`, `project-a`, `/data/project-a`, and `http://remork-daemon.example.internal:17731` without clearly defining which value is a local alias, an SSH target, a daemon HTTP URL, a daemon allowed root, or a workspace root.
 
 ## Target User Model
 
-- **Remork host:** A local alias for one remote daemon endpoint, for example `z00879328_docker_2.7`.
-- **SSH target:** How the installer copies and starts `remorkd`, for example `z00879328_docker_2.7` or `user@175.100.2.7`.
-- **Daemon URL:** How local Remork talks to the daemon after install, for example `http://175.100.2.7:17731`. This is HTTP, not SSH.
-- **Allowed root:** The server-side boundary that `remorkd` is allowed to serve, for example `/home/z00879328`.
-- **Workspace root:** The actual project directory bound to a local working copy, for example `/home/z00879328/11_Wan22_Adapt`.
+- **Remork host:** A local alias for one remote daemon endpoint, for example `remork-host-a`.
+- **SSH target:** How the installer copies and starts `remorkd`, for example `remork-host-a` or `user@remork-daemon-a.example.internal`.
+- **Daemon URL:** How local Remork talks to the daemon after install, for example `http://remork-daemon-a.example.internal:17731`. This is HTTP, not SSH.
+- **Allowed root:** The server-side boundary that `remorkd` is allowed to serve, for example `/home/me`.
+- **Workspace root:** The actual project directory bound to a local working copy, for example `/home/me/project`.
 - **Local working copy:** The local folder where the human or Agent edits files, for example `~/remork/Wan22_Adapt`.
 
 ## Files
@@ -60,14 +60,14 @@ Add tests that define the intended semantics:
 
 ```go
 func TestContainsAllowsExactAndChildren(t *testing.T) {
-	allowed, err := Normalize("/home/z00879328/")
+	allowed, err := Normalize("/home/me/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, candidate := range []string{
-		"/home/z00879328",
-		"/home/z00879328/11_Wan22_Adapt",
-		"/home/z00879328/projects/a",
+		"/home/me",
+		"/home/me/project",
+		"/home/me/projects/a",
 	} {
 		ok, err := Contains([]Root{allowed}, candidate)
 		if err != nil {
@@ -80,14 +80,14 @@ func TestContainsAllowsExactAndChildren(t *testing.T) {
 }
 
 func TestContainsRejectsSiblingPrefixAndRelativePaths(t *testing.T) {
-	allowed, err := Normalize("/home/z00879328")
+	allowed, err := Normalize("/home/me")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, candidate := range []string{
-		"/home/z00879328_other",
-		"/home/z00879328/../root",
-		"home/z00879328",
+		"/home/me_other",
+		"/home/me/../root",
+		"home/me",
 		"",
 	} {
 		ok, err := Contains([]Root{allowed}, candidate)
@@ -190,7 +190,7 @@ Add tests:
 ```go
 func TestManifestAllowsChildWorkspaceUnderAllowedRoot(t *testing.T) {
 	base := t.TempDir()
-	child := filepath.Join(base, "11_Wan22_Adapt")
+	child := filepath.Join(base, "project")
 	mustWrite(t, filepath.Join(child, "README.md"), []byte("hello"))
 	srv := httptest.NewServer(NewServer(Config{Roots: []string{base}}).Handler())
 	defer srv.Close()
@@ -313,12 +313,12 @@ func TestInitAcceptsWorkspaceUnderAdvertisedParentRoot(t *testing.T) {
 		Version:     "test",
 		HomeDir:     home,
 		WorkingDir:  local,
-		DaemonProbe: fakeDaemonProbe{Roots: []string{"/home/z00879328"}},
+		DaemonProbe: fakeDaemonProbe{Roots: []string{"/home/me"}},
 	})
-	if _, err := executeCommand(cmd, "host", "add", "remote", "--url", "http://10.0.0.12:17731"); err != nil {
+	if _, err := executeCommand(cmd, "host", "add", "remote", "--url", "http://remork-daemon.example.internal:17731"); err != nil {
 		t.Fatalf("host add: %v", err)
 	}
-	if _, err := executeCommand(cmd, "init", "remote:/home/z00879328/11_Wan22_Adapt"); err != nil {
+	if _, err := executeCommand(cmd, "init", "remote:/home/me/project"); err != nil {
 		t.Fatalf("init should accept child workspace: %v", err)
 	}
 }
@@ -330,12 +330,12 @@ func TestInitRejectsWorkspaceSiblingOfAdvertisedRoot(t *testing.T) {
 		Version:     "test",
 		HomeDir:     home,
 		WorkingDir:  local,
-		DaemonProbe: fakeDaemonProbe{Roots: []string{"/home/z00879328"}},
+		DaemonProbe: fakeDaemonProbe{Roots: []string{"/home/me"}},
 	})
-	if _, err := executeCommand(cmd, "host", "add", "remote", "--url", "http://10.0.0.12:17731"); err != nil {
+	if _, err := executeCommand(cmd, "host", "add", "remote", "--url", "http://remork-daemon.example.internal:17731"); err != nil {
 		t.Fatalf("host add: %v", err)
 	}
-	if _, err := executeCommand(cmd, "init", "remote:/home/z00879328_other/repo"); err == nil {
+	if _, err := executeCommand(cmd, "init", "remote:/home/me_other/repo"); err == nil {
 		t.Fatal("init should reject sibling path")
 	}
 }
@@ -368,7 +368,7 @@ if !ok {
 Use equivalent helper in doctor. Update doctor fix text to:
 
 ```text
-restart remorkd with --root set to this workspace or to a parent directory such as /home/z00879328
+restart remorkd with --root set to this workspace or to a parent directory such as /home/me
 ```
 
 - [ ] **Step 4: Run CLI tests**
@@ -405,7 +405,7 @@ Add a test that `remoteStartCommand` creates directories and stops the old daemo
 wantParts := []string{
 	"mkdir -p \"$HOME/.local/bin\" \"$HOME/.remork/run\" \"$HOME/.remork/log\"",
 	"if [ -f \"$HOME/.remork/run/remorkd.pid\" ]; then kill \"$(cat \"$HOME/.remork/run/remorkd.pid\")\" 2>/dev/null || true; fi",
-	"nohup \"$HOME/.local/bin/remorkd\" --root '/home/z00879328' --addr '0.0.0.0:17731'",
+	"nohup \"$HOME/.local/bin/remorkd\" --root '/home/me' --addr '0.0.0.0:17731'",
 	">$HOME/.remork/log/remorkd.log",
 	"echo $! > \"$HOME/.remork/run/remorkd.pid\"",
 }
@@ -513,22 +513,22 @@ Use this shape:
 Use concrete placeholders:
 
 ```bash
-remork daemon install z00879328_docker_2.7 \
-  --ssh z00879328_docker_2.7 \
-  --url http://175.100.2.7:17731 \
-  --root /home/z00879328 \
+remork daemon install remork-host-a \
+  --ssh remork-host-a \
+  --url http://remork-daemon-a.example.internal:17731 \
+  --root /home/me \
   --platform linux-arm64 \
   --execute --yes \
   --no-proxy
 
 mkdir -p ~/remork/Wan22_Adapt
 cd ~/remork/Wan22_Adapt
-remork init z00879328_docker_2.7:/home/z00879328/11_Wan22_Adapt
+remork init remork-host-a:/home/me/project
 remork sync
 remork status
 ```
 
-Explain that `/home/z00879328` is the allowed root and `/home/z00879328/11_Wan22_Adapt` is the workspace root.
+Explain that `/home/me` is the allowed root and `/home/me/project` is the workspace root.
 
 - [ ] **Step 3: Move low-level API and manual deployment to later sections**
 
@@ -570,15 +570,15 @@ scripts/build-release.sh v0.1.0
 
 Expected: PASS.
 
-- [ ] **Step 3: Remote install smoke on `z00879328_docker`**
+- [ ] **Step 3: Remote install smoke on `remork-host-a`**
 
 Run from local:
 
 ```bash
-remork daemon install z00879328_docker \
-  --ssh z00879328_docker \
-  --url http://175.100.2.7:17731 \
-  --root /home/z00879328 \
+remork daemon install remork-host-a \
+  --ssh remork-host-a \
+  --url http://remork-daemon-a.example.internal:17731 \
+  --root /home/me \
   --platform linux-arm64 \
   --execute --yes \
   --no-proxy
@@ -587,10 +587,10 @@ remork daemon install z00879328_docker \
 Then:
 
 ```bash
-remork daemon status z00879328_docker
+remork daemon status remork-host-a
 ```
 
-Expected: status lists `/home/z00879328` as an allowed root.
+Expected: status lists `/home/me` as an allowed root.
 
 - [ ] **Step 4: Remote child workspace init smoke**
 
@@ -599,7 +599,7 @@ Run:
 ```bash
 tmp_local="$(mktemp -d)"
 cd "$tmp_local"
-remork init z00879328_docker:/home/z00879328/11_Wan22_Adapt
+remork init remork-host-a:/home/me/project
 remork sync --quiet
 remork status
 remork run -- pwd
@@ -608,9 +608,9 @@ remork log --limit 5
 
 Expected:
 
-- `init` succeeds even though daemon advertised `/home/z00879328`.
-- `run -- pwd` prints `/home/z00879328/11_Wan22_Adapt`.
-- remote operation log exists under `/home/z00879328/11_Wan22_Adapt/.remork/log/operations.jsonl`.
+- `init` succeeds even though daemon advertised `/home/me`.
+- `run -- pwd` prints `/home/me/project`.
+- remote operation log exists under `/home/me/project/.remork/log/operations.jsonl`.
 
 - [ ] **Step 5: Remote sibling rejection smoke**
 
@@ -619,7 +619,7 @@ Run:
 ```bash
 tmp_local="$(mktemp -d)"
 cd "$tmp_local"
-remork init z00879328_docker:/home/z00879328_other/not-allowed
+remork init remork-host-a:/home/me_other/not-allowed
 ```
 
 Expected: fails with a clear message saying the workspace is outside advertised allowed roots.
@@ -632,7 +632,7 @@ Record command outputs, host, URL, daemon version, allowed root, child workspace
 
 ## Product Decision
 
-The current behavior should be treated as a product bug, not a user error. `remorkd --root /home/z00879328` should mean "this daemon may serve workspaces under this directory". `remork init HOST:/home/z00879328/11_Wan22_Adapt` should mean "bind this local folder to that concrete workspace". Requiring those two values to be identical makes one daemon per project the default, which conflicts with the intended product model.
+The current behavior should be treated as a product bug, not a user error. `remorkd --root /home/me` should mean "this daemon may serve workspaces under this directory". `remork init HOST:/home/me/project` should mean "bind this local folder to that concrete workspace". Requiring those two values to be identical makes one daemon per project the default, which conflicts with the intended product model.
 
 ## Self-Review
 

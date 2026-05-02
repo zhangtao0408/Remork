@@ -2486,22 +2486,22 @@ Expected: every artifact reports `OK`.
 Run the existing remote smoke pattern from `docs/remork-v1-10x-reliability.md` against:
 
 ```text
-z00879328_docker
-z00879328_docker_2.6
+remork-host-a
+remork-host-b
 ```
 
 Expected:
 
 ```text
-z00879328_docker final remote smoke PASS
-z00879328_docker_2.6 final remote smoke PASS
+remork-host-a final remote smoke PASS
+remork-host-b final remote smoke PASS
 ```
 
 Cleanup commands must return no output:
 
 ```bash
-ssh z00879328_docker 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
-ssh z00879328_docker_2.6 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
+ssh remork-host-a 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
+ssh remork-host-b 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
 ```
 
 - [ ] **Step 6: Update reliability report**

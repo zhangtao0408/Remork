@@ -9,12 +9,11 @@ Remork V1 面向可信 VPN 或内网环境。它支持可选的共享 bearer tok
 
 ## 先理解几个概念
 
-- **Remork host**：本机给 daemon endpoint 起的昵称，例如
-  `z00879328_docker_2.7`。
+- **Remork host**：本机给 daemon endpoint 起的昵称，例如 `my-lab`。
 - **SSH target**：Remork 安装或升级 daemon 时使用的 SSH 目标。它可以和 Remork
   host 同名，但含义不同。
 - **Daemon URL**：安装完成后 CLI 访问 daemon 的 HTTP 地址，例如
-  `http://175.100.2.7:17731`。这不是 SSH，也不是 SSH 端口。
+  `http://remork-daemon.example.internal:17731`。这不是 SSH，也不是 SSH 端口。
 - **Allowed root**：`remorkd` 在服务端声明的安全边界。daemon 只允许访问这些目录
   下面的 workspace。
 - **Workspace root**：真正绑定到本地 working copy 的远端项目目录。
@@ -40,7 +39,7 @@ workspace root。
 ```bash
 HOST_ALIAS=my-lab
 SSH_TARGET=my-lab
-DAEMON_URL=http://10.0.0.12:17731
+DAEMON_URL=http://remork-daemon.example.internal:17731
 ALLOWED_ROOT=/home/me
 WORKSPACE_ROOT=/home/me/project
 LOCAL_WORKING_COPY=~/remork/project

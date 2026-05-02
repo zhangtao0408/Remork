@@ -75,15 +75,15 @@ func TestDoctorAcceptsWorkspaceUnderAdvertisedParentRoot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/status":
-			_ = json.NewEncoder(w).Encode(api.StatusResponse{Roots: []string{"/home/z00879328"}})
+			_ = json.NewEncoder(w).Encode(api.StatusResponse{Roots: []string{"/home/me"}})
 		case "/manifest":
-			if got := r.URL.Query().Get("root"); got != "/home/z00879328/11_Wan22_Adapt" {
-				t.Errorf("manifest root = %q, want /home/z00879328/11_Wan22_Adapt", got)
+			if got := r.URL.Query().Get("root"); got != "/home/me/project" {
+				t.Errorf("manifest root = %q, want /home/me/project", got)
 			}
-			_ = json.NewEncoder(w).Encode(api.ManifestResponse{Root: "/home/z00879328/11_Wan22_Adapt", Path: "."})
+			_ = json.NewEncoder(w).Encode(api.ManifestResponse{Root: "/home/me/project", Path: "."})
 		case "/operations":
-			if got := r.URL.Query().Get("root"); got != "/home/z00879328/11_Wan22_Adapt" {
-				t.Errorf("operations root = %q, want /home/z00879328/11_Wan22_Adapt", got)
+			if got := r.URL.Query().Get("root"); got != "/home/me/project" {
+				t.Errorf("operations root = %q, want /home/me/project", got)
 			}
 			_ = json.NewEncoder(w).Encode(struct {
 				Entries []any `json:"entries"`
@@ -106,7 +106,7 @@ func TestDoctorAcceptsWorkspaceUnderAdvertisedParentRoot(t *testing.T) {
 	if err := workspace.WriteBinding(local, workspace.Binding{
 		Version:     1,
 		Host:        "lab-a",
-		RemoteRoot:  "/home/z00879328/11_Wan22_Adapt",
+		RemoteRoot:  "/home/me/project",
 		WorkspaceID: "ws_test",
 		StateDir:    filepath.Join(t.TempDir(), "state"),
 	}); err != nil {
@@ -127,7 +127,7 @@ func TestDoctorUsesInjectedDaemonProbe(t *testing.T) {
 	var manifestRoots []string
 	var operationRoots []string
 	probe := fakeDaemonProbe{
-		Roots:          []string{"/home/z00879328"},
+		Roots:          []string{"/home/me"},
 		ManifestRoots:  &manifestRoots,
 		OperationRoots: &operationRoots,
 	}
@@ -144,7 +144,7 @@ func TestDoctorUsesInjectedDaemonProbe(t *testing.T) {
 	if err := workspace.WriteBinding(local, workspace.Binding{
 		Version:     1,
 		Host:        "lab-a",
-		RemoteRoot:  "/home/z00879328/11_Wan22_Adapt",
+		RemoteRoot:  "/home/me/project",
 		WorkspaceID: "ws_test",
 		StateDir:    filepath.Join(t.TempDir(), "state"),
 	}); err != nil {
@@ -157,10 +157,10 @@ func TestDoctorUsesInjectedDaemonProbe(t *testing.T) {
 		t.Fatalf("doctor: %v\n%s", err, out.String())
 	}
 	mustContain(t, out.String(), "OK: workspace is ready")
-	if got, want := manifestRoots, []string{"/home/z00879328/11_Wan22_Adapt"}; len(got) != len(want) || got[0] != want[0] {
+	if got, want := manifestRoots, []string{"/home/me/project"}; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("manifest probes = %v, want %v", got, want)
 	}
-	if got, want := operationRoots, []string{"/home/z00879328/11_Wan22_Adapt"}; len(got) != len(want) || got[0] != want[0] {
+	if got, want := operationRoots, []string{"/home/me/project"}; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("operation probes = %v, want %v", got, want)
 	}
 }

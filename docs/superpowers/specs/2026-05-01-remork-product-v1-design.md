@@ -158,12 +158,12 @@ Example:
 ```bash
 mkdir -p ~/remork/project-a
 cd ~/remork/project-a
-remork init z00879328_docker:/tmp/remork-e2e
+remork init remork-host-a:/tmp/remork-e2e
 ```
 
 Behavior:
 
-- Resolves `z00879328_docker` from Remork host config.
+- Resolves `remork-host-a` from Remork host config.
 - Stores a local binding for the current directory.
 - Verifies daemon reachability.
 - Verifies the remote root is allowed by the daemon.
@@ -201,7 +201,7 @@ Shows the state of the bound workspace.
 The default text output should group files by action, not by internal state names:
 
 ```text
-Workspace: z00879328_docker:/tmp/remork-e2e
+Workspace: remork-host-a:/tmp/remork-e2e
 Local:     /Users/tao/remork/e2e
 
 Clean: 42 files
@@ -374,7 +374,7 @@ Manages daemon endpoints.
 Examples:
 
 ```bash
-remork host add lab-a --url http://10.0.0.12:7731 --token-env REMORK_LAB_A_TOKEN
+remork host add lab-a --url http://remork-daemon.example.internal:7731 --token-env REMORK_LAB_A_TOKEN
 remork host list
 remork host remove lab-a
 remork host doctor lab-a
@@ -475,14 +475,14 @@ Example:
 client_id = "tao-macbook"
 
 [[hosts]]
-name = "z00879328_docker"
-url = "http://175.100.2.7:17731"
+name = "remork-host-a"
+url = "http://remork-daemon-a.example.internal:17731"
 token_env = "REMORK_Z00879328_DOCKER_TOKEN"
 no_proxy = true
 
 [[hosts]]
-name = "z00879328_docker_2_6"
-url = "http://175.100.2.6:17731"
+name = "remork-host-b"
+url = "http://remork-daemon-b.example.internal:17731"
 token_env = "REMORK_Z00879328_DOCKER_2_6_TOKEN"
 no_proxy = true
 ```
@@ -504,7 +504,7 @@ Example:
 ```json
 {
   "version": 1,
-  "host": "z00879328_docker",
+  "host": "remork-host-a",
   "remote_root": "/tmp/remork-e2e",
   "workspace_id": "ws_...",
   "state_dir": "/Users/tao/.remork/state/ws_..."
@@ -537,7 +537,7 @@ addr = "0.0.0.0:17731"
 roots = ["/data/project-a"]
 large_file_threshold = "128MB"
 token_file = "/etc/remork/token"
-allow_cidrs = ["10.0.0.0/8", "175.100.0.0/16"]
+allow_cidrs = ["PRIVATE_CIDR", "VPN_CIDR"]
 operation_log_enabled = true
 ```
 
@@ -658,7 +658,7 @@ Default `remork shell` uses the same checks as `run`.
 
 ```text
 Remote-only shell: local pending changes are ignored.
-Workspace: z00879328_docker:/tmp/remork-e2e
+Workspace: remork-host-a:/tmp/remork-e2e
 ```
 
 After shell exit, CLI should query the remote revision. If the shell changed the workspace, show:
@@ -765,8 +765,8 @@ On Linux, provide a systemd unit template when systemd exists. Also provide a pl
 The two known remote validation hosts are Linux arm64 and should be validated through copied binaries:
 
 ```text
-z00879328_docker
-z00879328_docker_2.6
+remork-host-a
+remork-host-b
 ```
 
 ## README Learning Path

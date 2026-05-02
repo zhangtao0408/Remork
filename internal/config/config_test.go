@@ -10,7 +10,7 @@ import (
 func TestConfigRoundTripHostAndWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
-	cfg := Config{Hosts: map[string]Host{"lab": {Name: "lab", URL: "http://10.0.0.12:7731"}}, Workspaces: map[string]Workspace{
+	cfg := Config{Hosts: map[string]Host{"lab": {Name: "lab", URL: "http://remork-daemon.example.internal:7731"}}, Workspaces: map[string]Workspace{
 		"lab:/data/project": {Host: "lab", RemoteRoot: "/data/project", LocalRoot: "/tmp/project"},
 	}}
 	if err := store.Save(cfg); err != nil {
@@ -32,7 +32,7 @@ func TestHostConfigStoresTokenReferenceAndNoProxy(t *testing.T) {
 		ClientID: "tao-macbook",
 		Hosts: map[string]Host{"lab-a": {
 			Name:     "lab-a",
-			URL:      "http://10.0.0.12:17731",
+			URL:      "http://remork-daemon.example.internal:17731",
 			TokenEnv: "REMORK_LAB_A_TOKEN",
 			NoProxy:  true,
 		}},
@@ -49,7 +49,7 @@ func TestHostConfigStoresTokenReferenceAndNoProxy(t *testing.T) {
 		t.Fatalf("client id %q", got.ClientID)
 	}
 	host := got.Hosts["lab-a"]
-	if host.Name != "lab-a" || host.URL != "http://10.0.0.12:17731" || host.TokenEnv != "REMORK_LAB_A_TOKEN" || !host.NoProxy {
+	if host.Name != "lab-a" || host.URL != "http://remork-daemon.example.internal:17731" || host.TokenEnv != "REMORK_LAB_A_TOKEN" || !host.NoProxy {
 		t.Fatalf("bad host: %#v", host)
 	}
 }
@@ -85,7 +85,7 @@ func TestStorePreservesUnknownTopLevelFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	cfg.Hosts["lab"] = Host{Name: "lab", URL: "http://10.0.0.12:7731"}
+	cfg.Hosts["lab"] = Host{Name: "lab", URL: "http://remork-daemon.example.internal:7731"}
 	if err := store.Save(cfg); err != nil {
 		t.Fatalf("save: %v", err)
 	}

@@ -7,15 +7,15 @@ import (
 )
 
 func TestContainsAllowsExactAndChildren(t *testing.T) {
-	allowed, err := Normalize("/home/z00879328/")
+	allowed, err := Normalize("/home/me/")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	for _, candidate := range []string{
-		"/home/z00879328",
-		"/home/z00879328/11_Wan22_Adapt",
-		"/home/z00879328/projects/a",
+		"/home/me",
+		"/home/me/project",
+		"/home/me/projects/a",
 	} {
 		ok, err := Contains([]Root{allowed}, candidate)
 		if err != nil {
@@ -28,16 +28,16 @@ func TestContainsAllowsExactAndChildren(t *testing.T) {
 }
 
 func TestContainsRejectsSiblingPrefixAndRelativePaths(t *testing.T) {
-	allowed, err := Normalize("/home/z00879328")
+	allowed, err := Normalize("/home/me")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	invalidCandidates := map[string]bool{
-		"/home/z00879328_other":   false,
-		"/home/z00879328/../root": false,
-		"home/z00879328":          true,
-		"":                        true,
+		"/home/me_other":   false,
+		"/home/me/../root": false,
+		"home/me":          true,
+		"":                 true,
 	}
 	for candidate, wantErr := range invalidCandidates {
 		ok, err := Contains([]Root{allowed}, candidate)
@@ -54,25 +54,25 @@ func TestContainsRejectsSiblingPrefixAndRelativePaths(t *testing.T) {
 }
 
 func TestNormalizeCleansTrailingSlash(t *testing.T) {
-	root, err := Normalize("/home/z00879328///")
+	root, err := Normalize("/home/me///")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root.Raw != "/home/z00879328///" {
+	if root.Raw != "/home/me///" {
 		t.Fatalf("Raw = %q, want original input", root.Raw)
 	}
-	if root.Clean != "/home/z00879328" {
-		t.Fatalf("Clean = %q, want /home/z00879328", root.Clean)
+	if root.Clean != "/home/me" {
+		t.Fatalf("Clean = %q, want /home/me", root.Clean)
 	}
 }
 
 func TestContainsAllowsMultipleRoots(t *testing.T) {
-	allowed, err := NormalizeMany([]string{"/opt/projects", "/home/z00879328"})
+	allowed, err := NormalizeMany([]string{"/opt/projects", "/home/me"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	ok, err := Contains(allowed, "/home/z00879328/11_Wan22_Adapt")
+	ok, err := Contains(allowed, "/home/me/project")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestContainsAllowsMultipleRoots(t *testing.T) {
 }
 
 func TestContainsRejectsInvalidAllowedRoot(t *testing.T) {
-	ok, err := Contains([]Root{{}}, "/home/z00879328")
+	ok, err := Contains([]Root{{}}, "/home/me")
 	if err == nil {
 		t.Fatal("Contains() error = nil, want invalid allowed root error")
 	}

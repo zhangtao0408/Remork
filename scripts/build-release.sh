@@ -65,7 +65,7 @@ files under \`~/.remork\`, writes the local host config, and verifies the daemon
 \`\`\`bash
 HOST_ALIAS=my-server
 SSH_TARGET=user@my-server
-DAEMON_URL=http://10.0.0.12:17731
+DAEMON_URL=http://remork-daemon.example.internal:17731
 ALLOWED_ROOT=/home/me
 REMOTE_PLATFORM=linux-arm64
 

@@ -24,11 +24,11 @@ daemon, not necessarily project directories. They define the server-side safety
 boundary. A daemon may advertise one or more allowed base roots.
 
 Endpoint query parameters named `root=<workspace-root>` request one concrete
-workspace under an allowed root. For example, if `/home/z00879328` is advertised
-in `/status.roots`, a request may use:
+workspace under an allowed root. For example, if `/home/me` is advertised in
+`/status.roots`, a request may use:
 
 ```text
-root=/home/z00879328/11_Wan22_Adapt
+root=/home/me/project
 ```
 
 The daemon must reject workspace roots outside the advertised allowed base roots.

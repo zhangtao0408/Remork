@@ -166,7 +166,7 @@ func TestRootCommandSilencesCobraErrorPrinting(t *testing.T) {
 func TestHostAddWritesConfig(t *testing.T) {
 	home := t.TempDir()
 	cmd := NewRootCommand(Options{Version: "test", HomeDir: home})
-	_, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://10.0.0.12:17731", "--token-env", "REMORK_TOKEN", "--no-proxy")
+	_, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://remork-daemon.example.internal:17731", "--token-env", "REMORK_TOKEN", "--no-proxy")
 	if err != nil {
 		t.Fatalf("host add: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestHostAddWritesConfig(t *testing.T) {
 		t.Fatalf("load config: %v", err)
 	}
 	host := cfg.Hosts["lab-a"]
-	if host.Name != "lab-a" || host.URL != "http://10.0.0.12:17731" || host.TokenEnv != "REMORK_TOKEN" || !host.NoProxy {
+	if host.Name != "lab-a" || host.URL != "http://remork-daemon.example.internal:17731" || host.TokenEnv != "REMORK_TOKEN" || !host.NoProxy {
 		t.Fatalf("bad host config: %#v", host)
 	}
 }
@@ -200,7 +200,7 @@ func TestInitWritesLocalBinding(t *testing.T) {
 		WorkingDir:  local,
 		DaemonProbe: probe,
 	})
-	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://10.0.0.12:17731"); err != nil {
+	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://remork-daemon.example.internal:17731"); err != nil {
 		t.Fatalf("host add: %v", err)
 	}
 	if _, err := executeCommand(cmd, "init", "lab-a:/data/project-a"); err != nil {
@@ -232,17 +232,17 @@ func TestInitAcceptsWorkspaceUnderAdvertisedParentRoot(t *testing.T) {
 	home := t.TempDir()
 	local := t.TempDir()
 	var manifestRoots []string
-	probe := fakeDaemonProbe{Roots: []string{"/home/z00879328"}, ManifestRoots: &manifestRoots}
+	probe := fakeDaemonProbe{Roots: []string{"/home/me"}, ManifestRoots: &manifestRoots}
 	cmd := NewRootCommand(Options{
 		Version:     "test",
 		HomeDir:     home,
 		WorkingDir:  local,
 		DaemonProbe: probe,
 	})
-	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://10.0.0.12:17731"); err != nil {
+	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://remork-daemon.example.internal:17731"); err != nil {
 		t.Fatalf("host add: %v", err)
 	}
-	if _, err := executeCommand(cmd, "init", "lab-a:/home/z00879328/11_Wan22_Adapt"); err != nil {
+	if _, err := executeCommand(cmd, "init", "lab-a:/home/me/project"); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 
@@ -250,10 +250,10 @@ func TestInitAcceptsWorkspaceUnderAdvertisedParentRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve binding: %v", err)
 	}
-	if binding.RemoteRoot != "/home/z00879328/11_Wan22_Adapt" {
+	if binding.RemoteRoot != "/home/me/project" {
 		t.Fatalf("remote root = %q", binding.RemoteRoot)
 	}
-	if got, want := manifestRoots, []string{"/home/z00879328/11_Wan22_Adapt"}; len(got) != len(want) || got[0] != want[0] {
+	if got, want := manifestRoots, []string{"/home/me/project"}; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("manifest probes = %v, want %v", got, want)
 	}
 }
@@ -262,17 +262,17 @@ func TestInitRejectsWorkspaceSiblingOfAdvertisedRoot(t *testing.T) {
 	home := t.TempDir()
 	local := t.TempDir()
 	var manifestRoots []string
-	probe := fakeDaemonProbe{Roots: []string{"/home/z00879328"}, ManifestRoots: &manifestRoots}
+	probe := fakeDaemonProbe{Roots: []string{"/home/me"}, ManifestRoots: &manifestRoots}
 	cmd := NewRootCommand(Options{
 		Version:     "test",
 		HomeDir:     home,
 		WorkingDir:  local,
 		DaemonProbe: probe,
 	})
-	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://10.0.0.12:17731"); err != nil {
+	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://remork-daemon.example.internal:17731"); err != nil {
 		t.Fatalf("host add: %v", err)
 	}
-	if _, err := executeCommand(cmd, "init", "lab-a:/home/z00879328_sibling"); err == nil {
+	if _, err := executeCommand(cmd, "init", "lab-a:/home/me_sibling"); err == nil {
 		t.Fatal("init should reject sibling prefix of advertised root")
 	} else {
 		mustContain(t, err.Error(), "outside advertised allowed roots")
@@ -296,7 +296,7 @@ func TestInitUsesDifferentStateDirForDifferentLocalRoots(t *testing.T) {
 		WorkingDir:  localA,
 		DaemonProbe: fakeDaemonProbe{Roots: []string{"/data/project-a"}},
 	})
-	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://10.0.0.12:17731"); err != nil {
+	if _, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://remork-daemon.example.internal:17731"); err != nil {
 		t.Fatalf("host add: %v", err)
 	}
 	if _, err := executeCommand(cmd, "init", "lab-a:/data/project-a"); err != nil {

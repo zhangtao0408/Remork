@@ -175,8 +175,8 @@ on both provided servers with the new `dist/remorkd-linux-arm64` binary:
 
 | Host | URL | Result | Coverage |
 | --- | --- | --- | --- |
-| `z00879328_docker` | `http://175.100.2.7:17761` | PASS | copy daemon, start remote root, bad proxy plus `--no-proxy`, `init`, `sync`, large `.meta`, `apply`, `run`, `log`, remote log check |
-| `z00879328_docker_2.6` | `http://175.100.2.6:17762` | PASS | copy daemon, start remote root, bad proxy plus `--no-proxy`, `init`, `sync`, large `.meta`, `apply`, `run`, `log`, remote log check |
+| `remork-host-a` | `http://remork-daemon-a.example.internal:17761` | PASS | copy daemon, start remote root, bad proxy plus `--no-proxy`, `init`, `sync`, large `.meta`, `apply`, `run`, `log`, remote log check |
+| `remork-host-b` | `http://remork-daemon-b.example.internal:17762` | PASS | copy daemon, start remote root, bad proxy plus `--no-proxy`, `init`, `sync`, large `.meta`, `apply`, `run`, `log`, remote log check |
 
 Both smoke runs used temporary `/tmp/remork-v1-e2e-*` paths and cleaned them
 after validation.
@@ -184,15 +184,15 @@ after validation.
 Smoke output:
 
 ```text
-z00879328_docker final remote smoke PASS
-z00879328_docker_2.6 final remote smoke PASS
+remork-host-a final remote smoke PASS
+remork-host-b final remote smoke PASS
 ```
 
 Cleanup proof commands returned no output after removing temporary smoke paths:
 
 ```bash
-ssh z00879328_docker 'rm -rf /tmp/remork-v1-e2e-* /tmp/remork-v1-e2e-final-*; ps -ef | grep remork-v1-e2e | grep -v grep || true; find /tmp -maxdepth 1 \( -name "remork-v1-e2e-*" -o -name "remork-v1-e2e-final-*" \) -print 2>/dev/null | sort'
-ssh z00879328_docker_2.6 'rm -rf /tmp/remork-v1-e2e-* /tmp/remork-v1-e2e-final-*; ps -ef | grep remork-v1-e2e | grep -v grep || true; find /tmp -maxdepth 1 \( -name "remork-v1-e2e-*" -o -name "remork-v1-e2e-final-*" \) -print 2>/dev/null | sort'
+ssh remork-host-a 'rm -rf /tmp/remork-v1-e2e-* /tmp/remork-v1-e2e-final-*; ps -ef | grep remork-v1-e2e | grep -v grep || true; find /tmp -maxdepth 1 \( -name "remork-v1-e2e-*" -o -name "remork-v1-e2e-final-*" \) -print 2>/dev/null | sort'
+ssh remork-host-b 'rm -rf /tmp/remork-v1-e2e-* /tmp/remork-v1-e2e-final-*; ps -ef | grep remork-v1-e2e | grep -v grep || true; find /tmp -maxdepth 1 \( -name "remork-v1-e2e-*" -o -name "remork-v1-e2e-final-*" \) -print 2>/dev/null | sort'
 ```
 
 ## P0-P2 Hardening Verification
@@ -238,22 +238,22 @@ workspace operation log under `.remork/log/operations.jsonl`.
 
 | Host | URL | Result | Coverage |
 | --- | --- | --- | --- |
-| `z00879328_docker` | `http://175.100.2.7:17771` | PASS | copy daemon, detached start, bad proxy plus `--no-proxy`, `init`, `sync`, nested file, 128MiB+ large `.meta`, `apply`, `run`, CLI `log`, remote `.remork/log` check |
-| `z00879328_docker_2.6` | `http://175.100.2.6:17772` | PASS | copy daemon, detached start, bad proxy plus `--no-proxy`, `init`, `sync`, nested file, 128MiB+ large `.meta`, `apply`, `run`, CLI `log`, remote `.remork/log` check |
+| `remork-host-a` | `http://remork-daemon-a.example.internal:17771` | PASS | copy daemon, detached start, bad proxy plus `--no-proxy`, `init`, `sync`, nested file, 128MiB+ large `.meta`, `apply`, `run`, CLI `log`, remote `.remork/log` check |
+| `remork-host-b` | `http://remork-daemon-b.example.internal:17772` | PASS | copy daemon, detached start, bad proxy plus `--no-proxy`, `init`, `sync`, nested file, 128MiB+ large `.meta`, `apply`, `run`, CLI `log`, remote `.remork/log` check |
 
 Smoke output:
 
 ```text
-z00879328_docker final remote smoke PASS
-z00879328_docker_2.6 final remote smoke PASS
+remork-host-a final remote smoke PASS
+remork-host-b final remote smoke PASS
 ```
 
 Cleanup proof commands returned no output after removing temporary hardening
 smoke paths:
 
 ```bash
-ssh z00879328_docker 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
-ssh z00879328_docker_2.6 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
+ssh remork-host-a 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
+ssh remork-host-b 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
 ```
 
 ## Final Review Hardening Follow-up
@@ -304,15 +304,15 @@ The rebuilt `dist/remorkd-linux-arm64` and `dist/remork-darwin-arm64` binaries
 were smoke-tested again on both provided hosts:
 
 ```text
-z00879328_docker final remote smoke PASS
-z00879328_docker_2.6 final remote smoke PASS
+remork-host-a final remote smoke PASS
+remork-host-b final remote smoke PASS
 ```
 
 Cleanup proof commands returned no output:
 
 ```bash
-ssh z00879328_docker 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
-ssh z00879328_docker_2.6 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
+ssh remork-host-a 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
+ssh remork-host-b 'rm -rf /tmp/remork-v1-hardening-*; ps -ef | grep remork-v1-hardening | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-hardening-*" -print 2>/dev/null | sort'
 ```
 
 ## Final P0-P2 Review Closeout
@@ -361,8 +361,8 @@ Final remote smoke used the rebuilt `dist/remorkd-linux-arm64` daemon and
 
 | Host | URL | Result | Coverage |
 | --- | --- | --- | --- |
-| `z00879328_docker` | `http://175.100.2.7:17911` | PASS | copy daemon, detached start, `host add`, `init`, `sync`, explicit apply update preserving unrelated dirty local file, explicit apply delete preserving unrelated dirty local file, `run --remote-only`, `shell --remote-only`, CLI `log` |
-| `z00879328_docker_2.6` | `http://175.100.2.6:17932` | PASS | copy daemon, detached start, `host add`, `init`, `sync`, explicit apply update preserving unrelated dirty local file, explicit apply delete preserving unrelated dirty local file, `run --remote-only`, `shell --remote-only`, CLI `log` |
+| `remork-host-a` | `http://remork-daemon-a.example.internal:17911` | PASS | copy daemon, detached start, `host add`, `init`, `sync`, explicit apply update preserving unrelated dirty local file, explicit apply delete preserving unrelated dirty local file, `run --remote-only`, `shell --remote-only`, CLI `log` |
+| `remork-host-b` | `http://remork-daemon-b.example.internal:17932` | PASS | copy daemon, detached start, `host add`, `init`, `sync`, explicit apply update preserving unrelated dirty local file, explicit apply delete preserving unrelated dirty local file, `run --remote-only`, `shell --remote-only`, CLI `log` |
 
 Smoke output:
 
@@ -375,6 +375,6 @@ Cleanup proof commands returned no output after removing temporary
 `/tmp/remork-v1-final-*` paths:
 
 ```bash
-ssh z00879328_docker 'ps -ef | grep remork-v1-final | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-final-*" -print 2>/dev/null | sort'
-ssh -T -o ControlMaster=no -o ControlPath=none -o BatchMode=yes -o ConnectTimeout=10 z00879328_docker_2.6 'ps -ef | grep remork-v1-final | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-final-*" -print 2>/dev/null | sort'
+ssh remork-host-a 'ps -ef | grep remork-v1-final | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-final-*" -print 2>/dev/null | sort'
+ssh -T -o ControlMaster=no -o ControlPath=none -o BatchMode=yes -o ConnectTimeout=10 remork-host-b 'ps -ef | grep remork-v1-final | grep -v grep || true; find /tmp -maxdepth 1 -name "remork-v1-final-*" -print 2>/dev/null | sort'
 ```

@@ -19,14 +19,14 @@ The approved spec covers several subsystems: daemon, CLI, sync/pull, local state
 Use these real hosts for final offline-daemon validation after local tests pass:
 
 ```text
-Alias: z00879328_docker
-SSH: root@175.100.2.7:22022
+Alias: remork-host-a
+SSH: root@remork-daemon-a.example.internal:22022
 Platform probe: Linux aarch64
 Release artifact: dist/remorkd-linux-arm64
 Notes: SSH config includes ControlMaster and RemoteForward for proxy, but remork daemon transport must still be tested through direct VPN HTTP, not SSH tunnel.
 
-Alias: z00879328_docker_2.6
-SSH: root@175.100.2.6:2226
+Alias: remork-host-b
+SSH: root@remork-daemon-b.example.internal:2226
 Platform probe: Linux aarch64
 Release artifact: dist/remorkd-linux-arm64
 Notes: Minimal environment; `hostname` was not available during probe. Do not assume common convenience tools beyond POSIX shell basics.
@@ -279,7 +279,7 @@ workspace_roots = ["/data/project"]
 large_file_threshold = "128MB"
 
 # Optional deployment guards for VPN environments:
-# allowlist = ["10.0.0.0/8"]
+# allowlist = ["PRIVATE_CIDR"]
 # token = ""
 ```
 
@@ -2944,7 +2944,7 @@ import "testing"
 func TestConfigRoundTripHostAndWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
-	cfg := Config{Hosts: map[string]Host{"lab": {Name: "lab", URL: "http://10.0.0.12:7731"}}, Workspaces: map[string]Workspace{
+	cfg := Config{Hosts: map[string]Host{"lab": {Name: "lab", URL: "http://remork-daemon.example.internal:7731"}}, Workspaces: map[string]Workspace{
 		"lab:/data/project": {Host: "lab", RemoteRoot: "/data/project", LocalRoot: "/tmp/project"},
 	}}
 	if err := store.Save(cfg); err != nil {
@@ -3671,8 +3671,8 @@ Manual/local validation:
 - local daemon manifest curl against a temporary workspace
 
 Remote validation:
-- z00879328_docker remote localhost manifest curl
-- z00879328_docker_2.6 remote localhost manifest curl
+- remork-host-a remote localhost manifest curl
+- remork-host-b remote localhost manifest curl
 - local direct VPN curl to both remote daemons
 
 Observed failures:
@@ -3799,18 +3799,18 @@ git commit -m "docs: align remork spec with implementation"
 Run:
 
 ```bash
-ssh -G z00879328_docker | awk '/^(hostname|user|port|identityfile) / {print}'
-ssh -G z00879328_docker_2.6 | awk '/^(hostname|user|port|identityfile) / {print}'
+ssh -G remork-host-a | awk '/^(hostname|user|port|identityfile) / {print}'
+ssh -G remork-host-b | awk '/^(hostname|user|port|identityfile) / {print}'
 ```
 
 Expected:
 
 ```text
-hostname 175.100.2.7
+hostname remork-daemon-a.example.internal
 user root
 port 22022
 identityfile ~/.ssh/id_ed25519
-hostname 175.100.2.6
+hostname remork-daemon-b.example.internal
 user root
 port 2226
 identityfile ~/.ssh/id_ed25519
@@ -3821,8 +3821,8 @@ identityfile ~/.ssh/id_ed25519
 Run:
 
 ```bash
-ssh -o BatchMode=yes -o ConnectTimeout=8 z00879328_docker 'printf "user=%s\n" "$(whoami)"; printf "os=%s\n" "$(uname -s)"; printf "arch=%s\n" "$(uname -m)"'
-ssh -o BatchMode=yes -o ConnectTimeout=8 z00879328_docker_2.6 'printf "user=%s\n" "$(whoami)"; printf "os=%s\n" "$(uname -s)"; printf "arch=%s\n" "$(uname -m)"'
+ssh -o BatchMode=yes -o ConnectTimeout=8 remork-host-a 'printf "user=%s\n" "$(whoami)"; printf "os=%s\n" "$(uname -s)"; printf "arch=%s\n" "$(uname -m)"'
+ssh -o BatchMode=yes -o ConnectTimeout=8 remork-host-b 'printf "user=%s\n" "$(whoami)"; printf "os=%s\n" "$(uname -s)"; printf "arch=%s\n" "$(uname -m)"'
 ```
 
 Expected for both hosts:
@@ -3850,7 +3850,7 @@ Expected: all commands pass locally. Do not build on the remote hosts.
 Run:
 
 ```bash
-for host in z00879328_docker z00879328_docker_2.6; do
+for host in remork-host-a remork-host-b; do
   scp dist/remorkd-linux-arm64 "$host:/tmp/remorkd"
   ssh "$host" 'chmod +x /tmp/remorkd && rm -rf /tmp/remork-e2e && mkdir -p /tmp/remork-e2e && printf "hello\n" > /tmp/remork-e2e/a.txt && /tmp/remorkd --version'
 done
@@ -3863,7 +3863,7 @@ Expected: each host prints `remorkd dev`. No compiler, package manager, or inter
 Run:
 
 ```bash
-for host in z00879328_docker z00879328_docker_2.6; do
+for host in remork-host-a remork-host-b; do
   ssh "$host" 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; nohup /tmp/remorkd --root /tmp/remork-e2e --addr 0.0.0.0:17731 >/tmp/remorkd.log 2>&1 & echo $! > /tmp/remorkd.pid; sleep 1; curl -fsS "http://127.0.0.1:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true"'
 done
 ```
@@ -3875,8 +3875,8 @@ Expected: each remote-side curl returns manifest JSON containing `a.txt`. If thi
 Run:
 
 ```bash
-curl --noproxy '*' -fsS 'http://175.100.2.7:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true'
-curl --noproxy '*' -fsS 'http://175.100.2.6:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true'
+curl --noproxy '*' -fsS 'http://remork-daemon-a.example.internal:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true'
+curl --noproxy '*' -fsS 'http://remork-daemon-b.example.internal:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true'
 ```
 
 Expected: both local curls return manifest JSON containing `a.txt`. This validates the intended daemon transport path without SSH tunnels.
@@ -3888,7 +3888,7 @@ Validation note from 2026-04-30: plain local `curl` returned HTTP 502 on this ma
 Run:
 
 ```bash
-for host in z00879328_docker z00879328_docker_2.6; do
+for host in remork-host-a remork-host-b; do
   ssh "$host" 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; rm -f /tmp/remorkd.pid /tmp/remorkd.log /tmp/remorkd; rm -rf /tmp/remork-e2e'
 done
 ```

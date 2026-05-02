@@ -409,7 +409,7 @@ func TestHostConfigStoresTokenReferenceAndNoProxy(t *testing.T) {
 		Hosts: map[string]Host{
 			"lab-a": {
 				Name:     "lab-a",
-				URL:      "http://10.0.0.12:17731",
+				URL:      "http://remork-daemon.example.internal:17731",
 				TokenEnv: "REMORK_LAB_A_TOKEN",
 				NoProxy:  true,
 			},
@@ -606,7 +606,7 @@ Add CLI tests:
 func TestHostAddWritesConfig(t *testing.T) {
 	home := t.TempDir()
 	cmd := NewRootCommand(Options{Version: "test", HomeDir: home})
-	_, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://10.0.0.12:17731", "--token-env", "REMORK_TOKEN", "--no-proxy")
+	_, err := executeCommand(cmd, "host", "add", "lab-a", "--url", "http://remork-daemon.example.internal:17731", "--token-env", "REMORK_TOKEN", "--no-proxy")
 	if err != nil {
 		t.Fatalf("host add: %v", err)
 	}
@@ -2179,23 +2179,23 @@ test -x dist/remorkd-linux-arm64
 
 Expected: release build succeeds.
 
-- [ ] **Step 2: Validate `z00879328_docker`**
+- [ ] **Step 2: Validate `remork-host-a`**
 
 Run:
 
 ```bash
-scp dist/remorkd-linux-arm64 z00879328_docker:/tmp/remorkd
-ssh z00879328_docker 'chmod +x /tmp/remorkd && rm -rf /tmp/remork-e2e && mkdir -p /tmp/remork-e2e && printf "hello\n" >/tmp/remork-e2e/a.txt'
-ssh z00879328_docker 'nohup /tmp/remorkd --root /tmp/remork-e2e --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
-curl --noproxy '*' -fsS 'http://175.100.2.7:17731/status'
-curl --noproxy '*' -fsS 'http://175.100.2.7:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true'
+scp dist/remorkd-linux-arm64 remork-host-a:/tmp/remorkd
+ssh remork-host-a 'chmod +x /tmp/remorkd && rm -rf /tmp/remork-e2e && mkdir -p /tmp/remork-e2e && printf "hello\n" >/tmp/remork-e2e/a.txt'
+ssh remork-host-a 'nohup /tmp/remorkd --root /tmp/remork-e2e --addr 0.0.0.0:17731 </dev/null >/tmp/remorkd.log 2>&1 & echo $! >/tmp/remorkd.pid'
+curl --noproxy '*' -fsS 'http://remork-daemon-a.example.internal:17731/status'
+curl --noproxy '*' -fsS 'http://remork-daemon-a.example.internal:17731/manifest?root=/tmp/remork-e2e&path=.&recursive=true'
 ```
 
 Then run local CLI workflow from a temporary local directory:
 
 ```bash
 tmp="$(mktemp -d)"
-dist/remork host add z7 --url http://175.100.2.7:17731 --no-proxy
+dist/remork host add z7 --url http://remork-daemon-a.example.internal:17731 --no-proxy
 cd "$tmp"
 dist/remork init z7:/tmp/remork-e2e
 dist/remork sync
@@ -2213,24 +2213,24 @@ Expected:
 - `log` shows `apply` and `run`.
 - Remote operation log exists at `/tmp/remork-e2e/.remork/log/operations.jsonl`.
 
-- [ ] **Step 3: Validate `z00879328_docker_2.6`**
+- [ ] **Step 3: Validate `remork-host-b`**
 
 Run equivalent commands with:
 
 ```text
-host alias: z00879328_docker_2.6
-VPN URL: http://175.100.2.6:17731
+host alias: remork-host-b
+VPN URL: http://remork-daemon-b.example.internal:17731
 ```
 
-Expected: same outcome as `z00879328_docker`.
+Expected: same outcome as `remork-host-a`.
 
 - [ ] **Step 4: Cleanup both remotes**
 
 Run:
 
 ```bash
-ssh z00879328_docker 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; rm -rf /tmp/remorkd /tmp/remorkd.pid /tmp/remorkd.log /tmp/remork-e2e'
-ssh z00879328_docker_2.6 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; rm -rf /tmp/remorkd /tmp/remorkd.pid /tmp/remorkd.log /tmp/remork-e2e'
+ssh remork-host-a 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; rm -rf /tmp/remorkd /tmp/remorkd.pid /tmp/remorkd.log /tmp/remork-e2e'
+ssh remork-host-b 'if [ -f /tmp/remorkd.pid ]; then kill "$(cat /tmp/remorkd.pid)" 2>/dev/null || true; fi; rm -rf /tmp/remorkd /tmp/remorkd.pid /tmp/remorkd.log /tmp/remork-e2e'
 ```
 
 - [ ] **Step 5: Record validation evidence**
@@ -2250,7 +2250,7 @@ Date: 2026-05-01
 
 ## Remote Hosts
 
-### z00879328_docker
+### remork-host-a
 
 - Copied `dist/remorkd-linux-arm64` to `/tmp/remorkd`.
 - Started daemon with `/tmp/remork-e2e` root.
@@ -2259,7 +2259,7 @@ Date: 2026-05-01
 - Verified operation log under `/tmp/remork-e2e/.remork/log/operations.jsonl`.
 - Cleaned `/tmp/remorkd*` and `/tmp/remork-e2e`.
 
-### z00879328_docker_2.6
+### remork-host-b
 
 - Copied `dist/remorkd-linux-arm64` to `/tmp/remorkd`.
 - Started daemon with `/tmp/remork-e2e` root.

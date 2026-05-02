@@ -359,7 +359,7 @@ Watch events are an acceleration path, not the only consistency mechanism. The C
 ### Configure
 
 ```bash
-remork host add lab-a --url http://10.0.0.12:7731
+remork host add lab-a --url http://remork-daemon.example.internal:7731
 remork workspace add lab-a:/data/project --local ~/remote/lab-a/project
 remork status lab-a:/data/project
 ```

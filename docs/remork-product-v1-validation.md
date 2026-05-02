@@ -38,10 +38,10 @@ Additional path-safety validation after sub-agent review:
   opens files with a descriptor walk that uses `openat` and `O_NOFOLLOW` for
   path components on Linux and macOS.
 
-## Remote Host: z00879328_docker
+## Remote Host A
 
-- SSH alias: `z00879328_docker`
-- Daemon URL: `http://175.100.2.7:18141`
+- SSH alias: `<host-a>`
+- Daemon URL: `http://remork-daemon-a.example.internal:18141`
 - Remote allowed roots:
   - `/root/remork-v1-final-1777709876-50860-a`
   - `/root/remork-v1-final-1777709876-50860-b`
@@ -52,7 +52,7 @@ Additional path-safety validation after sub-agent review:
 
 Validated commands:
 
-- `remork daemon install ... --ssh z00879328_docker --url http://175.100.2.7:18141 --root /root/remork-v1-final-1777709876-50860-a --root /root/remork-v1-final-1777709876-50860-b --platform linux-arm64 --local-bin dist/remorkd-linux-arm64 --addr 0.0.0.0:18141 --execute --yes --verify --no-proxy`: PASS
+- `remork daemon install ... --ssh <host-a> --url http://remork-daemon-a.example.internal:18141 --root /root/remork-v1-final-1777709876-50860-a --root /root/remork-v1-final-1777709876-50860-b --platform linux-arm64 --local-bin dist/remorkd-linux-arm64 --addr 0.0.0.0:18141 --execute --yes --verify --no-proxy`: PASS
 - `remork daemon status <host-alias>`: PASS, advertised both allowed roots.
 - `remork init <host-alias>:/root/remork-v1-final-1777709876-50860-b/workspace`: PASS.
 - `remork sync --quiet`: PASS, downloaded `a.txt` and `sub/n.txt`.
@@ -68,10 +68,10 @@ Cleanup:
 - Removed the temporary remote allowed roots.
 - Removed the temporary local Remork home and working copy.
 
-## Remote Host: z00879328_docker_2.6
+## Remote Host B
 
-- SSH alias: `z00879328_docker_2.6`
-- Daemon URL: `http://175.100.2.6:18142`
+- SSH alias: `<host-b>`
+- Daemon URL: `http://remork-daemon-b.example.internal:18142`
 - Remote allowed root: `/root/remork-v1-final-1777709902-51340`
 - Remote workspace root: `/root/remork-v1-final-1777709902-51340/workspace`
 - Local working copy: `/var/folders/v8/47s1dzjn6rj71pbpmwh5qnjc0000gn/T/tmp.lGMJxX2Yjj/wc`
@@ -80,7 +80,7 @@ Cleanup:
 
 Validated commands:
 
-- `remork daemon install ... --ssh z00879328_docker_2.6 --url http://175.100.2.6:18142 --root /root/remork-v1-final-1777709902-51340 --platform linux-arm64 --local-bin dist/remorkd-linux-arm64 --addr 0.0.0.0:18142 --execute --yes --verify --no-proxy`: PASS
+- `remork daemon install ... --ssh <host-b> --url http://remork-daemon-b.example.internal:18142 --root /root/remork-v1-final-1777709902-51340 --platform linux-arm64 --local-bin dist/remorkd-linux-arm64 --addr 0.0.0.0:18142 --execute --yes --verify --no-proxy`: PASS
 - `remork daemon status <host-alias>`: PASS, advertised `/root/remork-v1-final-1777709902-51340`.
 - `remork init <host-alias>:/root/remork-v1-final-1777709902-51340/workspace`: PASS.
 - `remork sync --quiet`: PASS, downloaded `a.txt` and `sub/n.txt`.

@@ -10,12 +10,12 @@ exposed directly to the public internet.
 
 ## Mental model
 
-- **Remork host**: a local nickname for a daemon endpoint, such as
-  `z00879328_docker_2.7`.
+- **Remork host**: a local nickname for a daemon endpoint, such as `my-lab`.
 - **SSH target**: the SSH name Remork uses only to install or upgrade the daemon.
   This can be the same text as the Remork host, but it is a different concept.
 - **Daemon URL**: the HTTP URL the CLI uses after install, such as
-  `http://175.100.2.7:17731`. This is not SSH and does not use the SSH port.
+  `http://remork-daemon.example.internal:17731`. This is not SSH and does not
+  use the SSH port.
 - **Allowed root**: the server-side safety boundary advertised by `remorkd`.
   The daemon will only serve workspaces under allowed roots.
 - **Workspace root**: the actual remote project directory bound to your local
@@ -44,7 +44,7 @@ Fill these values first:
 ```bash
 HOST_ALIAS=my-lab
 SSH_TARGET=my-lab
-DAEMON_URL=http://10.0.0.12:17731
+DAEMON_URL=http://remork-daemon.example.internal:17731
 ALLOWED_ROOT=/home/me
 WORKSPACE_ROOT=/home/me/project
 LOCAL_WORKING_COPY=~/remork/project

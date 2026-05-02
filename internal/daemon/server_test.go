@@ -225,7 +225,7 @@ func TestManifestUnknownRootReturnsForbidden(t *testing.T) {
 
 func TestManifestAllowsChildWorkspaceUnderAllowedRoot(t *testing.T) {
 	base := t.TempDir()
-	child := filepath.Join(base, "11_Wan22_Adapt")
+	child := filepath.Join(base, "project")
 	mustWrite(t, filepath.Join(child, "a.txt"), []byte("hello"))
 	srv := httptest.NewServer(NewServer(Config{Roots: []string{base}}).Handler())
 	defer srv.Close()
@@ -266,7 +266,7 @@ func TestManifestRejectsSiblingOfAllowedRoot(t *testing.T) {
 
 func TestOperationsUsesChildWorkspaceLog(t *testing.T) {
 	base := t.TempDir()
-	child := filepath.Join(base, "11_Wan22_Adapt")
+	child := filepath.Join(base, "project")
 	mustWrite(t, filepath.Join(child, "a.txt"), []byte("hello"))
 	srv := httptest.NewServer(NewServer(Config{Roots: []string{base}}).Handler())
 	defer srv.Close()
