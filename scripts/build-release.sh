@@ -27,7 +27,7 @@ build_binary ./cmd/remorkd remorkd linux amd64
 cat > "$dist_dir/RELEASE_BODY.md" <<EOF
 # Remork $version
 
-This is the first product release of Remork.
+This is a Product V1 beta release of Remork.
 
 ## Download the right asset
 
@@ -106,8 +106,8 @@ remork apply
 remork log --limit 5
 \`\`\`
 
-Read the full usage guide in the repository README:
-https://github.com/zhangtao0408/Remork/blob/main/README.md
+Read the full usage guide in the repository README for this tag:
+https://github.com/zhangtao0408/Remork/blob/$version/README.md
 
 Warning: \`--addr 0.0.0.0:17731\` without \`--token-file\` allows any client
 that can reach the host to use file, apply, exec, and shell endpoints. Use it
