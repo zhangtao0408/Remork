@@ -105,6 +105,39 @@ func (r *PlainRenderer) Summary(title string, items map[string]int) {
 	}
 }
 
+
+func (r *PlainRenderer) ProductTitle(title, subtitle string) {
+	if r.skip() {
+		return
+	}
+	fmt.Fprintf(r.w, "%s\n", r.emphasis(title))
+	if strings.TrimSpace(subtitle) != "" {
+		fmt.Fprintf(r.w, "%s\n", subtitle)
+	}
+}
+
+func (r *PlainRenderer) ActionList(title string, actions []string) {
+	if r.skip() {
+		return
+	}
+	if strings.TrimSpace(title) != "" {
+		fmt.Fprintf(r.w, "%s\n", r.emphasis(title))
+	}
+	for i, action := range actions {
+		fmt.Fprintf(r.w, "  %d. %s\n", i+1, action)
+	}
+}
+
+func (r *PlainRenderer) Next(commands []string) {
+	if r.skip() || len(commands) == 0 {
+		return
+	}
+	fmt.Fprintf(r.w, "%s\n", r.emphasis("Next"))
+	for _, command := range commands {
+		fmt.Fprintf(r.w, "  %s\n", r.colorize(ansiCyan, command))
+	}
+}
+
 func (r *PlainRenderer) skip() bool {
 	return r == nil || r.quiet || r.w == nil
 }

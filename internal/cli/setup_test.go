@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+
+	"remork/internal/output"
 )
 
 func TestSetupScopeDoesNotAssumeCurrentProject(t *testing.T) {
@@ -105,5 +108,25 @@ func TestSetupUpdateServerUsesUpgradeAction(t *testing.T) {
 	}
 	if spec.Action != "upgrade" || !spec.Verify {
 		t.Fatalf("update spec = %#v", spec)
+	}
+}
+
+func TestRenderSetupPlanIncludesActionsAndNext(t *testing.T) {
+	var buf bytes.Buffer
+	plan := OperationPlan{
+		Title: "Setup plan",
+		Target: map[string]string{"host": "lab"},
+		Actions: []PlannedAction{
+			{Label: "prepare remote directories"},
+			{Label: "copy remorkd binary"},
+		},
+		Next: []string{"remork init lab:/data/project"},
+	}
+	renderSetupPlan(&buf, output.ColorNever, plan)
+	got := buf.String()
+	for _, want := range []string{"Setup plan", "host", "prepare remote directories", "copy remorkd binary", "remork init"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("rendered setup plan missing %q:\n%s", want, got)
+		}
 	}
 }

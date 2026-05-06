@@ -53,3 +53,19 @@ func TestPlainThemeCanForceColorWhenAllowed(t *testing.T) {
 		t.Fatalf("forced color should render ANSI, got %q", buf.String())
 	}
 }
+
+func TestPlainThemeRendersProductizedActionPlan(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewPlainRenderer(&buf, PlainOptions{Color: ColorNever})
+	r.ProductTitle("Setup plan", "Remote server will be prepared and verified.")
+	r.KeyValue("host", "lab")
+	r.ActionList("Actions", []string{"Prepare remote directories", "Copy remorkd binary"})
+	r.Next([]string{"remork init lab:/data/project"})
+
+	got := buf.String()
+	for _, want := range []string{"Setup plan", "Remote server will be prepared", "host", "Actions", "1. Prepare remote directories", "Next", "remork init"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output missing %q:\n%s", want, got)
+		}
+	}
+}

@@ -2,11 +2,13 @@ package cli
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"remork/internal/exitcode"
+	"remork/internal/output"
 	"remork/internal/tui"
 )
 
@@ -142,4 +144,26 @@ func setupUpdateServerSpec(values map[string]string) (DaemonDeploySpec, error) {
 	}
 	spec.Action = "upgrade"
 	return spec, nil
+}
+
+func renderSetupPlan(w interface{ Write([]byte) (int, error) }, color output.ColorMode, plan OperationPlan) {
+	r := output.NewPlainRenderer(w, output.PlainOptions{Color: color})
+	r.ProductTitle(plan.Title, "Review what Remork will do before it changes anything.")
+	keys := make([]string, 0, len(plan.Target))
+	for key := range plan.Target {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		r.KeyValue(key, plan.Target[key])
+	}
+	actions := make([]string, 0, len(plan.Actions))
+	for _, action := range plan.Actions {
+		actions = append(actions, action.Label)
+	}
+	r.ActionList("Actions", actions)
+	if len(plan.Risks) > 0 {
+		r.List("Risks", plan.Risks)
+	}
+	r.Next(plan.Next)
 }
