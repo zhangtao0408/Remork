@@ -151,7 +151,7 @@ func setupPrepareServerFields(initial map[string]string) []tui.Field {
 		{Section: "Server", Key: "ssh", Label: "SSH target", Placeholder: "user@server", Initial: initial["ssh"], Help: "How this Mac reaches the server over SSH for install or upgrade."},
 		{Section: "Server", Key: "roots", Label: "Allowed roots", Placeholder: "/absolute/allowed/root", Initial: initial["roots"], Help: "Remote base directories remorkd is allowed to serve."},
 		{Section: "Network", Key: "port", Label: "Port", Placeholder: "17731", Initial: firstNonEmpty(initial["port"], "17731"), Help: "Remork derives the daemon URL and listen address from this port."},
-		{Section: "Auth", Key: "token_env", Label: "Token env", Placeholder: "REMORK_TOKEN", Initial: initial["token_env"], Help: "Local environment variable used by the client. If set, setup uses the default remote token file."},
+		{Section: "Auth", Key: "token_env", Label: "Token env", Initial: initial["token_env"], Help: "Optional. Use REMORK_TOKEN when you want token auth; leave empty to preserve a trusted private-network setup."},
 		{Section: "Options", Key: "no_proxy", Label: "Bypass proxy y/N", Placeholder: "no", Initial: firstNonEmpty(initial["no_proxy"], "no"), Help: "Use yes for VPN or private IPs that should bypass local proxy variables."},
 		{Section: "Options", Key: "verify", Label: "Verify y/N", Placeholder: "yes", Initial: firstNonEmpty(initial["verify"], "yes"), Help: "Run daemon status after setup to confirm the server is reachable."},
 	}
@@ -264,6 +264,9 @@ func setupCurrentServerInitialValues(opts Options) map[string]string {
 	initial["url"] = host.URL
 	initial["port"] = firstNonEmpty(portFromURL(host.URL), "17731")
 	initial["token_env"] = host.TokenEnv
+	if host.TokenEnv == "" {
+		initial["allow_unauthenticated_network_bind"] = "yes"
+	}
 	initial["no_proxy"] = yesNo(host.NoProxy)
 	if opts.DaemonProbe != nil {
 		if status, err := opts.DaemonProbe.Status(context.Background(), host, cfg.ClientID); err == nil && len(status.Roots) > 0 {

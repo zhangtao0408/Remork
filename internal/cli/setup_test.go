@@ -62,8 +62,12 @@ func TestSetupPrepareServerBuildsDaemonAndHostSpecs(t *testing.T) {
 func TestSetupPrepareServerFieldsAreMinimal(t *testing.T) {
 	fields := setupPrepareServerFields(nil)
 	keys := make([]string, 0, len(fields))
+	tokenPlaceholder := ""
 	for _, field := range fields {
 		keys = append(keys, field.Key)
+		if field.Key == "token_env" {
+			tokenPlaceholder = field.Placeholder
+		}
 	}
 	got := strings.Join(keys, ",")
 	for _, want := range []string{"host", "ssh", "roots", "port", "token_env", "verify"} {
@@ -73,6 +77,9 @@ func TestSetupPrepareServerFieldsAreMinimal(t *testing.T) {
 	}
 	if strings.Contains(got, "local_bin") || strings.Contains(got, "remote_bin") || strings.Contains(got, "url") || strings.Contains(got, "addr") || strings.Contains(got, "allow_unauthenticated_network_bind") || strings.Contains(got, "dry_run") || strings.Contains(got, "yes") {
 		t.Fatalf("default prepare fields should not expose advanced flags: %s", got)
+	}
+	if tokenPlaceholder != "" {
+		t.Fatalf("token env placeholder should be empty so it is not mistaken for a configured value, got %q", tokenPlaceholder)
 	}
 }
 
@@ -167,6 +174,39 @@ func TestSetupCurrentServerInitialValuesPreferSharedURLSSHHost(t *testing.T) {
 	}
 	if values["ssh"] != "z00879328_docker" {
 		t.Fatalf("ssh = %q, want shared URL alias z00879328_docker; all=%#v", values["ssh"], values)
+	}
+}
+
+func TestSetupUpdatePreservesUnauthenticatedPrivateNetworkHost(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	store := config.NewStore(filepath.Join(home, ".remork"))
+	if err := store.Save(config.Config{Hosts: map[string]config.Host{
+		"lab": {Name: "lab", URL: "http://10.0.0.5:17731", NoProxy: true},
+	}}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := workspace.WriteBinding(local, workspace.Binding{
+		Version:     1,
+		Host:        "lab",
+		RemoteRoot:  "/data/project",
+		WorkspaceID: "ws-setup",
+		StateDir:    filepath.Join(home, ".remork", "state", "ws-setup"),
+	}); err != nil {
+		t.Fatalf("write binding: %v", err)
+	}
+
+	values := setupCurrentServerInitialValues(Options{HomeDir: home, WorkingDir: local})
+	spec, err := setupUpdateServerSpec(values)
+	if err != nil {
+		t.Fatalf("setupUpdateServerSpec: %v", err)
+	}
+
+	if spec.TokenEnv != "" || spec.TokenFile != "" {
+		t.Fatalf("unauthenticated host should not invent token auth: %#v", spec)
+	}
+	if !spec.AllowUnauthenticatedNetworkBind {
+		t.Fatalf("update should preserve existing no-token private-network host: %#v values=%#v", spec, values)
 	}
 }
 
