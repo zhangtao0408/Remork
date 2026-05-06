@@ -379,29 +379,34 @@ func runSetupDaemonPlanAndExecute(cmd *cobra.Command, opts Options, values map[s
 	if err != nil || !ok {
 		return err
 	}
-	deploy := daemonDeployOptions{
-		action:    spec.Action,
-		hostName:  spec.HostName,
-		sshTarget: spec.SSHTarget,
-		roots:     spec.Roots,
-		addr:      spec.Addr,
-		localBin:  spec.LocalBin,
-		remoteBin: spec.RemoteBin,
-		tokenFile: spec.TokenFile,
-		url:       spec.URL,
-		tokenEnv:  spec.TokenEnv,
-		noProxy:   spec.NoProxy,
-		verify:    spec.Verify,
-		execute:   true,
-		yes:       true,
-		probe:     opts.DaemonProbe,
-		version:   opts.Version,
-		ctx:       cmd.Context(),
-		color:     commandColorMode(cmd),
-		canPrompt: true,
-		runner:    opts.CommandRunner,
-	}
+	deploy := setupDaemonDeployOptionsFromSpec(spec, opts, commandColorMode(cmd))
+	deploy.ctx = cmd.Context()
+	deploy.canPrompt = true
+	deploy.runner = opts.CommandRunner
 	return prepareAndRunDaemonDeploy(cmd, opts, deploy, false)
+}
+
+func setupDaemonDeployOptionsFromSpec(spec DaemonDeploySpec, opts Options, color output.ColorMode) daemonDeployOptions {
+	return daemonDeployOptions{
+		action:                          spec.Action,
+		hostName:                        spec.HostName,
+		sshTarget:                       spec.SSHTarget,
+		roots:                           spec.Roots,
+		addr:                            spec.Addr,
+		localBin:                        spec.LocalBin,
+		remoteBin:                       spec.RemoteBin,
+		tokenFile:                       spec.TokenFile,
+		url:                             spec.URL,
+		tokenEnv:                        spec.TokenEnv,
+		noProxy:                         spec.NoProxy,
+		verify:                          spec.Verify,
+		execute:                         true,
+		yes:                             true,
+		probe:                           opts.DaemonProbe,
+		version:                         opts.Version,
+		color:                           color,
+		allowUnauthenticatedNetworkBind: spec.AllowUnauthenticatedNetworkBind,
+	}
 }
 
 func runSetupConnectProject(cmd *cobra.Command, opts Options) error {

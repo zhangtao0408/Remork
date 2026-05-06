@@ -210,6 +210,30 @@ func TestSetupUpdatePreservesUnauthenticatedPrivateNetworkHost(t *testing.T) {
 	}
 }
 
+func TestSetupDaemonDeployOptionsCarryUnauthenticatedBind(t *testing.T) {
+	spec := DaemonDeploySpec{
+		Action:                          "upgrade",
+		HostName:                        "lab",
+		SSHTarget:                       "lab-ssh",
+		Roots:                           []string{"/data"},
+		Addr:                            "0.0.0.0:17731",
+		URL:                             "http://lab:17731",
+		LocalBin:                        fakeDaemonBinary(t),
+		NoProxy:                         true,
+		Verify:                          true,
+		AllowUnauthenticatedNetworkBind: true,
+	}
+
+	deploy := setupDaemonDeployOptionsFromSpec(spec, Options{Version: "test"}, output.ColorNever)
+
+	if !deploy.allowUnauthenticatedNetworkBind {
+		t.Fatalf("deploy should carry unauthenticated bind approval: %#v", deploy)
+	}
+	if err := validateDaemonDeployExecution(deploy); err != nil {
+		t.Fatalf("execution validation should allow trusted private-network bind: %v", err)
+	}
+}
+
 func TestSetupConnectProjectBuildsWorkspaceBindSpec(t *testing.T) {
 	values := map[string]string{
 		"host":        "lab",
