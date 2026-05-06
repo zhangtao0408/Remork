@@ -355,8 +355,11 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 			fix:  "pass --url URL or run remork host add first",
 		}
 	}
+	if deploy.localBin == "" && !dryRun {
+		deploy.skipBinaryInstall = remoteBinaryAlreadyCompatible(runner, deploySSHTarget(deploy), deploy, opts.Version)
+	}
 	if deploy.localBin == "" {
-		if deploy.platform == "" {
+		if !deploy.skipBinaryInstall && deploy.platform == "" {
 			reporter := progress.NewTextReporter(cmd.ErrOrStderr(), progress.Options{Color: commandColorMode(cmd)})
 			reporter.Start("detecting remote platform over SSH...", 1)
 			platform, err := detectRemoteDaemonPlatform(cmd.Context(), runner, deploySSHTarget(deploy))
@@ -367,17 +370,19 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 			deploy.platform = platform
 			reporter.DoneMessage("detected remote platform: " + deploy.platform)
 		}
-		localBin, err := resolveReleaseDaemonBinary(cmd.Context(), releaseBinaryOptions{
-			Version:    opts.Version,
-			HomeDir:    opts.HomeDir,
-			Platform:   deploy.platform,
-			LocalBin:   deploy.localBin,
-			Downloader: defaultReleaseDownloader{},
-		})
-		if err != nil {
-			return err
+		if !deploy.skipBinaryInstall {
+			localBin, err := resolveReleaseDaemonBinary(cmd.Context(), releaseBinaryOptions{
+				Version:    opts.Version,
+				HomeDir:    opts.HomeDir,
+				Platform:   deploy.platform,
+				LocalBin:   deploy.localBin,
+				Downloader: defaultReleaseDownloader{},
+			})
+			if err != nil {
+				return err
+			}
+			deploy.localBin = localBin
 		}
-		deploy.localBin = localBin
 	}
 	deploy.store, err = configStore(opts)
 	if err != nil {
@@ -392,6 +397,16 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 	deploy.confirmOut = cmd.ErrOrStderr()
 	configureDaemonDeployExecution(&deploy, dryRun)
 	return runDaemonDeploy(cmd.OutOrStdout(), deploy)
+}
+
+func remoteBinaryAlreadyCompatible(runner commandRunner, remote string, deploy daemonDeployOptions, version string) bool {
+	want := compatibleDaemonVersion(version)
+	if want == "" || strings.TrimSpace(remote) == "" {
+		return false
+	}
+	deploy.version = version
+	state, err := remoteBinaryState(runner, remote, deploy)
+	return err == nil && state.Installed && state.Version == want
 }
 
 func configureDaemonDeployExecution(deploy *daemonDeployOptions, dryRun bool) {
@@ -432,6 +447,7 @@ type daemonDeployOptions struct {
 	verifyInterval                  time.Duration
 	runner                          commandRunner
 	version                         string
+	skipBinaryInstall               bool
 	color                           output.ColorMode
 	canPrompt                       bool
 	confirmIn                       io.Reader
@@ -480,6 +496,9 @@ func printDaemonDeployPlan(out interface{ Write([]byte) (int, error) }, deploy d
 		})
 	}
 	plan := []string{"Copy a prebuilt daemon from this machine."}
+	if deploy.skipBinaryInstall {
+		plan = []string{"Use the existing compatible remorkd already installed on the server."}
+	}
 	if startCmd != "" {
 		plan = append(plan, "Start remorkd without remote Go, npm, apt, brew, or internet.")
 	} else {
@@ -487,8 +506,10 @@ func printDaemonDeployPlan(out interface{ Write([]byte) (int, error) }, deploy d
 	}
 	renderer.List("Plan", plan)
 	renderer.Command("ssh " + shellQuote(remote) + " " + shellQuote(remotePrepareCommand(deploy)))
-	renderer.Command("scp " + shellQuote(deploy.localBin) + " " + shellQuote(remote) + ":" + shellQuote(remoteSCPDestinationPath(deploy.remoteBin)))
-	renderer.Command("ssh " + shellQuote(remote) + " " + shellQuote(remoteChmodCommand(deploy.remoteBin)))
+	if !deploy.skipBinaryInstall {
+		renderer.Command("scp " + shellQuote(deploy.localBin) + " " + shellQuote(remote) + ":" + shellQuote(remoteSCPDestinationPath(deploy.remoteBin)))
+		renderer.Command("ssh " + shellQuote(remote) + " " + shellQuote(remoteChmodCommand(deploy.remoteBin)))
+	}
 	if startCmd != "" {
 		renderer.Command("ssh " + shellQuote(remote) + " " + shellQuote(startCmd))
 	}
@@ -562,9 +583,16 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 	if deploy.version != "" {
 		state, err := remoteBinaryState(runner, remote, deploy)
 		if err != nil {
-			return fmt.Errorf("remote remorkd preflight failed on %s: %w", remote, err)
+			if deploy.skipBinaryInstall {
+				return fmt.Errorf("remote remorkd preflight failed on %s: %w", remote, err)
+			}
+			output.NewPlainRenderer(out, output.PlainOptions{Color: deploy.color}).Warning(fmt.Sprintf("remote remorkd preflight failed on %s; continuing with binary copy: %v", remote, err))
+		} else {
+			printRemoteBinaryState(out, state, deploy.version, "before", deploy.color)
+			if want := compatibleDaemonVersion(deploy.version); want != "" && state.Installed && state.Version == want {
+				deploy.skipBinaryInstall = true
+			}
 		}
-		printRemoteBinaryState(out, state, deploy.version, "before", deploy.color)
 	}
 
 	if err := runDeployStep(out, runner, deploy.color, "prepare remote directories", "ssh", remote, remotePrepareCommand(deploy)); err != nil {
@@ -573,26 +601,30 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 	if err := runDeployStep(out, runner, deploy.color, "stop existing remorkd daemon", "ssh", remote, remoteStopCommand()); err != nil {
 		return err
 	}
-	if err := runDeployStep(out, runner, deploy.color, "copy remorkd binary", "scp", deploy.localBin, remote+":"+remoteSCPDestinationPath(deploy.remoteBin)); err != nil {
-		return err
-	}
-	if err := runDeployStep(out, runner, deploy.color, "mark remorkd executable", "ssh", remote, remoteChmodCommand(deploy.remoteBin)); err != nil {
-		return err
-	}
-	if want := expectedDaemonVersion(deploy.version); want != "" {
-		state, err := remoteBinaryState(runner, remote, deploy)
-		if err != nil {
-			return fmt.Errorf("remote remorkd version check after copy failed on %s: %w", remote, err)
+	if deploy.skipBinaryInstall {
+		output.NewPlainRenderer(out, output.PlainOptions{Color: deploy.color}).Success("using existing compatible remorkd")
+	} else {
+		if err := runDeployStep(out, runner, deploy.color, "copy remorkd binary", "scp", deploy.localBin, remote+":"+remoteSCPDestinationPath(deploy.remoteBin)); err != nil {
+			return err
 		}
-		printRemoteBinaryState(out, state, deploy.version, "after", deploy.color)
-		if !state.Installed || state.Version != want {
-			got := state.Version
-			if got == "" {
-				got = "not installed"
+		if err := runDeployStep(out, runner, deploy.color, "mark remorkd executable", "ssh", remote, remoteChmodCommand(deploy.remoteBin)); err != nil {
+			return err
+		}
+		if want := expectedDaemonVersion(deploy.version); want != "" {
+			state, err := remoteBinaryState(runner, remote, deploy)
+			if err != nil {
+				return fmt.Errorf("remote remorkd version check after copy failed on %s: %w", remote, err)
 			}
-			return fmt.Errorf("remote remorkd version mismatch after copy: got %s, want %s", got, want)
+			printRemoteBinaryState(out, state, deploy.version, "after", deploy.color)
+			if !state.Installed || state.Version != want {
+				got := state.Version
+				if got == "" {
+					got = "not installed"
+				}
+				return fmt.Errorf("remote remorkd version mismatch after copy: got %s, want %s", got, want)
+			}
+			output.NewPlainRenderer(out, output.PlainOptions{Color: deploy.color}).Success("copied remorkd version verified: " + want)
 		}
-		output.NewPlainRenderer(out, output.PlainOptions{Color: deploy.color}).Success("copied remorkd version verified: " + want)
 	}
 	if startCmd := remoteStartCommand(deploy); startCmd != "" {
 		if err := runDeployStep(out, runner, deploy.color, "start remorkd daemon", "ssh", remote, startCmd); err != nil {
@@ -674,8 +706,10 @@ func validateDaemonDeployExecution(deploy daemonDeployOptions) error {
 			fix:  "pass --token-file with --token-env, bind to 127.0.0.1, or explicitly pass --allow-unauthenticated-network-bind",
 		}
 	}
-	if err := validateLocalDaemonBinary(deploy.localBin); err != nil {
-		return err
+	if !deploy.skipBinaryInstall {
+		if err := validateLocalDaemonBinary(deploy.localBin); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -725,13 +759,6 @@ func validateLocalDaemonBinary(localBin string) error {
 			code: exitcode.InvalidUsageOrConfig,
 			err:  fmt.Errorf("local remorkd binary %q is not a regular file", localBin),
 			fix:  "pass --local-bin /path/to/remorkd",
-		}
-	}
-	if info.Mode()&0o111 == 0 {
-		return codedCommandError{
-			code: exitcode.InvalidUsageOrConfig,
-			err:  fmt.Errorf("local remorkd binary %q is not executable", localBin),
-			fix:  "run chmod 0755 /path/to/remorkd, then rerun remork daemon install",
 		}
 	}
 	f, err := os.Open(localBin)
@@ -909,6 +936,10 @@ func expectedDaemonVersion(version string) string {
 		return ""
 	}
 	return version
+}
+
+func compatibleDaemonVersion(version string) string {
+	return strings.TrimSpace(version)
 }
 
 func remotePrepareCommand(deploy daemonDeployOptions) string {
