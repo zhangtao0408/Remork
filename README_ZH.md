@@ -1,20 +1,43 @@
+<p align="center">
+  <img src="docs/assets/header.png" alt="Remork：面向私有服务器的远端 workspace 控制工具" width="100%">
+</p>
+
 # Remork
 
 面向私有服务器的远端 workspace 控制工具。
 
-Remork 在远端机器上运行一个轻量 daemon，在本机维护一份可编辑 working copy。你先
-从远端同步文件，在本地编辑和查看 diff，然后通过 `remork apply` 显式写回远端。同
-一个 daemon 也可以在远端 workspace 中运行命令或打开交互式 shell。
+[English README](README.md)
 
-Remork 面向可信 VPN 或内网环境。Product V1 支持可选的共享 token 认证，但它不是
-账号系统，也不应该直接暴露在公网。
+Remork 会为远端服务器上的目录维护一份本地可编辑 working copy。你从远端同步文件，在本机编辑和查看 diff，再通过 `remork apply` 显式写回远端。同一个 daemon 也可以在远端机器上执行命令和打开交互式 shell。
+
+它面向可信 VPN 或私有网络环境，适合不方便在每台服务器上安装完整 Agent 环境的场景。
+
+## 为什么用 Remork
+
+适合使用 Remork 的场景：
+
+- 远端服务器不方便安装或持续更新完整 Agent 运行环境；
+- 人和 Agent 都需要查看、编辑远端 workspace 文件；
+- 大模型权重、数据包、构建产物等大文件应默认保留在远端；
+- 写回远端前需要先 review diff，并且必须显式 apply；
+- 命令需要在服务器上运行，但编辑体验希望留在本机。
+
+Remork 不是公网多租户远程执行平台。Product V1 支持 allowed roots 和可选共享 token 认证，但不提供账号系统、RBAC 或公网加固。
+
+## 你会得到什么
+
+- `remork sync` 将远端文件同步到本地 working copy。
+- `remork diff` 和 `remork apply` 用于 review 并写回本地修改。
+- `remork run -- COMMAND` 在远端执行非交互式命令。
+- `remork shell` 通过 daemon 打开交互式远端 shell。
+- 大文件默认以 `.meta` 占位符表示，需要时再显式 pull。
+- `remork daemon install` 可通过 SSH 复制预构建 daemon。远端不需要 Go、npm、apt、brew，也不需要能访问互联网。
 
 ## 当前状态
 
-Remork 目前处于 Product V1 阶段，适合小团队和 Agent 辅助的远端开发场景，尤其是
-不方便在每台服务器上安装完整 Agent 环境的情况。
+Remork 目前是 Product V1 beta，适合小团队和 Agent 辅助的私有服务器开发流程。
 
-Release 提供以下裸二进制文件：
+Release 提供这些二进制文件：
 
 ```text
 remork-darwin-arm64     macOS 客户端，Apple Silicon
@@ -23,12 +46,14 @@ remorkd-linux-arm64     Linux daemon，arm64
 remorkd-linux-amd64     Linux daemon，amd64
 ```
 
-## 安装
+## 快速开始
 
-安装本机 macOS client：
+这一套流程会安装 macOS 客户端，通过 SSH 安装 Linux daemon，绑定一个本地目录，并同步远端 workspace。
+
+### 1. 安装 macOS 客户端
 
 ```bash
-VERSION=<release-tag>
+VERSION=v0.1.1.beta02
 case "$(uname -m)" in
   arm64) CLIENT_PLATFORM=darwin-arm64 ;;
   x86_64) CLIENT_PLATFORM=darwin-amd64 ;;
@@ -43,30 +68,37 @@ export PATH="$HOME/.local/bin:$PATH"
 remork version
 ```
 
-如果新打开的终端找不到 `remork`，把下面这行加入 shell 配置：
+如果新开的终端找不到 `remork`，把下面这行加入你的 shell 配置：
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-通过 SSH 安装或启动远端 daemon。默认示例使用共享 token，避免 daemon 以无认证方式
-暴露在网络上：
+### 2. 安装远端 daemon
+
+推荐安装方式使用共享 token。token 用于避免 daemon 在私有网络内被未授权客户端访问。
 
 ```bash
+HOST_ALIAS=my-lab
+SSH_TARGET=user@my-server
+DAEMON_URL=http://remork-daemon.example.internal:17731
+ALLOWED_ROOT=/home/me
+REMOTE_PLATFORM=linux-arm64
+
 export REMORK_TOKEN="$(openssl rand -hex 32)"
 mkdir -p "$HOME/.remork"
 printf '%s\n' "$REMORK_TOKEN" > "$HOME/.remork/remork.token"
 chmod 0600 "$HOME/.remork/remork.token"
 REMOTE_TOKEN_FILE=".remork/remork.token"
 
-printf '%s\n' "$REMORK_TOKEN" | ssh my-lab \
+printf '%s\n' "$REMORK_TOKEN" | ssh "$SSH_TARGET" \
   "mkdir -p \"\$HOME/.remork\" && umask 077 && cat > \"\$HOME/$REMOTE_TOKEN_FILE\""
 
-remork daemon install my-lab \
-  --ssh my-lab \
-  --url http://remork-daemon.example.internal:17731 \
-  --root /home/me \
-  --platform linux-arm64 \
+remork daemon install "$HOST_ALIAS" \
+  --ssh "$SSH_TARGET" \
+  --url "$DAEMON_URL" \
+  --root "$ALLOWED_ROOT" \
+  --platform "$REMOTE_PLATFORM" \
   --token-file "$REMOTE_TOKEN_FILE" \
   --token-env REMORK_TOKEN \
   --execute --yes \
@@ -74,123 +106,119 @@ remork daemon install my-lab \
   --no-proxy
 ```
 
-`--token-env REMORK_TOKEN` 表示后续 `remork` 命令也需要同一个环境变量。新终端里可以
-从本地 token 文件加载，或者把这行加入 shell 配置：
+后续终端需要先加载同一个 token：
 
 ```bash
 export REMORK_TOKEN="$(cat "$HOME/.remork/remork.token")"
 ```
 
-daemon 二进制会被复制到远端用户 home 下的持久路径。远端不需要安装 Go，也不需要
-能访问互联网。
+x86_64 Linux 服务器使用 `linux-amd64`，arm64 Linux 服务器使用 `linux-arm64`。如果一个 daemon 需要服务多个基础目录，可以重复传 `--root`。
 
-`--platform` 指的是远端 Linux 服务器平台，不是本机 Mac 平台。arm64 Linux 服务器
-使用 `linux-arm64`，x86_64 Linux 服务器使用 `linux-amd64`。
-
-执行安装时，Remork 会检查远端是否已经存在 `remorkd`，在可用时报告已有版本，复制
-新二进制后验证远端二进制版本；如果使用了 `--verify`，还会继续校验 daemon
-`/status` 的版本和 allowed roots。
-
-如果明确运行在可信 VPN 或私有网络里，可以跳过 token 准备步骤，并在 install 命令中
-额外传 `--allow-unauthenticated-network-bind`。没有 token 时，Remork 会拒绝直接
-执行非 loopback 监听地址的安装，除非显式传这个确认参数。
-
-x86_64 服务器把 `linux-arm64` 换成 `linux-amd64`。如果一个 daemon 需要管理多个
-基础目录，可以重复传 `--root`。
-
-## 快速开始
-
-把本地目录绑定到远端 workspace：
+### 3. 绑定并同步 workspace
 
 ```bash
-mkdir -p ~/remork/project
-cd ~/remork/project
+LOCAL_WORKING_COPY=~/remork/project
+WORKSPACE_ROOT=/home/me/project
 
-remork init my-lab:/home/me/project
+mkdir -p "$LOCAL_WORKING_COPY"
+cd "$LOCAL_WORKING_COPY"
+
+remork init "$HOST_ALIAS:$WORKSPACE_ROOT"
 remork sync
 remork status
 ```
 
-在普通终端里运行时，Remork 默认优先使用适合人阅读的交互流程。例如
-`remork init` 会询问 host 和远端 workspace；`remork init my-lab:/home/me/project`
-则保持显式、可脚本化的旧用法。自动化场景建议使用明确的命令组合：
-`remork init HOST:/path --non-interactive`、`remork sync --json`、
-`remork status --json`、`remork apply --yes --non-interactive`，以及用于大文件的
-`remork pull --force PATH`。
+`remork init` 不会安装 daemon。它只会把当前本地目录绑定到一个已经由 `remorkd` 服务的远端 workspace。
 
-在本地编辑文件，然后查看并应用修改：
+## 日常工作流
 
 ```bash
+remork sync
+
+# 在本机编辑文件
+
+remork status
 remork diff
 remork apply
 ```
 
-在远端 workspace 中运行命令：
+在远端 workspace 里执行命令：
 
 ```bash
 remork run -- pwd
-remork run -- make test
+remork run "make test"
+```
+
+打开交互式远端 shell：
+
+```bash
 remork shell
 ```
+
+脚本和 Agent 优先使用 `run`。人需要交互终端时使用 `shell`。
 
 ## 核心概念
 
 | 名称 | 含义 |
 | --- | --- |
-| Remork host | 本机给 daemon endpoint 起的名字，例如 `my-lab`。 |
+| Daemon | 运行在远端服务器上的小型 HTTP 服务，即 `remorkd`。 |
+| Remork host | 本机保存的 daemon endpoint 昵称，例如 `my-lab`。 |
 | SSH target | 只用于安装或升级 daemon 的 SSH 目标。 |
-| Daemon URL | client 运行时访问的 HTTP 地址，不是 SSH 端口。 |
-| Allowed root | `remorkd` 允许访问的远端基础目录。 |
+| Daemon URL | client 运行时访问的 HTTP URL，不是 SSH 端口。 |
+| Allowed root | `remorkd` 被允许服务的远端基础目录。 |
 | Workspace root | 绑定到本地 working copy 的具体项目目录。 |
 | Local working copy | 你在本机实际编辑的目录。 |
+| Sync snapshot | 本地元数据，用来检测本地修改和远端冲突。 |
 
-`remorkd --root /home/me` 表示 daemon 可以服务 `/home/me` 下面的 workspace。本地
-目录可以绑定到 `/home/me/project`、`/home/me/another-project`，或者其他位于该
-allowed root 下面的子目录。
+`remorkd --root /home/me` 表示 daemon 可以服务 `/home/me` 下的 workspace。随后本地目录可以绑定到 `/home/me/project`、`/home/me/another-project`，或者任何位于该 allowed root 下的子目录。
 
-## 常用命令
+## 命令
+
+### 日常命令
 
 | 命令 | 用途 |
 | --- | --- |
-| `remork sync` | 把远端状态同步到本地 working copy。 |
-| `remork status` | 查看本地修改、远端更新、冲突和大文件占位。 |
+| `remork sync` | 将远端状态同步到本地 working copy。 |
+| `remork status` | 查看本地修改、远端更新、冲突和大文件占位符。 |
 | `remork diff` | 查看本地修改和上次同步 base 之间的差异。 |
-| `remork apply` | 把确认过的本地修改写回远端 workspace。 |
-| `remork pull PATH` | 下载被大文件占位符替代的完整文件。 |
-| `remork run -- COMMAND` | 在远端运行非交互式命令。 |
-| `remork shell` | 打开或恢复交互式远端 shell。 |
-| `remork doctor` | 检查本地配置、daemon 可达性、root 覆盖和日志访问。 |
+| `remork apply` | 将 review 过的本地修改写回远端 workspace。 |
+| `remork run -- COMMAND` | 在远端执行非交互式命令。 |
+| `remork shell` | 打开或恢复交互式远端 shell session。 |
 
-主机和 workspace 辅助命令：
+### 设置和检查
 
 ```bash
 remork host list
-remork host list --json
 remork daemon status my-lab
 remork workspace
 remork workspace list --json
+remork doctor
 ```
 
-耗时较长的 `sync` 会显示阶段和操作进度；`--quiet` 或 `--json` 会关闭这些文本提示。
-普通文本模式也会复用交互界面的表达方式：分组、`ok` / `warn` / `error` 状态、进度
-计数和下一步提示。
-
-常用输出控制：
+### 自动化友好的输出
 
 ```bash
-remork sync --quiet
+remork init HOST:/remote/project --non-interactive
+remork sync --json
 remork status --json
 remork apply --yes --non-interactive
 remork doctor --json
 remork sync --color=never
 ```
 
+每个命令都有更详细的 CLI help：
+
+```bash
+remork init -h
+remork daemon install -h
+remork shell -h
+```
+
 ## 大文件
 
-超过 daemon 阈值的文件默认不会下载。Product V1 默认阈值是 `128MB`，除非 daemon
-启动时另行指定。
+超过 daemon 阈值的文件默认不会下载。Product V1 默认阈值是 `128MB`，除非 daemon 启动时指定了其他值。
 
-远端如果存在：
+如果远端存在：
 
 ```text
 checkpoints/model.tar.gz
@@ -202,7 +230,7 @@ checkpoints/model.tar.gz
 checkpoints/model.tar.gz.meta
 ```
 
-只有需要完整内容时再拉取：
+需要完整内容时再下载：
 
 ```bash
 remork pull checkpoints/model.tar.gz
@@ -214,34 +242,41 @@ remork pull checkpoints/model.tar.gz
 remork pull --force checkpoints/model.tar.gz
 ```
 
-## 应用修改
+## 安全应用修改
 
 远端 workspace 是事实来源。本地修改不会自动推送。
 
-`remork apply` 会带上 `sync` 或 `pull` 时记录的 base hash。如果远端文件在此之后
-已经变化，daemon 会拒绝写入，避免覆盖较新的远端内容。
+`remork apply` 会带上 `sync` 或 `pull` 时记录的 base hash。如果远端文件在此之后已经变化，daemon 会拒绝写入，避免覆盖较新的远端内容。
 
-新的本地文件不会被普通 `remork apply` 自动创建到远端，除非你明确选择：
+普通的 `remork apply` 默认跳过未跟踪的新文件。如果要创建一个新的远端文件：
 
 ```bash
-remork apply path/to/new-file
+remork apply path/to/new-file --include-untracked
+```
+
+如果要包含所有未被 ignore 的 untracked 文件：
+
+```bash
 remork apply --include-untracked
 ```
 
-`remork apply` 适合已经 review 过的源码级修改。超过 `128MB` 的文件会在上传前被
-拒绝；这类大文件应保留在远端，只有需要本地副本时再用 `remork pull --force`。如果
-某个已跟踪文件被本地目录替换，需要先重命名或恢复其中一侧，再执行 apply。
+`remork apply` 适合已经 review 过的源码级修改。超过 `128MB` 的文件会在上传前被拒绝。大文件应尽量保留在远端，只有需要本地副本时再使用 `remork pull --force`。
 
-本地缓存、密钥、虚拟环境、生成产物、Agent 临时文件等不应该写回远端的内容，建议
-放进 `.remorkignore`。Remork 会先读 `.remorkignore`，再读 `.gitignore`。
+使用 `.remorkignore` 放置永远不应 apply 的文件，例如缓存、密钥、虚拟环境、生成产物和 Agent 临时文件。Remork 会先读取 `.remorkignore`，再读取 `.gitignore`。
 
-## 远端 Shell
+## 远端命令和 Shell
 
-`remork shell` 会通过 daemon 打开交互式 shell。client 断开后，session 仍会保留在
-daemon 中。
+`remork run` 会在绑定的远端 workspace 中执行命令：
 
-`remork shell` 需要真实终端。脚本和 Agent 的非交互任务应使用
-`remork run -- COMMAND`。
+```bash
+remork run -- pwd
+remork run "pytest -q"
+remork run --timeout 30s "go test ./..."
+```
+
+执行前，Remork 会检查本地和远端 workspace 状态。如果本地修改或冲突让命令执行不安全，它会停止并提示下一步。只有在你明确希望忽略本地待处理修改时，才使用 `--remote-only`。
+
+`remork shell` 会通过 daemon 打开交互式远端 shell。它不是普通 SSH，但行为接近远端交互式 shell：从 workspace root 开始，使用远端用户的交互式 shell，并支持 attach / kill 保留的 session。
 
 ```bash
 remork shell
@@ -250,15 +285,58 @@ remork shell --attach <session-id>
 remork shell --kill <session-id>
 ```
 
+`remork shell` 需要真实终端。脚本和 Agent 应使用 `remork run -- COMMAND`。
+
+## 排障
+
+### `connect: connection refused`
+
+client 访问到了 daemon URL 的 host/port，但那里没有进程监听。先检查保存的 host URL 和 daemon 状态：
+
+```bash
+remork host list
+remork daemon status HOST
+```
+
+然后用 `remork daemon install ... --execute --yes --verify` 安装或重启 daemon。
+
+### `remote root is not advertised`
+
+daemon 已经启动，但 workspace 路径不在它的 allowed roots 内。重新安装或重启 `remorkd`，并传入包含该 workspace 的 `--root`。
+
+### `token env "REMORK_TOKEN" is not set`
+
+host 配置使用了 `--token-env REMORK_TOKEN`。使用 Remork 前先加载 token：
+
+```bash
+export REMORK_TOKEN="$(cat "$HOME/.remork/remork.token")"
+```
+
+### 新文件被 `apply` 跳过
+
+untracked 文件默认会跳过。可以 apply 指定新文件，或显式包含 untracked 文件：
+
+```bash
+remork apply path/to/new-file --include-untracked
+```
+
+### 只同步到了 `.meta` 文件
+
+远端文件超过了大文件阈值。需要完整文件时显式 pull：
+
+```bash
+remork pull --force path/to/file
+```
+
 ## 安全模型
 
 Remork Product V1 假设：
 
-- 使用可信 VPN 或内网；
-- daemon 启动时显式配置 allowed roots；
+- 使用可信 VPN 或私有网络；
+- daemon 显式配置 allowed roots；
 - 可通过 token file 和环境变量使用可选共享 token；
 - 本地修改不会自动写回远端；
-- 部署 daemon 时不要求远端安装依赖。
+- 远端服务器不需要安装依赖。
 
 当前限制：
 
@@ -267,10 +345,22 @@ Remork Product V1 假设：
 - daemon 配置主要通过启动参数完成；
 - 本地配置存放在 `~/.remork`。
 
+在可信 VPN 或私有网络中，可以跳过 token 准备，并在 install 时传 `--allow-unauthenticated-network-bind`。没有 token 时，Remork 会拒绝执行非 loopback 监听地址的安装，除非显式传入这个确认参数。
+
+## 开发
+
+```bash
+go test ./...
+go vet ./...
+scripts/build-release.sh v0.1.1.beta02
+```
+
+CI 会在 push 和 pull request 上运行测试、vet 和 release build 检查。
+
 ## 文档
 
 - [English README](README.md)
 - [Daemon API](docs/remork-api.md)
+- [Agent 操作指南](skills/remork/SKILL.md)
 - [Product V1 验证记录](docs/remork-product-v1-validation.md)
 - [可靠性验证记录](docs/remork-v1-10x-reliability.md)
-- [Agent 操作指南](skills/remork/SKILL.md)

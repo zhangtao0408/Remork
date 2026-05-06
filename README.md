@@ -1,24 +1,51 @@
+<p align="center">
+  <img src="docs/assets/header.png" alt="Remork: remote workspace control for private servers" width="100%">
+</p>
+
 # Remork
 
 Remote workspace control for private servers.
 
-Remork runs a lightweight daemon on a remote machine and keeps an editable
-working copy on your Mac. You sync files from the remote workspace, edit them
-locally, review the diff, and write changes back explicitly with `remork apply`.
-The same daemon can also run commands and interactive shell sessions in the
-remote workspace.
+[中文文档](README_ZH.md)
 
-Remork is designed for trusted VPN or private-network environments. Product V1
-supports optional shared-token authentication, but it is not an account system
-and should not be exposed directly to the public internet.
+Remork gives you a local, editable working copy for a directory that lives on a
+remote server. You sync from the remote workspace, edit locally, review the
+diff, and explicitly apply changes back. The same daemon can run commands and
+interactive shells on the remote machine.
+
+It is built for trusted VPN or private-network environments where installing a
+full agent stack on every server is impractical.
+
+## Why Remork
+
+Use Remork when:
+
+- the remote server cannot easily install or update a full local agent runtime;
+- humans and agents both need to inspect and edit remote workspace files;
+- large model/data artifacts should stay remote unless explicitly pulled;
+- writes back to the remote workspace should be reviewed and explicit;
+- commands should run on the server, but editing can happen locally.
+
+Remork is not a public multi-tenant remote execution platform. Product V1 has
+allowed roots and optional shared-token authentication, but no user accounts,
+RBAC, or public-internet hardening.
+
+## What You Get
+
+- `remork sync` pulls remote files into a local working copy.
+- `remork diff` and `remork apply` review and write local edits back.
+- `remork run -- COMMAND` runs non-interactive commands remotely.
+- `remork shell` opens an interactive remote shell through the daemon.
+- Large files are represented as `.meta` placeholders until explicitly pulled.
+- `remork daemon install` copies a prebuilt daemon over SSH; the server does
+  not need Go, npm, apt, brew, or internet access.
 
 ## Status
 
-Remork is currently Product V1. It is useful for small teams and agent-assisted
-remote development where installing a full agent stack on every server is
-impractical.
+Remork is currently a Product V1 beta. It is usable for small teams and
+agent-assisted remote development on trusted private networks.
 
-Supported release binaries:
+Release binaries:
 
 ```text
 remork-darwin-arm64     macOS client, Apple Silicon
@@ -27,12 +54,15 @@ remorkd-linux-arm64     Linux daemon, arm64
 remorkd-linux-amd64     Linux daemon, amd64
 ```
 
-## Install
+## Quick Start
 
-Install the macOS client:
+This path installs the macOS client, installs a Linux daemon through SSH, binds
+a local folder, and syncs the remote workspace.
+
+### 1. Install the macOS client
 
 ```bash
-VERSION=<release-tag>
+VERSION=v0.1.1.beta02
 case "$(uname -m)" in
   arm64) CLIENT_PLATFORM=darwin-arm64 ;;
   x86_64) CLIENT_PLATFORM=darwin-amd64 ;;
@@ -53,24 +83,32 @@ If a new terminal cannot find `remork`, add this to your shell profile:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Install or start the remote daemon through SSH. The default example uses a
-shared token so the daemon is not exposed unauthenticated on the network:
+### 2. Install the remote daemon
+
+The recommended install uses a shared token. The token protects the daemon from
+unauthenticated clients on the private network.
 
 ```bash
+HOST_ALIAS=my-lab
+SSH_TARGET=user@my-server
+DAEMON_URL=http://remork-daemon.example.internal:17731
+ALLOWED_ROOT=/home/me
+REMOTE_PLATFORM=linux-arm64
+
 export REMORK_TOKEN="$(openssl rand -hex 32)"
 mkdir -p "$HOME/.remork"
 printf '%s\n' "$REMORK_TOKEN" > "$HOME/.remork/remork.token"
 chmod 0600 "$HOME/.remork/remork.token"
 REMOTE_TOKEN_FILE=".remork/remork.token"
 
-printf '%s\n' "$REMORK_TOKEN" | ssh my-lab \
+printf '%s\n' "$REMORK_TOKEN" | ssh "$SSH_TARGET" \
   "mkdir -p \"\$HOME/.remork\" && umask 077 && cat > \"\$HOME/$REMOTE_TOKEN_FILE\""
 
-remork daemon install my-lab \
-  --ssh my-lab \
-  --url http://remork-daemon.example.internal:17731 \
-  --root /home/me \
-  --platform linux-arm64 \
+remork daemon install "$HOST_ALIAS" \
+  --ssh "$SSH_TARGET" \
+  --url "$DAEMON_URL" \
+  --root "$ALLOWED_ROOT" \
+  --platform "$REMOTE_PLATFORM" \
   --token-file "$REMOTE_TOKEN_FILE" \
   --token-env REMORK_TOKEN \
   --execute --yes \
@@ -78,127 +116,124 @@ remork daemon install my-lab \
   --no-proxy
 ```
 
-`--token-env REMORK_TOKEN` means future `remork` commands need the same
-environment variable. For new terminals, load it from the local token file or
-add the export to your shell profile:
+For future terminals, load the same token before running Remork:
 
 ```bash
 export REMORK_TOKEN="$(cat "$HOME/.remork/remork.token")"
 ```
 
-The daemon binary is copied to durable paths under the remote user's home
-directory. The remote server does not need Go installed and does not need
-internet access.
+Use `linux-amd64` instead of `linux-arm64` for x86_64 Linux servers. Repeat
+`--root` when one daemon should serve multiple base directories.
 
-`--platform` is the remote Linux server platform, not your Mac platform. Use
-`linux-arm64` for arm64 Linux servers and `linux-amd64` for x86_64 Linux
-servers.
-
-During an executed install, Remork checks whether `remorkd` is already present
-on the remote host, reports the existing version when available, copies the new
-binary, verifies the copied binary version, and then verifies daemon `/status`
-when `--verify` is used.
-
-On a trusted VPN or private network you can skip the token setup and add
-`--allow-unauthenticated-network-bind` to the install command. Without a token,
-Remork refuses executed non-loopback installs unless that flag is passed
-explicitly.
-
-Use `linux-amd64` instead of `linux-arm64` for x86_64 servers. Repeat `--root`
-when one daemon should manage multiple base directories.
-
-## Quickstart
-
-Bind a local directory to a remote workspace:
+### 3. Bind and sync a workspace
 
 ```bash
-mkdir -p ~/remork/project
-cd ~/remork/project
+LOCAL_WORKING_COPY=~/remork/project
+WORKSPACE_ROOT=/home/me/project
 
-remork init my-lab:/home/me/project
+mkdir -p "$LOCAL_WORKING_COPY"
+cd "$LOCAL_WORKING_COPY"
+
+remork init "$HOST_ALIAS:$WORKSPACE_ROOT"
 remork sync
 remork status
 ```
 
-When you run Remork from a normal terminal, commands prefer an interactive,
-human-readable flow. For example, `remork init` asks for the host and remote
-workspace, while `remork init my-lab:/home/me/project` keeps the explicit
-scriptable path. For automation, use the command-specific stable forms:
-`remork init HOST:/path --non-interactive`, `remork sync --json`,
-`remork status --json`, `remork apply --yes --non-interactive`, and
-`remork pull --force PATH` for large files.
+`remork init` does not install the daemon. It only binds the current local
+directory to a remote workspace already served by `remorkd`.
 
-Edit files locally, then review and apply:
+## Daily Workflow
 
 ```bash
+remork sync
+
+# edit files locally
+
+remork status
 remork diff
 remork apply
 ```
 
-Run commands in the remote workspace:
+Run a command on the remote workspace:
 
 ```bash
 remork run -- pwd
-remork run -- make test
+remork run "make test"
+```
+
+Open an interactive remote shell:
+
+```bash
 remork shell
 ```
 
-## Concepts
+Use `run` for scripts and agents. Use `shell` for humans who need an
+interactive terminal.
+
+## Core Concepts
 
 | Term | Meaning |
 | --- | --- |
+| Daemon | `remorkd`, the small HTTP service running on the remote server. |
 | Remork host | Local nickname for a daemon endpoint, for example `my-lab`. |
 | SSH target | SSH destination used only for daemon install or upgrade. |
 | Daemon URL | HTTP URL the client uses at runtime. It is not the SSH port. |
 | Allowed root | Remote base directory that `remorkd` is allowed to serve. |
 | Workspace root | Concrete project directory bound to a local working copy. |
 | Local working copy | Local folder you edit. |
+| Sync snapshot | Local metadata used to detect local edits and remote conflicts. |
 
 `remorkd --root /home/me` allows workspaces under `/home/me`. A local folder can
 then bind to `/home/me/project`, `/home/me/another-project`, or any other child
-workspace under that allowed root.
+directory under that allowed root.
 
-## Common Commands
+## Commands
+
+### Daily commands
 
 | Command | Purpose |
 | --- | --- |
 | `remork sync` | Pull remote state into the local working copy. |
-| `remork status` | Show local changes, remote updates, conflicts, and large-file placeholders. |
-| `remork diff` | Review local changes against the last synced base. |
-| `remork apply` | Write reviewed local changes back to the remote workspace. |
-| `remork pull PATH` | Download a full file that was left as a large-file placeholder. |
+| `remork status` | Show local edits, remote updates, conflicts, and large-file placeholders. |
+| `remork diff` | Review local edits against the last synced base. |
+| `remork apply` | Write reviewed local edits back to the remote workspace. |
 | `remork run -- COMMAND` | Run a non-interactive command remotely. |
 | `remork shell` | Open or attach to an interactive remote shell session. |
-| `remork doctor` | Check local config, daemon reachability, root coverage, and logs. |
 
-Host and workspace helpers:
+### Setup and inspection
 
 ```bash
 remork host list
-remork host list --json
 remork daemon status my-lab
 remork workspace
 remork workspace list --json
+remork doctor
 ```
 
-Longer syncs print stage and operation progress unless `--quiet` or `--json` is
-used. Plain text mode uses the same status language as the interactive UI:
-sections, `ok` / `warn` / `error` states, progress counts, and next-step hints.
-
-Useful output flags:
+### Automation-friendly output
 
 ```bash
-remork sync --quiet
+remork init HOST:/remote/project --non-interactive
+remork sync --json
 remork status --json
 remork apply --yes --non-interactive
 remork doctor --json
 remork sync --color=never
 ```
 
+Every command also has detailed CLI help:
+
+```bash
+remork init -h
+remork daemon install -h
+remork shell -h
+```
+
 ## Large Files
 
-Files larger than the daemon threshold are not downloaded by default. Product V1
-uses a `128MB` threshold unless the daemon is started with a different value.
+Files larger than the daemon threshold are not downloaded by default. Product
+V1 uses a `128MB` threshold unless the daemon is started with a different
+value.
 
 For a remote file like:
 
@@ -218,13 +253,13 @@ Download the full content only when needed:
 remork pull checkpoints/model.tar.gz
 ```
 
-For scripts or non-interactive agent runs, confirm the large download explicitly:
+For scripts or agents, confirm the large download explicitly:
 
 ```bash
 remork pull --force checkpoints/model.tar.gz
 ```
 
-## Applying Changes
+## Applying Changes Safely
 
 The remote workspace is the source of truth. Local edits are never pushed
 automatically.
@@ -233,36 +268,102 @@ automatically.
 remote file changed after that base was recorded, the daemon rejects the write
 instead of overwriting newer remote content.
 
-New local files are not created by a broad `remork apply` unless selected
-explicitly:
+Broad `remork apply` skips untracked local files by default. To create a new
+remote file:
 
 ```bash
-remork apply path/to/new-file
+remork apply path/to/new-file --include-untracked
+```
+
+To include all untracked files that are not ignored:
+
+```bash
 remork apply --include-untracked
 ```
 
 `remork apply` is for reviewed source-sized edits. Files larger than `128MB`
-are rejected before upload; keep those remote and use `remork pull --force` only
-when you need a local copy. If a tracked file is replaced by a directory, rename
-or restore one side before applying.
+are rejected before upload. Keep large artifacts remote and use
+`remork pull --force` only when you need a local copy.
 
-Use `.remorkignore` for files that should never be applied, such as local
-caches, secrets, virtual environments, generated outputs, and agent scratch
-files. Remork reads `.remorkignore` before `.gitignore`.
+Use `.remorkignore` for files that should never be applied, such as caches,
+secrets, virtual environments, generated outputs, and agent scratch files.
+Remork reads `.remorkignore` before `.gitignore`.
 
-## Remote Shells
+## Remote Commands and Shells
 
-`remork shell` opens an interactive session through the daemon. Sessions are
-retained after the local client disconnects.
+`remork run` executes a command in the bound remote workspace:
 
-`remork shell` requires a real terminal. Scripts and agents should use
-`remork run -- COMMAND` for non-interactive work.
+```bash
+remork run -- pwd
+remork run "pytest -q"
+remork run --timeout 30s "go test ./..."
+```
+
+Before running, Remork checks local and remote workspace state. If local edits
+or conflicts make the command unsafe, it stops and tells you what to do next.
+Use `--remote-only` only when you intentionally want to ignore local pending
+edits.
+
+`remork shell` opens an interactive remote shell through the daemon. It is not
+plain SSH, but it behaves like a remote interactive shell: it starts in the
+workspace root, uses the remote user's interactive shell, and supports attach /
+kill for retained sessions.
 
 ```bash
 remork shell
 remork shell --list
 remork shell --attach <session-id>
 remork shell --kill <session-id>
+```
+
+`remork shell` requires a real terminal. Scripts and agents should use
+`remork run -- COMMAND`.
+
+## Troubleshooting
+
+### `connect: connection refused`
+
+The client reached the daemon URL host/port, but nothing is listening there.
+Check the saved host URL and daemon status:
+
+```bash
+remork host list
+remork daemon status HOST
+```
+
+Install or restart the daemon with `remork daemon install ... --execute --yes
+--verify`.
+
+### `remote root is not advertised`
+
+The daemon is alive, but the workspace path is outside its allowed roots.
+Restart or reinstall `remorkd` with a `--root` that contains the workspace.
+
+### `token env "REMORK_TOKEN" is not set`
+
+The host entry was configured with `--token-env REMORK_TOKEN`. Load the token
+before using Remork:
+
+```bash
+export REMORK_TOKEN="$(cat "$HOME/.remork/remork.token")"
+```
+
+### New file skipped by `apply`
+
+Untracked files are skipped by default. Apply a specific new file or opt in to
+untracked files:
+
+```bash
+remork apply path/to/new-file --include-untracked
+```
+
+### Only a `.meta` file was synced
+
+The remote file is larger than the large-file threshold. Pull the full file
+explicitly:
+
+```bash
+remork pull --force path/to/file
 ```
 
 ## Security Model
@@ -283,10 +384,24 @@ Current limitations:
 - daemon configuration is primarily flag-based;
 - local config is stored under `~/.remork`.
 
+On a trusted VPN or private network you can skip token setup and pass
+`--allow-unauthenticated-network-bind` during install. Without a token, Remork
+refuses executed non-loopback installs unless that flag is passed explicitly.
+
+## Development
+
+```bash
+go test ./...
+go vet ./...
+scripts/build-release.sh v0.1.1.beta02
+```
+
+CI runs tests, vet, and release build checks on pushes and pull requests.
+
 ## Documentation
 
 - [中文 README](README_ZH.md)
 - [Daemon API](docs/remork-api.md)
+- [Agent operating guide](skills/remork/SKILL.md)
 - [Product V1 validation notes](docs/remork-product-v1-validation.md)
 - [Reliability validation notes](docs/remork-v1-10x-reliability.md)
-- [Agent operating guide](skills/remork/SKILL.md)
