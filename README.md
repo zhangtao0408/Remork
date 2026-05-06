@@ -17,46 +17,25 @@ runtime on every machine is inconvenient.
 
 ## Install
 
-Install the macOS client:
+Install the Remork client with npm:
 
 ```bash
-VERSION=v0.1.1.beta03
-case "$(uname -m)" in
-  arm64) CLIENT_PLATFORM=darwin-arm64 ;;
-  x86_64) CLIENT_PLATFORM=darwin-amd64 ;;
-  *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-
-mkdir -p "$HOME/.local/bin"
-curl -L -o "$HOME/.local/bin/remork" \
-  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-${CLIENT_PLATFORM}"
-chmod 0755 "$HOME/.local/bin/remork"
-export PATH="$HOME/.local/bin:$PATH"
-
+npm install -g remork
 remork version
 ```
 
-If a new terminal cannot find `remork`, add this to your shell profile:
+Then start the product setup flow:
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
+remork setup
 ```
 
-Install the Windows client with PowerShell:
+The npm package includes macOS and Windows client binaries plus Linux `remorkd`
+daemon binaries used by setup. Setup can prepare or update a server without a
+second binary download.
 
-```powershell
-$Version = "v0.1.1.beta03"
-$Arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq "Arm64") { "arm64" } else { "amd64" }
-$InstallDir = Join-Path $HOME ".local\bin"
-New-Item -ItemType Directory -Force $InstallDir | Out-Null
-Invoke-WebRequest -Uri "https://github.com/zhangtao0408/Remork/releases/download/$Version/remork-windows-$Arch.exe" -OutFile (Join-Path $InstallDir "remork.exe")
-$env:Path = "$InstallDir;$env:Path"
-
-remork version
-```
-
-If a new PowerShell cannot find `remork`, add `%USERPROFILE%\.local\bin` to
-your user `Path`.
+Manual binary installation remains available from GitHub Releases when npm is
+not available.
 
 ## Set Up
 
