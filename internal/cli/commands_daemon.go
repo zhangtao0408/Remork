@@ -21,6 +21,7 @@ import (
 	"remork/internal/config"
 	"remork/internal/exitcode"
 	"remork/internal/output"
+	"remork/internal/progress"
 	"remork/internal/prompt"
 	"remork/internal/safety"
 	"remork/internal/tui"
@@ -356,13 +357,15 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 	}
 	if deploy.localBin == "" {
 		if deploy.platform == "" {
-			plainErrRenderer(cmd, false).Step("detecting remote platform over SSH...")
+			reporter := progress.NewTextReporter(cmd.ErrOrStderr(), progress.Options{Color: commandColorMode(cmd)})
+			reporter.Start("detecting remote platform over SSH...", 1)
 			platform, err := detectRemoteDaemonPlatform(cmd.Context(), runner, deploySSHTarget(deploy))
 			if err != nil {
+				reporter.FailMessage("remote platform detection failed")
 				return err
 			}
 			deploy.platform = platform
-			plainErrRenderer(cmd, false).Success("detected remote platform: " + deploy.platform)
+			reporter.DoneMessage("detected remote platform: " + deploy.platform)
 		}
 		localBin, err := resolveReleaseDaemonBinary(cmd.Context(), releaseBinaryOptions{
 			Version:    opts.Version,
@@ -815,12 +818,13 @@ func parseRemoteDaemonPlatform(out string) (string, error) {
 }
 
 func runDeployStep(out interface{ Write([]byte) (int, error) }, runner commandRunner, color output.ColorMode, label, name string, args ...string) error {
-	renderer := output.NewPlainRenderer(out, output.PlainOptions{Color: color})
-	renderer.Step(label + "...")
+	reporter := progress.NewTextReporter(out, progress.Options{Color: color})
+	reporter.Start(label+"...", 1)
 	if err := runner.Run(name, args...); err != nil {
+		reporter.FailMessage(label + " failed")
 		return fmt.Errorf("%s failed: %w", label, err)
 	}
-	renderer.Success(label)
+	reporter.DoneMessage(label)
 	return nil
 }
 

@@ -331,6 +331,12 @@ func TestRunDaemonDeployExecuteRunsCommandsInOrder(t *testing.T) {
 	if !strings.Contains(out.String(), "== Daemon install ==") {
 		t.Fatalf("output should include styled daemon section, got:\n%s", out.String())
 	}
+	if strings.Contains(out.String(), "prepare remote directories...\n") {
+		t.Fatalf("deploy steps should rewrite the running line instead of leaving a separate step line, got:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "\r") {
+		t.Fatalf("deploy steps should use carriage returns for live output, got:\n%s", out.String())
+	}
 }
 
 func TestRunDaemonDeployValidatesLocalBinBeforeRemoteMutation(t *testing.T) {
@@ -444,6 +450,12 @@ func TestDaemonInstallAutoDetectsRemotePlatformForReleaseBinary(t *testing.T) {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("platform detection progress should contain %q, got:\n%s", want, stderr.String())
 		}
+	}
+	if strings.Contains(stderr.String(), "detecting remote platform over SSH...\n") {
+		t.Fatalf("platform detection should rewrite the running line instead of leaving a separate step line, got:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "\r") {
+		t.Fatalf("platform detection should use carriage returns for live output, got:\n%s", stderr.String())
 	}
 	if len(fake.outputCommands) != 1 || fake.outputCommands[0].name != "ssh" || fake.outputCommands[0].args[0] != "lab" {
 		t.Fatalf("platform detection should probe host with ssh, got %#v", fake.outputCommands)

@@ -12,7 +12,11 @@ build_binary() {
   local name="$2"
   local goos="$3"
   local goarch="$4"
-  local out="$dist_dir/$name-$goos-$goarch"
+  local suffix=""
+  if [[ "$goos" == "windows" ]]; then
+    suffix=".exe"
+  fi
+  local out="$dist_dir/$name-$goos-$goarch$suffix"
   echo "building $out"
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
     go build -trimpath -ldflags "-s -w -X main.version=$version" \
@@ -21,6 +25,8 @@ build_binary() {
 
 build_binary ./cmd/remork remork darwin arm64
 build_binary ./cmd/remork remork darwin amd64
+build_binary ./cmd/remork remork windows amd64
+build_binary ./cmd/remork remork windows arm64
 build_binary ./cmd/remorkd remorkd linux arm64
 build_binary ./cmd/remorkd remorkd linux amd64
 
@@ -33,13 +39,15 @@ This is a Product V1 beta release of Remork.
 
 - macOS client, Apple Silicon: \`remork-darwin-arm64\`
 - macOS client, Intel: \`remork-darwin-amd64\`
+- Windows client, x64: \`remork-windows-amd64.exe\`
+- Windows client, arm64: \`remork-windows-arm64.exe\`
 - Linux server daemon, arm64: \`remorkd-linux-arm64\`
 - Linux server daemon, amd64: \`remorkd-linux-amd64\`
 
 The server host only needs the downloaded \`remorkd\` binary. It does not need
 Go, npm, apt, brew, or internet access.
 
-Only upload the four binaries above as release assets. Keep this release body
+Only upload the binaries above as release assets. Keep this release body
 as the install guide; do not upload README files for each release.
 
 ## Install the macOS client
@@ -55,6 +63,23 @@ remork version
 Use \`remork-darwin-amd64\` instead on Intel Macs.
 
 If a new terminal cannot find \`remork\`, add \`export PATH="\$HOME/.local/bin:\$PATH"\` to \`~/.zshrc\`.
+
+## Install the Windows client
+
+PowerShell:
+
+\`\`\`powershell
+\$Version = "$version"
+\$Arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq "Arm64") { "arm64" } else { "amd64" }
+\$InstallDir = Join-Path \$HOME ".local\\bin"
+New-Item -ItemType Directory -Force \$InstallDir | Out-Null
+Invoke-WebRequest -Uri "https://github.com/zhangtao0408/Remork/releases/download/\$Version/remork-windows-\$Arch.exe" -OutFile (Join-Path \$InstallDir "remork.exe")
+\$env:Path = "\$InstallDir;\$env:Path"
+remork version
+\`\`\`
+
+If a new PowerShell cannot find \`remork\`, add \`\$HOME\\.local\\bin\` to your
+user \`Path\`.
 
 ## Install the server daemon
 
@@ -148,7 +173,7 @@ EOF
     echo "## SHA-256 checksums"
     echo
     echo '```text'
-    grep -E ' (remork-darwin-arm64|remork-darwin-amd64|remorkd-linux-arm64|remorkd-linux-amd64)$' checksums.txt
+    grep -E ' (remork-darwin-arm64|remork-darwin-amd64|remork-windows-amd64\.exe|remork-windows-arm64\.exe|remorkd-linux-arm64|remorkd-linux-amd64)$' checksums.txt
     echo '```'
   } >> RELEASE_BODY.md
 )

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -10,7 +12,9 @@ import (
 	"remork/internal/client"
 	"remork/internal/exitcode"
 	"remork/internal/limits"
+	"remork/internal/output"
 	"remork/internal/preflight"
+	"remork/internal/progress"
 	"remork/internal/state"
 	"remork/internal/syncer"
 	"remork/internal/workspace"
@@ -84,13 +88,22 @@ func newRunCommand(opts Options) *cobra.Command {
 			}
 
 			command := runCommandArgs(args)
+			var runProgress *progress.TextReporter
 			if commandInteractionMode(cmd, interactionRequest{}).RichOutput {
-				plainErrRenderer(cmd, false).Step("remote command running; output is replayed after completion...")
+				runProgress = newRunProgress(cmd.ErrOrStderr(), commandColorMode(cmd))
 			}
 			result, err := runCtx.client.ExecContext(ctx, runCtx.binding.RemoteRoot, runCtx.binding.RemoteRoot, command, timeout.Milliseconds())
+			if runProgress != nil {
+				if err != nil {
+					runProgress.FailMessage("remote command failed")
+				} else {
+					runProgress.DoneMessage("remote command output ready")
+				}
+			}
 			if result.Stdout != "" {
 				fmt.Fprint(cmd.OutOrStdout(), result.Stdout)
 			}
+			result.Stderr = cleanRunStderr(result.Stderr)
 			if result.Stderr != "" {
 				fmt.Fprint(cmd.ErrOrStderr(), result.Stderr)
 			}
@@ -120,9 +133,46 @@ func newRunCommand(opts Options) *cobra.Command {
 
 func runCommandArgs(args []string) []string {
 	if len(args) == 1 {
-		return []string{"sh", "-c", args[0]}
+		return runBashRCCommand(args[0])
 	}
-	return args
+	return runBashRCCommand(shellJoin(args))
+}
+
+func runBashRCCommand(command string) []string {
+	return []string{"bash", "-ic", command}
+}
+
+func shellJoin(args []string) string {
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func newRunProgress(w io.Writer, color output.ColorMode) *progress.TextReporter {
+	reporter := progress.NewTextReporter(w, progress.Options{Color: color})
+	reporter.Start("remote command running; output is replayed after completion...", 1)
+	return reporter
+}
+
+func cleanRunStderr(stderr string) string {
+	if stderr == "" {
+		return ""
+	}
+	lines := strings.SplitAfter(stderr, "\n")
+	var b strings.Builder
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, "\r\n")
+		if strings.HasPrefix(trimmed, "bash: cannot set terminal process group ") && strings.Contains(trimmed, "Inappropriate ioctl for device") {
+			continue
+		}
+		if trimmed == "bash: no job control in this shell" {
+			continue
+		}
+		b.WriteString(line)
+	}
+	return b.String()
 }
 
 type runContext struct {
