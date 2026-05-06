@@ -46,13 +46,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            dist/remork-* \
-            dist/remorkd-* \
-            dist/checksums.txt \
-            --title "Remork ${GITHUB_REF_NAME}" \
-            --notes-file dist/RELEASE_BODY.md \
-            --verify-tag
+          release_args=()
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" \
+              --title "Remork ${GITHUB_REF_NAME}" \
+              --notes-file dist/RELEASE_BODY.md \
+              "${release_args[@]}"
+            gh release upload "${GITHUB_REF_NAME}" \
+              dist/remork-* \
+              dist/remorkd-* \
+              dist/checksums.txt \
+              --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              dist/remork-* \
+              dist/remorkd-* \
+              dist/checksums.txt \
+              --title "Remork ${GITHUB_REF_NAME}" \
+              --notes-file dist/RELEASE_BODY.md \
+              --verify-tag \
+              "${release_args[@]}"
+          fi
 
       - name: Publish npm package
         env:
