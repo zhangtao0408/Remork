@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"fmt"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -52,7 +53,10 @@ type ProgressModel struct {
 
 func NewProgressModel(title string) ProgressModel {
 	s := spinner.New()
-	s.Spinner = spinner.Line
+	s.Spinner = spinner.Spinner{
+		Frames: RemorkSpinnerFrames(),
+		FPS:    time.Second / 8,
+	}
 	return ProgressModel{Title: title, State: StepLoading, spin: s}
 }
 

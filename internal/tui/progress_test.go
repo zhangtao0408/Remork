@@ -45,3 +45,11 @@ func TestProgressModelUpdatesCounts(t *testing.T) {
 		t.Fatalf("view should contain progress count, got:\n%s", view)
 	}
 }
+
+func TestProgressModelUsesRemorkSpinner(t *testing.T) {
+	model := NewProgressModel("Setup")
+	frames := model.spin.Spinner.Frames
+	if strings.Join(frames, "") != ".oO°Oo." {
+		t.Fatalf("spinner frames = %#v", frames)
+	}
+}
