@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 const releaseBaseURL = "https://github.com/zhangtao0408/Remork/releases/download"
+const daemonVendorDirEnv = "REMORK_DAEMON_VENDOR_DIR"
 
 type assetDownloader interface {
 	Download(ctx context.Context, url, dst string) error
@@ -36,13 +38,17 @@ func resolveReleaseDaemonBinary(ctx context.Context, opts releaseBinaryOptions) 
 	if platform == "" {
 		platform = runtime.GOOS + "-" + runtime.GOARCH
 		if runtime.GOOS != "linux" {
-			return "", fmt.Errorf("remote daemon platform is required from %s; pass --platform linux-arm64 or --platform linux-amd64", platform)
+			return "", fmt.Errorf("could not select remorkd platform from %s; pass --platform linux-arm64 or linux-amd64", platform)
 		}
 	}
 	if err := validateDaemonReleasePlatform(platform); err != nil {
 		return "", err
 	}
 	name := "remorkd-" + platform
+
+	if vendorPath := vendorDaemonBinaryPath(os.Getenv(daemonVendorDirEnv), name); vendorPath != "" {
+		return vendorPath, nil
+	}
 
 	version := opts.Version
 	if version == "" {
@@ -133,6 +139,18 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+func vendorDaemonBinaryPath(vendorDir, name string) string {
+	vendorDir = strings.TrimSpace(vendorDir)
+	if vendorDir == "" {
+		return ""
+	}
+	path := filepath.Join(vendorDir, name)
+	if fileExists(path) {
+		return path
+	}
+	return ""
+}
+
 func validateDaemonReleasePlatform(platform string) error {
 	if platform == "" {
 		return fmt.Errorf("daemon release platform is required")
@@ -144,6 +162,6 @@ func validateDaemonReleasePlatform(platform string) error {
 	case "linux-arm64", "linux-amd64":
 		return nil
 	default:
-		return fmt.Errorf("unsupported daemon release platform %q; supported platforms: linux-arm64, linux-amd64", platform)
+		return fmt.Errorf("could not select remorkd platform from %s; pass --platform linux-arm64 or linux-amd64", platform)
 	}
 }

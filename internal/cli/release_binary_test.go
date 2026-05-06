@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +28,110 @@ func TestResolveReleaseDaemonBinaryLocalBinWinsForDev(t *testing.T) {
 	}
 	if got != "/custom/remorkd" {
 		t.Fatalf("path = %q, want local bin", got)
+	}
+}
+
+func TestResolveReleaseDaemonBinaryLocalBinOverridesVendorDir(t *testing.T) {
+	vendorDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(vendorDir, "remorkd-linux-arm64"), []byte("vendor daemon"), 0o755); err != nil {
+		t.Fatalf("write vendor binary: %v", err)
+	}
+	t.Setenv("REMORK_DAEMON_VENDOR_DIR", vendorDir)
+
+	got, err := resolveReleaseDaemonBinary(context.Background(), releaseBinaryOptions{
+		Version:  "0.1.1-beta.4",
+		HomeDir:  t.TempDir(),
+		Platform: "linux-arm64",
+		LocalBin: "/custom/remorkd",
+	})
+	if err != nil {
+		t.Fatalf("resolveReleaseDaemonBinary returned error: %v", err)
+	}
+	if got != "/custom/remorkd" {
+		t.Fatalf("path = %q, want explicit local bin", got)
+	}
+}
+
+func TestResolveReleaseDaemonBinaryUsesVendorDirBeforeDist(t *testing.T) {
+	wd := t.TempDir()
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.MkdirAll("dist", 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join("dist", "remorkd-linux-arm64"), []byte("dist daemon"), 0o755); err != nil {
+		t.Fatalf("write dist binary: %v", err)
+	}
+
+	vendorDir := t.TempDir()
+	vendorPath := filepath.Join(vendorDir, "remorkd-linux-arm64")
+	if err := os.WriteFile(vendorPath, []byte("vendor daemon"), 0o755); err != nil {
+		t.Fatalf("write vendor binary: %v", err)
+	}
+	t.Setenv("REMORK_DAEMON_VENDOR_DIR", vendorDir)
+
+	got, err := resolveReleaseDaemonBinary(context.Background(), releaseBinaryOptions{
+		Version:  "0.1.1-beta.4",
+		HomeDir:  t.TempDir(),
+		Platform: "linux-arm64",
+	})
+	if err != nil {
+		t.Fatalf("resolveReleaseDaemonBinary returned error: %v", err)
+	}
+	if got != vendorPath {
+		t.Fatalf("path = %q, want vendor path %q", got, vendorPath)
+	}
+}
+
+func TestResolveReleaseDaemonBinaryFallsBackWhenVendorBinaryMissing(t *testing.T) {
+	wd := t.TempDir()
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.MkdirAll("dist", 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	distPath := filepath.Join("dist", "remorkd-linux-amd64")
+	if err := os.WriteFile(distPath, []byte("dist daemon"), 0o755); err != nil {
+		t.Fatalf("write dist binary: %v", err)
+	}
+	t.Setenv("REMORK_DAEMON_VENDOR_DIR", t.TempDir())
+
+	got, err := resolveReleaseDaemonBinary(context.Background(), releaseBinaryOptions{
+		Version:  "0.1.1-beta.4",
+		HomeDir:  t.TempDir(),
+		Platform: "linux-amd64",
+	})
+	if err != nil {
+		t.Fatalf("resolveReleaseDaemonBinary returned error: %v", err)
+	}
+	if got != distPath {
+		t.Fatalf("path = %q, want dist fallback %q", got, distPath)
+	}
+}
+
+func TestResolveReleaseDaemonBinaryUnknownNonLinuxPlatformAsksForLinuxPlatform(t *testing.T) {
+	_, err := resolveReleaseDaemonBinary(context.Background(), releaseBinaryOptions{
+		Version:  "0.1.1-beta.4",
+		HomeDir:  t.TempDir(),
+		Platform: "darwin-arm64",
+	})
+	if err == nil {
+		t.Fatal("resolveReleaseDaemonBinary returned nil error, want unsupported platform error")
+	}
+	if !strings.Contains(err.Error(), "pass --platform linux-arm64 or linux-amd64") {
+		t.Fatalf("error = %q, want explicit platform guidance", err.Error())
 	}
 }
 
