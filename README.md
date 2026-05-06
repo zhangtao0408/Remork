@@ -39,6 +39,10 @@ RBAC, or public-internet hardening.
 - Large files are represented as `.meta` placeholders until explicitly pulled.
 - `remork daemon install` copies a prebuilt daemon over SSH; the server does
   not need Go, npm, apt, brew, or internet access.
+- `remork` without a subcommand opens an interactive command menu in a real
+  terminal.
+- Human-readable commands use inline TUI-style output: colored sections,
+  progress bars, tables, warnings, and next-step commands.
 
 ## Status
 
@@ -56,8 +60,8 @@ remorkd-linux-amd64     Linux daemon, amd64
 
 ## Quick Start
 
-This path installs the macOS client, installs a Linux daemon through SSH, binds
-a local folder, and syncs the remote workspace.
+This path installs the macOS client, then uses the guided setup flow to prepare
+a Linux daemon, bind a local folder, and sync the remote workspace.
 
 ### 1. Install the macOS client
 
@@ -83,7 +87,23 @@ If a new terminal cannot find `remork`, add this to your shell profile:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-### 2. Install the remote daemon
+### 2. Run guided setup
+
+For a human terminal, prefer the product setup flow:
+
+```bash
+remork setup
+```
+
+The setup flow asks what you want to do: connect this project, prepare a server,
+update an existing server, or repair an existing setup. It builds the same
+operation specs used by the scriptable commands, shows a review plan, and only
+then changes host, daemon, or workspace state.
+
+### 3. Scriptable daemon install
+
+Use the advanced daemon commands when you need a non-interactive script. This is
+the same operation path that setup uses internally.
 
 The recommended install uses a shared token. The token protects the daemon from
 unauthenticated clients on the private network.
@@ -93,7 +113,6 @@ HOST_ALIAS=my-lab
 SSH_TARGET=user@my-server
 DAEMON_URL=http://remork-daemon.example.internal:17731
 ALLOWED_ROOT=/home/me
-REMOTE_PLATFORM=linux-arm64
 
 export REMORK_TOKEN="$(openssl rand -hex 32)"
 mkdir -p "$HOME/.remork"
@@ -108,13 +127,21 @@ remork daemon install "$HOST_ALIAS" \
   --ssh "$SSH_TARGET" \
   --url "$DAEMON_URL" \
   --root "$ALLOWED_ROOT" \
-  --platform "$REMOTE_PLATFORM" \
   --token-file "$REMOTE_TOKEN_FILE" \
   --token-env REMORK_TOKEN \
-  --execute --yes \
+  -y \
   --verify \
   --no-proxy
 ```
+
+Without `--dry-run`, `remork daemon install` and `remork daemon upgrade` show
+the plan and ask for confirmation in an interactive terminal. Use `-y/--yes`
+for scripts and non-TTY shells. Use `--dry-run` only when you want to preview
+the SSH/SCP plan without changing the server. In the interactive daemon form,
+Remork shows the deployment parameters on one screen, including roots, SSH
+target, daemon URL, auth settings, verification, dry-run, and
+`--allow-unauthenticated-network-bind`. If validation fails before remote
+mutation, the same form opens again with your previous values.
 
 For future terminals, load the same token before running Remork:
 
@@ -122,10 +149,11 @@ For future terminals, load the same token before running Remork:
 export REMORK_TOKEN="$(cat "$HOME/.remork/remork.token")"
 ```
 
-Use `linux-amd64` instead of `linux-arm64` for x86_64 Linux servers. Repeat
-`--root` when one daemon should serve multiple base directories.
+Remork auto-detects the remote Linux platform over SSH. Pass `--platform` only
+when auto-detection is unavailable. Repeat `--root` when one daemon should serve
+multiple base directories.
 
-### 3. Bind and sync a workspace
+### 4. Bind and sync a workspace
 
 ```bash
 LOCAL_WORKING_COPY=~/remork/project
@@ -169,6 +197,17 @@ remork shell
 
 Use `run` for scripts and agents. Use `shell` for humans who need an
 interactive terminal.
+
+To discover commands interactively, run:
+
+```bash
+remork
+```
+
+The root menu groups daily commands, setup commands, and diagnostic commands so
+humans can discover the CLI surface without memorizing every command. It is a
+launcher and discovery aid: commands that require a path, host, or shell command
+still need explicit input or their command-specific prompt.
 
 ## Core Concepts
 
@@ -218,8 +257,16 @@ remork sync --json
 remork status --json
 remork apply --yes --non-interactive
 remork doctor --json
-remork sync --color=never
+remork daemon status HOST --json
+remork sync --quiet --non-interactive
 ```
+
+Interactive and ordinary text output is meant for humans. For agents and
+scripts, use `--non-interactive` globally, and use command-specific flags such
+as `--json`, `--quiet`, and `--yes` only on commands that support them. `--yes`
+is intended for reviewed write/deploy flows such as `apply` and daemon
+execution. `--color=never` only disables ANSI color; it does not make human
+text output machine-parseable.
 
 Every command also has detailed CLI help:
 
@@ -304,6 +351,10 @@ or conflicts make the command unsafe, it stops and tells you what to do next.
 Use `--remote-only` only when you intentionally want to ignore local pending
 edits.
 
+Command output is currently replayed after the remote command completes. For
+long-running interactive work, use `remork shell`; for scripts, use `run` and
+set `--timeout` when the command should have a hard limit.
+
 `remork shell` opens an interactive remote shell through the daemon. It is not
 plain SSH, but it behaves like a remote interactive shell: it starts in the
 workspace root, uses the remote user's interactive shell, and supports attach /
@@ -331,8 +382,9 @@ remork host list
 remork daemon status HOST
 ```
 
-Install or restart the daemon with `remork daemon install ... --execute --yes
---verify`.
+Install or restart the daemon with `remork daemon install ... -y --verify` in
+scripts, or run `remork daemon install ...` in an interactive terminal and
+confirm the prompt. Add `--dry-run` to preview without changing the server.
 
 ### `remote root is not advertised`
 

@@ -32,6 +32,8 @@ Remork 不是公网多租户远程执行平台。Product V1 支持 allowed roots
 - `remork shell` 通过 daemon 打开交互式远端 shell。
 - 大文件默认以 `.meta` 占位符表示，需要时再显式 pull。
 - `remork daemon install` 可通过 SSH 复制预构建 daemon。远端不需要 Go、npm、apt、brew，也不需要能访问互联网。
+- 在真实终端中直接运行 `remork` 会打开交互式命令菜单。
+- 面向人的普通文本输出使用 inline TUI 风格：彩色分区、进度条、表格、警告和下一步命令提示。
 
 ## 当前状态
 
@@ -48,7 +50,7 @@ remorkd-linux-amd64     Linux daemon，amd64
 
 ## 快速开始
 
-这一套流程会安装 macOS 客户端，通过 SSH 安装 Linux daemon，绑定一个本地目录，并同步远端 workspace。
+这一套流程会安装 macOS 客户端，然后通过引导式 setup flow 准备 Linux daemon、绑定本地目录，并同步远端 workspace。
 
 ### 1. 安装 macOS 客户端
 
@@ -74,7 +76,19 @@ remork version
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-### 2. 安装远端 daemon
+### 2. 运行引导式 setup
+
+人在终端里使用时，优先走产品化 setup flow：
+
+```bash
+remork setup
+```
+
+setup 会先询问你要做什么：连接当前项目、准备服务器、更新已有服务器，或修复已有配置。它和脚本化命令使用同一套 operation spec，会先展示 review plan，然后才修改 host、daemon 或 workspace 状态。
+
+### 3. 脚本化安装 daemon
+
+需要非交互脚本时再使用高级 daemon 命令。这条路径和 setup 内部使用的是同一套操作代码。
 
 推荐安装方式使用共享 token。token 用于避免 daemon 在私有网络内被未授权客户端访问。
 
@@ -83,7 +97,6 @@ HOST_ALIAS=my-lab
 SSH_TARGET=user@my-server
 DAEMON_URL=http://remork-daemon.example.internal:17731
 ALLOWED_ROOT=/home/me
-REMOTE_PLATFORM=linux-arm64
 
 export REMORK_TOKEN="$(openssl rand -hex 32)"
 mkdir -p "$HOME/.remork"
@@ -98,13 +111,14 @@ remork daemon install "$HOST_ALIAS" \
   --ssh "$SSH_TARGET" \
   --url "$DAEMON_URL" \
   --root "$ALLOWED_ROOT" \
-  --platform "$REMOTE_PLATFORM" \
   --token-file "$REMOTE_TOKEN_FILE" \
   --token-env REMORK_TOKEN \
-  --execute --yes \
+  -y \
   --verify \
   --no-proxy
 ```
+
+只要没有显式传 `--dry-run`，`remork daemon install` 和 `remork daemon upgrade` 就会展示 plan，并在交互式终端中询问是否执行。脚本或非 TTY 场景使用 `-y/--yes` 直接执行。只有想查看 SSH/SCP plan、不修改服务器时，才显式加 `--dry-run`。交互式 daemon 表单会把部署参数放在同一屏里，包括 roots、SSH target、daemon URL、认证、verify、dry-run 以及 `--allow-unauthenticated-network-bind`。如果远端执行前的校验失败，会带着上一次输入重新打开表单，用户只需要改有问题的字段。
 
 后续终端需要先加载同一个 token：
 
@@ -112,9 +126,9 @@ remork daemon install "$HOST_ALIAS" \
 export REMORK_TOKEN="$(cat "$HOME/.remork/remork.token")"
 ```
 
-x86_64 Linux 服务器使用 `linux-amd64`，arm64 Linux 服务器使用 `linux-arm64`。如果一个 daemon 需要服务多个基础目录，可以重复传 `--root`。
+Remork 会通过 SSH 自动识别远端 Linux 平台。只有自动识别不可用时才需要手动传 `--platform`。如果一个 daemon 需要服务多个基础目录，可以重复传 `--root`。
 
-### 3. 绑定并同步 workspace
+### 4. 绑定并同步 workspace
 
 ```bash
 LOCAL_WORKING_COPY=~/remork/project
@@ -156,6 +170,14 @@ remork shell
 ```
 
 脚本和 Agent 优先使用 `run`。人需要交互终端时使用 `shell`。
+
+想交互式发现命令，可以直接运行：
+
+```bash
+remork
+```
+
+根菜单会按日常操作、设置、诊断等场景分组，用来帮助用户发现和启动常用命令。它不是完整的参数向导：需要 path、host 或 shell command 的命令，仍然需要显式输入参数，或等待对应命令自己的交互式提示。
 
 ## 核心概念
 
@@ -203,8 +225,11 @@ remork sync --json
 remork status --json
 remork apply --yes --non-interactive
 remork doctor --json
-remork sync --color=never
+remork daemon status HOST --json
+remork sync --quiet --non-interactive
 ```
+
+交互式和普通文本输出主要面向人。Agent 和脚本应全局使用 `--non-interactive`，并只在命令支持时使用 `--json`、`--quiet`、`--yes` 等命令级参数。`--yes` 主要用于已经 review 过的写入或部署流程，例如 `apply` 和 daemon 执行安装。`--color=never` 只会关闭 ANSI 颜色，不会把面向人的文本输出变成机器可解析格式。
 
 每个命令都有更详细的 CLI help：
 
@@ -276,6 +301,8 @@ remork run --timeout 30s "go test ./..."
 
 执行前，Remork 会检查本地和远端 workspace 状态。如果本地修改或冲突让命令执行不安全，它会停止并提示下一步。只有在你明确希望忽略本地待处理修改时，才使用 `--remote-only`。
 
+当前版本的 `run` 会在远端命令结束后回放 stdout/stderr。需要长时间交互时使用 `remork shell`；脚本里使用 `run` 时可以配合 `--timeout` 设置硬超时。
+
 `remork shell` 会通过 daemon 打开交互式远端 shell。它不是普通 SSH，但行为接近远端交互式 shell：从 workspace root 开始，使用远端用户的交互式 shell，并支持 attach / kill 保留的 session。
 
 ```bash
@@ -298,7 +325,7 @@ remork host list
 remork daemon status HOST
 ```
 
-然后用 `remork daemon install ... --execute --yes --verify` 安装或重启 daemon。
+然后在脚本中用 `remork daemon install ... -y --verify` 安装或重启 daemon；在交互式终端中直接运行 `remork daemon install ...` 并确认提示。只想预览时加 `--dry-run`。
 
 ### `remote root is not advertised`
 
