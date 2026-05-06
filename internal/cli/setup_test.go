@@ -114,7 +114,7 @@ func TestSetupUpdateServerUsesUpgradeAction(t *testing.T) {
 func TestRenderSetupPlanIncludesActionsAndNext(t *testing.T) {
 	var buf bytes.Buffer
 	plan := OperationPlan{
-		Title: "Setup plan",
+		Title:  "Setup plan",
 		Target: map[string]string{"host": "lab"},
 		Actions: []PlannedAction{
 			{Label: "prepare remote directories"},
@@ -127,6 +127,45 @@ func TestRenderSetupPlanIncludesActionsAndNext(t *testing.T) {
 	for _, want := range []string{"Setup plan", "host", "prepare remote directories", "copy remorkd binary", "remork init"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("rendered setup plan missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestSetupNonInteractiveReturnsAdvancedCommandGuidance(t *testing.T) {
+	cmd := NewRootCommand(Options{Version: "test", HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
+	_, err := executeCommand(cmd, "setup", "--non-interactive")
+	if err == nil {
+		t.Fatal("setup --non-interactive should fail")
+	}
+	for _, want := range []string{"interactive terminal", "remork host add", "remork init"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("setup error should contain %q, got %v", want, err)
+		}
+	}
+}
+
+func TestSetupPrepareServerExecutionRendersPlanBeforeExecute(t *testing.T) {
+	localBin := fakeDaemonBinary(t)
+	values := map[string]string{
+		"host":       "lab",
+		"ssh":        "lab.example",
+		"roots":      "/data",
+		"url":        "http://lab.example:17731",
+		"addr":       "127.0.0.1:17731",
+		"local_bin":  localBin,
+		"remote_bin": ".local/bin/remorkd",
+		"no_proxy":   "yes",
+		"verify":     "no",
+	}
+	var out bytes.Buffer
+	err := executeSetupPrepareServerPlan(&out, output.ColorNever, values)
+	if err != nil {
+		t.Fatalf("executeSetupPrepareServerPlan: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"Daemon install", "lab", "prepare remote directories", "copy remorkd binary"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("setup prepare plan missing %q:\n%s", want, got)
 		}
 	}
 }

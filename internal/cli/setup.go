@@ -2,13 +2,16 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"remork/internal/exitcode"
 	"remork/internal/output"
+	"remork/internal/prompt"
 	"remork/internal/tui"
 )
 
@@ -30,7 +33,7 @@ func addSetupCommand(root *cobra.Command, opts Options) {
 			if !mode.Wizard {
 				return codedCommandError{
 					code: exitcode.InvalidUsageOrConfig,
-					err:  fmt.Errorf("remork setup requires an interactive terminal"),
+					err:  fmt.Errorf("remork setup requires an interactive terminal; use remork host add and remork init for non-interactive setup"),
 					fix:  "run remork setup in a terminal, or use advanced commands such as remork host add and remork init",
 				}
 			}
@@ -41,14 +44,31 @@ func addSetupCommand(root *cobra.Command, opts Options) {
 }
 
 func runSetupScopeMenu(cmd *cobra.Command, opts Options) error {
-	_ = opts
-	plainRenderer(cmd, false).Section("Setup")
-	plainRenderer(cmd, false).List("Choose what to set up", []string{
-		"Connect this project",
-		"Only prepare a server",
-		"Repair an existing setup",
-	})
-	return nil
+	model := tui.NewCommandMenu("Remork setup", setupScopeItems(workspaceIsBound(opts)))
+	model.Color = commandColorMode(cmd)
+	menu, err := tui.RunCommandMenu(model, tea.WithInput(cmd.InOrStdin()), tea.WithOutput(cmd.ErrOrStderr()))
+	if err != nil {
+		return err
+	}
+	if menu.Canceled() || !menu.Submitted() {
+		return nil
+	}
+	args := menu.SelectedArgs()
+	if len(args) == 0 {
+		return nil
+	}
+	switch args[0] {
+	case "prepare":
+		return runSetupPrepareServer(cmd, opts)
+	case "connect":
+		return runSetupConnectProject(cmd, opts)
+	case "update":
+		return runSetupUpdateServer(cmd, opts)
+	case "repair":
+		return runSetupRepair(cmd, opts)
+	default:
+		return fmt.Errorf("unknown setup scope %q", args[0])
+	}
 }
 
 func setupScopeItems(bound bool) []tui.CommandItem {
@@ -166,4 +186,121 @@ func renderSetupPlan(w interface{ Write([]byte) (int, error) }, color output.Col
 		r.List("Risks", plan.Risks)
 	}
 	r.Next(plan.Next)
+}
+
+func executeSetupPrepareServerPlan(w interface{ Write([]byte) (int, error) }, color output.ColorMode, values map[string]string) error {
+	spec, _, err := setupPrepareServerSpecs(values)
+	if err != nil {
+		return err
+	}
+	spec.Confirmed = true
+	plan, err := BuildDaemonDeployPlan(spec)
+	if err != nil {
+		return err
+	}
+	renderSetupPlan(w, color, plan)
+	return nil
+}
+
+func runSetupPrepareServer(cmd *cobra.Command, opts Options) error {
+	values, err := runTUIForm(cmd, "Prepare server", setupPrepareServerFields(nil))
+	if err != nil {
+		return err
+	}
+	spec, _, err := setupPrepareServerSpecs(values)
+	if err != nil {
+		return err
+	}
+	spec.Confirmed = false
+	plan, err := BuildDaemonDeployPlan(spec)
+	if err != nil {
+		return err
+	}
+	renderSetupPlan(cmd.OutOrStdout(), commandColorMode(cmd), plan)
+	ok, err := prompt.Confirm(prompt.Options{In: cmd.InOrStdin(), Out: cmd.ErrOrStderr()}, "execute setup plan?")
+	if err != nil || !ok {
+		return err
+	}
+	store, err := configStore(opts)
+	if err != nil {
+		return err
+	}
+	return runDaemonDeploy(cmd.OutOrStdout(), daemonDeployOptions{
+		action:     spec.Action,
+		hostName:   spec.HostName,
+		sshTarget:  spec.SSHTarget,
+		roots:      spec.Roots,
+		addr:       spec.Addr,
+		localBin:   spec.LocalBin,
+		remoteBin:  spec.RemoteBin,
+		tokenFile:  spec.TokenFile,
+		url:        spec.URL,
+		tokenEnv:   spec.TokenEnv,
+		noProxy:    spec.NoProxy,
+		verify:     spec.Verify,
+		execute:    true,
+		yes:        true,
+		probe:      opts.DaemonProbe,
+		version:    opts.Version,
+		ctx:        cmd.Context(),
+		color:      commandColorMode(cmd),
+		canPrompt:  true,
+		runner:     opts.CommandRunner,
+		store:      store,
+		storeReady: true,
+	})
+}
+
+func runSetupConnectProject(cmd *cobra.Command, opts Options) error {
+	localRoot, err := filepath.Abs(opts.WorkingDir)
+	if err != nil {
+		return err
+	}
+	values, err := runTUIForm(cmd, "Connect this project", []tui.Field{
+		{Key: "host", Label: "Host", Placeholder: "my-lab"},
+		{Key: "remote_root", Label: "Remote workspace root", Placeholder: "/absolute/remote/workspace"},
+		{Key: "first_sync", Label: "Run first sync y/N", Placeholder: "yes", Initial: "yes"},
+	})
+	if err != nil {
+		return err
+	}
+	spec, firstSync, err := setupConnectProjectSpec(localRoot, values)
+	if err != nil {
+		return err
+	}
+	if err := ExecuteWorkspaceBindSpec(opts, spec); err != nil {
+		return err
+	}
+	if firstSync {
+		cmd.Root().SetArgs([]string{"sync"})
+		return cmd.Root().ExecuteContext(cmd.Context())
+	}
+	plainRenderer(cmd, false).Next([]string{"remork sync"})
+	return nil
+}
+
+func runSetupUpdateServer(cmd *cobra.Command, opts Options) error {
+	_ = opts
+	values, err := runTUIForm(cmd, "Update server", setupPrepareServerFields(nil))
+	if err != nil {
+		return err
+	}
+	spec, err := setupUpdateServerSpec(values)
+	if err != nil {
+		return err
+	}
+	spec.Confirmed = false
+	plan, err := BuildDaemonDeployPlan(spec)
+	if err != nil {
+		return err
+	}
+	renderSetupPlan(cmd.OutOrStdout(), commandColorMode(cmd), plan)
+	return nil
+}
+
+func runSetupRepair(cmd *cobra.Command, opts Options) error {
+	_ = opts
+	plainRenderer(cmd, false).ProductTitle("Repair setup", "Run remork doctor to inspect host, daemon, auth, roots, and workspace binding.")
+	plainRenderer(cmd, false).Next([]string{"remork doctor"})
+	return nil
 }
