@@ -47,6 +47,14 @@ cat > "$pkg_dir/package.json" <<EOF
   "bin": {
     "remork": "bin/remork.js"
   },
+  "os": [
+    "darwin",
+    "win32"
+  ],
+  "cpu": [
+    "arm64",
+    "x64"
+  ],
   "scripts": {
     "test": "node --test test/*.test.js"
   },
@@ -84,6 +92,14 @@ remork setup
 
 This package includes Remork client binaries for macOS and Windows plus Linux
 \`remorkd\` daemon binaries used by \`remork setup\`.
+
+## Security and Network Safety
+
+Remork is intended for trusted private networks, VPNs, or similarly controlled
+server environments. \`remork setup\` installs or updates a remote HTTP daemon;
+do not expose that daemon directly to untrusted networks. When a daemon is
+reachable from a shared network, enable token authentication and keep the token
+private.
 
 Supported client platforms:
 

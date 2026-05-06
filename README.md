@@ -207,7 +207,7 @@ remork daemon install -h
 ```bash
 go test ./...
 go vet ./...
-scripts/build-release.sh v0.1.1.beta03
+scripts/build-release.sh v0.1.1-beta.4
 ```
 
 ## More Documentation

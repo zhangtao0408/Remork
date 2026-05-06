@@ -132,7 +132,7 @@ Initial npm publishing should be manual:
 
 ```bash
 npm login
-npm publish npm/remork
+npm publish npm/remork --tag beta
 ```
 
 After one or two successful manual beta releases, npm publishing can be moved

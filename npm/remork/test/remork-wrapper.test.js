@@ -4,18 +4,24 @@ const test = require("node:test");
 
 const wrapper = require("../bin/remork.js");
 
-test("selects macOS arm64 client binary", () => {
-  assert.equal(
-    wrapper.clientBinaryName({ platform: "darwin", arch: "arm64" }),
-    "remork-darwin-arm64",
-  );
+test("selects supported client binaries", () => {
+  const cases = [
+    [{ platform: "darwin", arch: "arm64" }, "remork-darwin-arm64"],
+    [{ platform: "darwin", arch: "x64" }, "remork-darwin-amd64"],
+    [{ platform: "win32", arch: "arm64" }, "remork-windows-arm64.exe"],
+    [{ platform: "win32", arch: "x64" }, "remork-windows-amd64.exe"],
+  ];
+
+  for (const [runtime, expected] of cases) {
+    assert.equal(wrapper.clientBinaryName(runtime), expected);
+  }
 });
 
-test("selects Windows x64 client binary", () => {
-  assert.equal(
-    wrapper.clientBinaryName({ platform: "win32", arch: "x64" }),
-    "remork-windows-amd64.exe",
-  );
+test("declares supported package platforms", () => {
+  const pkg = require("../package.json");
+
+  assert.deepEqual(pkg.os, ["darwin", "win32"]);
+  assert.deepEqual(pkg.cpu, ["arm64", "x64"]);
 });
 
 test("injects daemon vendor directory", () => {
