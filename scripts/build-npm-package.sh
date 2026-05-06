@@ -41,7 +41,7 @@ chmod 0755 "$vendor_dir"/remork-* "$vendor_dir"/remorkd-*
 
 cat > "$pkg_dir/package.json" <<EOF
 {
-  "name": "remork",
+  "name": "@zhangtao0408/remork",
   "version": "$npm_version",
   "description": "Remote workspace control for private servers",
   "bin": {
@@ -86,7 +86,7 @@ Remote workspace control for private servers.
 ## Install
 
 \`\`\`bash
-npm install -g remork
+npm install -g @zhangtao0408/remork@beta
 remork setup
 \`\`\`
 

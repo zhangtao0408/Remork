@@ -10,9 +10,14 @@ if [[ $# -gt 0 && "$1" != --* ]]; then
 fi
 pkg_dir="$(cd "$pkg_dir" && pwd)"
 
+package_name="$(node -p 'require(require("node:path").resolve(process.argv[1], "package.json")).name' "$pkg_dir")"
 version="$(node -p 'require(require("node:path").resolve(process.argv[1], "package.json")).version' "$pkg_dir")"
 tag="${NPM_TAG:-}"
 publish_args=()
+
+if [[ "$package_name" == @*/* ]]; then
+  publish_args+=(--access public)
+fi
 
 if [[ "$version" == *-* ]]; then
   tag="${tag:-beta}"

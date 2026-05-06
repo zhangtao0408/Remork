@@ -5,7 +5,7 @@ Remote workspace control for private servers.
 ## Install
 
 ```bash
-npm install -g remork
+npm install -g @zhangtao0408/remork@beta
 remork setup
 ```
 

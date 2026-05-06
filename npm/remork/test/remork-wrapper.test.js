@@ -20,6 +20,7 @@ test("selects supported client binaries", () => {
 test("declares supported package platforms", () => {
   const pkg = require("../package.json");
 
+  assert.equal(pkg.name, "@zhangtao0408/remork");
   assert.deepEqual(pkg.os, ["darwin", "win32"]);
   assert.deepEqual(pkg.cpu, ["arm64", "x64"]);
 });

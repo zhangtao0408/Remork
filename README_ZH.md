@@ -17,7 +17,7 @@ Remork 会把远端服务器上的目录同步成一份本地 working copy。你
 使用 npm 安装 Remork client：
 
 ```bash
-npm install -g remork
+npm install -g @zhangtao0408/remork@beta
 remork version
 ```
 

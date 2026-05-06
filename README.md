@@ -20,7 +20,7 @@ runtime on every machine is inconvenient.
 Install the Remork client with npm:
 
 ```bash
-npm install -g remork
+npm install -g @zhangtao0408/remork@beta
 remork version
 ```
 

@@ -1,6 +1,6 @@
 {
-  "name": "remork",
-  "version": "0.1.1-beta.4",
+  "name": "@zhangtao0408/remork",
+  "version": "0.1.1-beta.6",
   "description": "Remote workspace control for private servers",
   "bin": {
     "remork": "bin/remork.js"
