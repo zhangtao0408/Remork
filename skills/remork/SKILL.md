@@ -38,8 +38,17 @@ network and local proxy variables may not reach it.
 
 ## Install Flow
 
-Prefer client-driven daemon install. The `--root` value is the allowed root, not
-necessarily the project workspace:
+For human terminal sessions, prefer the product setup flow:
+
+```bash
+remork setup
+```
+
+Setup uses the same operation specs as the advanced commands, shows a review
+plan, and only then changes host, daemon, or workspace state.
+
+For agent and script workflows, call the explicit advanced command. The `--root`
+value is the allowed root, not necessarily the project workspace:
 
 ```bash
 export REMORK_TOKEN="$(openssl rand -hex 32)"
@@ -55,13 +64,20 @@ remork daemon install HOST \
   --ssh SSH_TARGET \
   --url http://VPN_OR_PRIVATE_IP:17731 \
   --root /absolute/allowed/root \
-  --platform linux-arm64 \
   --token-file "$REMOTE_TOKEN_FILE" \
   --token-env REMORK_TOKEN \
-  --execute --yes --non-interactive \
+  -y --non-interactive \
   --verify \
   --no-proxy
 ```
+
+Without `--dry-run`, daemon install and upgrade show the plan and execute only
+after confirmation. Agent and script flows should pass `-y/--yes
+--non-interactive` for explicit, stable remote mutation. Use `--dry-run` only
+when the task is to preview the SSH/SCP plan without changing the server.
+In a human interactive terminal, the daemon form exposes all deployment options
+on one screen, including `--allow-unauthenticated-network-bind`; if validation
+fails before remote mutation, Remork reopens the form with the previous values.
 
 Before later `remork` calls in a new shell or agent session, restore the env var
 from the local token file:
@@ -99,8 +115,9 @@ machine on port `17731`. Verify with `remork daemon status HOST`. If the URL
 uses a non-default port, pass the same port with `--addr 0.0.0.0:PORT` during
 `remork daemon install`.
 
-The `--platform` flag is the remote Linux server platform. Use `linux-arm64`
-for arm64 Linux servers and `linux-amd64` for x86_64 Linux servers.
+Remork auto-detects the remote Linux server platform over SSH. Pass
+`--platform linux-arm64` or `--platform linux-amd64` only when SSH platform
+detection cannot be used.
 
 For additional projects on the same host, bind another child workspace under the
 same allowed root with a separate local working copy.
@@ -119,8 +136,12 @@ is used. If it is slow, use those progress lines to distinguish manifest fetch,
 local scan, file transfer, and state save delays.
 
 Remork defaults to interactive, human-oriented output in a terminal. Agents
-should pass `--non-interactive` for scripted flows, use `--json` for parsing,
-and use `--yes` only when the planned remote write has already been reviewed.
+should pass the global `--non-interactive` flag for scripted flows, use
+command-specific `--json` flags for parsing when available, and use
+command-specific `--yes` only when the planned remote write or deploy operation
+has already been reviewed.
+Do not rely on the root `remork` command menu in agent workflows; call the
+specific command directly.
 
 After editing locally:
 
@@ -135,6 +156,10 @@ After applying, run the remote check through Remork:
 ```bash
 remork run -- COMMAND ...
 ```
+
+`remork run` currently replays stdout/stderr after the remote command completes.
+For live interactive work, use `remork shell`; for automation, keep using
+`remork run -- ...` and set `--timeout` when the command needs a hard limit.
 
 ## Safety Rules
 
@@ -208,6 +233,7 @@ Check setup and daemon reachability:
 remork doctor
 remork doctor --json
 remork daemon status HOST
+remork daemon status HOST --json
 ```
 
 Inspect daemon data when sync behavior is unclear:

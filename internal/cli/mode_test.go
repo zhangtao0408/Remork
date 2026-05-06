@@ -22,6 +22,7 @@ func TestInteractionModeKeepsJSONAndQuietNonInteractive(t *testing.T) {
 		{TTY: true, MissingInput: true, Quiet: true},
 		{TTY: true, MissingInput: true, Yes: true},
 		{TTY: true, MissingInput: true, NonInteractive: true},
+		{TTY: true, MissingInput: true, DumbTerminal: true},
 		{TTY: false, MissingInput: true},
 	}
 
@@ -111,5 +112,19 @@ func TestApplyRegistersYesFlag(t *testing.T) {
 	}
 	if flag := applyCmd.Flags().Lookup("yes"); flag == nil {
 		t.Fatal("apply should register --yes")
+	}
+	if flag := applyCmd.Flags().ShorthandLookup("y"); flag == nil || flag.Name != "yes" {
+		t.Fatalf("apply should register -y shorthand for --yes, got %#v", flag)
+	}
+}
+
+func TestDaemonDeployRegistersYesShorthand(t *testing.T) {
+	cmd := NewRootCommand(Options{Version: "test"})
+	installCmd, _, err := cmd.Find([]string{"daemon", "install"})
+	if err != nil {
+		t.Fatalf("find daemon install: %v", err)
+	}
+	if flag := installCmd.Flags().ShorthandLookup("y"); flag == nil || flag.Name != "yes" {
+		t.Fatalf("daemon install should register -y shorthand for --yes, got %#v", flag)
 	}
 }

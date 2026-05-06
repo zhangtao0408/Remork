@@ -1062,6 +1062,26 @@ func TestExecEndpointRunsCommand(t *testing.T) {
 	}
 }
 
+func TestExecEndpointRejectsNegativeTimeoutBeforeRunningCommand(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "should-not-exist")
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	body := strings.NewReader(`{"root":"` + root + `","cwd":"` + root + `","timeout_millis":-1,"command":["sh","-c","printf touched > should-not-exist"]}`)
+	resp, err := http.Post(srv.URL+"/exec", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d, want 400; body %s", resp.StatusCode, data)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("negative timeout request ran command; marker stat err=%v", err)
+	}
+}
+
 func TestExecEndpointRejectsCwdEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

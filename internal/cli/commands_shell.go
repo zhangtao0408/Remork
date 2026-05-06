@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -55,7 +54,9 @@ func addShellCommand(root *cobra.Command, opts Options) {
 				if err := runCtx.client.KillShellSession(ctx, runCtx.binding.RemoteRoot, killID); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "killed %s\n", killID)
+				r := plainRenderer(cmd, false)
+				r.Section("Shell session")
+				r.Success("killed " + killID)
 				return nil
 			}
 			if err := requireInteractiveTerminal(cmd, "interactive shell"); err != nil {
@@ -72,7 +73,7 @@ func addShellCommand(root *cobra.Command, opts Options) {
 					Conflicts:   status.Conflicts,
 				}, preflight.Options{})
 				if !decision.Allow {
-					fmt.Fprintln(cmd.ErrOrStderr(), decision.Message)
+					plainErrRenderer(cmd, false).Warning(decision.Message)
 					return codedCommandError{code: decision.ExitCode, err: fmt.Errorf("%s", decision.Message)}
 				}
 				if status.RemoteUpdates > 0 {
@@ -82,7 +83,7 @@ func addShellCommand(root *cobra.Command, opts Options) {
 					}
 					if syncResult.Conflicts > 0 {
 						msg := "Remote updates conflict with local files; resolve conflicts before running remote commands."
-						fmt.Fprintln(cmd.ErrOrStderr(), msg)
+						plainErrRenderer(cmd, false).Error(msg, "run remork status")
 						return codedCommandError{code: exitcode.Conflict, err: fmt.Errorf("%s", msg)}
 					}
 				}
@@ -92,7 +93,7 @@ func addShellCommand(root *cobra.Command, opts Options) {
 					NoSyncCheck: noSyncCheck,
 				})
 				if decision.Warning != "" {
-					fmt.Fprintln(cmd.ErrOrStderr(), decision.Warning)
+					plainErrRenderer(cmd, false).Warning(decision.Warning)
 				}
 			}
 
@@ -113,7 +114,7 @@ func addShellCommand(root *cobra.Command, opts Options) {
 			if err != nil {
 				var disconnectErr shellclient.DisconnectError
 				if errors.As(err, &disconnectErr) {
-					fmt.Fprintln(cmd.ErrOrStderr(), "Shell connection closed; the remote session may still be running. Use `remork shell --list` and `remork shell --attach <id>` to reconnect, or `remork shell --kill <id>` to stop it.")
+					plainErrRenderer(cmd, false).Warning("Shell connection closed; the remote session may still be running. Use `remork shell --list` and `remork shell --attach <id>` to reconnect, or `remork shell --kill <id>` to stop it.")
 					return nil
 				}
 				return err
@@ -123,7 +124,7 @@ func addShellCommand(root *cobra.Command, opts Options) {
 				return err
 			}
 			if before.Revision != after.Revision {
-				fmt.Fprintln(cmd.ErrOrStderr(), "Remote workspace changed during shell session. Run remork sync to update local files.")
+				plainErrRenderer(cmd, false).Warning("Remote workspace changed during shell session. Run remork sync to update local files.")
 			}
 			return nil
 		},
@@ -142,13 +143,16 @@ func listShellSessions(ctx context.Context, cmd *cobra.Command, runCtx runContex
 		return err
 	}
 	if len(sessions) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "no shell sessions")
+		plainRenderer(cmd, false).Empty("no shell sessions", "run remork shell")
 		return nil
 	}
-	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tCOMMAND\tLAST ACTIVE")
+	rows := make([][]string, 0, len(sessions))
 	for _, session := range sessions {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", session.ID, strings.Join(session.Command, " "), session.LastActive)
+		rows = append(rows, []string{session.ID, strings.Join(session.Command, " "), session.LastActive})
 	}
-	return tw.Flush()
+	r := plainRenderer(cmd, false)
+	r.Section("Shell sessions")
+	r.Table([]string{"ID", "COMMAND", "LAST ACTIVE"}, rows)
+	r.Command("remork shell --attach <session-id>")
+	return nil
 }

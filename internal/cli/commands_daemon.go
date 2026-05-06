@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +21,8 @@ import (
 	"remork/internal/config"
 	"remork/internal/exitcode"
 	"remork/internal/output"
+	"remork/internal/progress"
+	"remork/internal/prompt"
 	"remork/internal/safety"
 	"remork/internal/tui"
 )
@@ -34,33 +39,56 @@ func addDaemonCommand(root *cobra.Command, opts Options) {
 }
 
 func newDaemonStatusCommand(opts Options) *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	cmd := &cobra.Command{
 		Use:   "status HOST",
-		Short: "Show daemon version, platform, roots, threshold, and auth state",
-		Args:  cobra.ExactArgs(1),
+		Short: "Show daemon version, platform, allowed roots, threshold, and auth state",
+		Args:  exactArgsJSON(1, &jsonOut),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store, err := configStore(opts)
 			if err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			cfg, err := store.Load()
 			if err != nil {
 				if errors.Is(err, os.ErrNotExist) {
-					return codedCommandError{
+					err = codedCommandError{
 						code: exitcode.InvalidUsageOrConfig,
 						err:  fmt.Errorf("remork is not configured on this machine; run remork host add %s --url URL", args[0]),
 						fix:  fmt.Sprintf("run remork host add %s --url URL", args[0]),
 					}
+					if jsonOut {
+						return writeJSONCommandError(cmd, err)
+					}
+					return err
+				}
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
 				}
 				return err
 			}
 			host, ok := cfg.Hosts[args[0]]
 			if !ok {
-				return fmt.Errorf("host %q is not configured; run remork host add %s --url URL", args[0], args[0])
+				err := codedCommandError{
+					code: exitcode.InvalidUsageOrConfig,
+					err:  fmt.Errorf("host %q is not configured", args[0]),
+					fix:  fmt.Sprintf("run remork host add %s --url URL", args[0]),
+				}
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
+				return err
 			}
 			token, err := auth.TokenFromEnv(host.TokenEnv)
 			if err != nil {
-				return tokenEnvCommandError(host, err)
+				err = tokenEnvCommandError(host, err)
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
+				return err
 			}
 			clientID := cfg.ClientID
 			if clientID == "" {
@@ -68,9 +96,25 @@ func newDaemonStatusCommand(opts Options) *cobra.Command {
 			}
 			status, err := client.NewWithOptions(client.Options{BaseURL: host.URL, ClientID: clientID, Token: token, NoProxy: host.NoProxy}).StatusContext(cmd.Context())
 			if err != nil {
-				return daemonStatusCommandError(host, err)
+				err = daemonStatusCommandError(host, err)
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
+				return err
 			}
-			out := cmd.OutOrStdout()
+			if jsonOut {
+				return output.WriteJSON(cmd.OutOrStdout(), daemonStatusJSON{
+					Host:               host.Name,
+					URL:                host.URL,
+					Reachable:          true,
+					Version:            status.Version,
+					Platform:           status.Platform,
+					AllowedRoots:       append([]string(nil), status.Roots...),
+					Auth:               daemonAuthState(host, token),
+					LargeFileThreshold: status.Threshold,
+					WatchSupported:     status.WatchSupported,
+				})
+			}
 			r := plainRenderer(cmd, false)
 			r.Section("Daemon status")
 			r.KeyValue("host", host.Name)
@@ -80,19 +124,32 @@ func newDaemonStatusCommand(opts Options) *cobra.Command {
 			r.KeyValue("large_file_threshold", fmt.Sprintf("%d bytes", status.Threshold))
 			r.KeyValue("watch_supported", status.WatchSupported)
 			r.KeyValue("auth", daemonAuthState(host, token))
-			fmt.Fprintln(out, "roots:")
-			for _, root := range status.Roots {
-				fmt.Fprintf(out, "  - %s\n", root)
-			}
 			if len(status.Roots) == 0 {
-				fmt.Fprintln(out, "  - <none>")
+				r.List("allowed roots", nil)
+			} else {
+				r.List("allowed roots", status.Roots)
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON output")
+	return cmd
+}
+
+type daemonStatusJSON struct {
+	Host               string   `json:"host"`
+	URL                string   `json:"url"`
+	Reachable          bool     `json:"reachable"`
+	Version            string   `json:"version"`
+	Platform           string   `json:"platform"`
+	AllowedRoots       []string `json:"allowed_roots"`
+	Auth               string   `json:"auth"`
+	LargeFileThreshold int64    `json:"large_file_threshold"`
+	WatchSupported     bool     `json:"watch_supported"`
 }
 
 func newDaemonDeployCommand(action string, opts Options) *cobra.Command {
+	var dryRun bool
 	deploy := daemonDeployOptions{
 		action:    action,
 		addr:      "0.0.0.0:17731",
@@ -105,76 +162,14 @@ func newDaemonDeployCommand(action string, opts Options) *cobra.Command {
 		Short: action + " remorkd using an offline binary",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				mode := commandInteractionMode(cmd, interactionRequest{MissingInput: true})
-				if !mode.Wizard {
-					return fmt.Errorf("remork daemon %s requires HOST in non-interactive mode; run remork daemon %s from an interactive terminal or pass remork daemon %s HOST", action, action, action)
-				}
-				values, err := runTUIForm(cmd, "Daemon "+action, []tui.Field{
-					{Key: "host", Label: "Host", Placeholder: "my-lab"},
-				})
-				if err != nil {
-					return err
-				}
-				if strings.TrimSpace(values["host"]) == "" {
-					return fmt.Errorf("HOST is required")
-				}
-				deploy.hostName = strings.TrimSpace(values["host"])
-			} else {
+			if len(args) > 0 {
 				deploy.hostName = args[0]
 			}
-			host, hasHost, err := loadConfiguredHost(opts, deploy.hostName)
-			if err != nil {
-				return err
+			mode := commandInteractionMode(cmd, interactionRequest{MissingInput: true})
+			if shouldRunDaemonDeployForm(mode, action, deploy, dryRun) {
+				return runDaemonDeployForm(cmd, opts, action, deploy, dryRun)
 			}
-			if hasHost && deploy.sshTarget == "" {
-				deploy.sshTarget = sshTargetFromHost(host)
-			}
-			if len(deployAllowedRoots(deploy)) == 0 && action == "install" {
-				mode := commandInteractionMode(cmd, interactionRequest{MissingInput: true})
-				if !mode.Wizard {
-					return fmt.Errorf("--root is required for daemon install")
-				}
-				values, err := runTUIForm(cmd, "Daemon "+action, []tui.Field{
-					{Key: "root", Label: "Allowed root", Placeholder: "/absolute/allowed/root"},
-				})
-				if err != nil {
-					return err
-				}
-				deploy.roots = append(deploy.roots, strings.TrimSpace(values["root"]))
-			}
-			for _, root := range deployAllowedRoots(deploy) {
-				if strings.TrimSpace(root) == "" {
-					return fmt.Errorf("--root cannot be empty")
-				}
-			}
-			if deploy.verify && deploy.url == "" && !hasHost {
-				return codedCommandError{
-					code: exitcode.InvalidUsageOrConfig,
-					err:  fmt.Errorf("--verify requires --url or an existing configured host %q", deploy.hostName),
-					fix:  "pass --url URL or run remork host add first",
-				}
-			}
-			if deploy.localBin == "" {
-				localBin, err := resolveReleaseDaemonBinary(cmd.Context(), releaseBinaryOptions{
-					Version:    opts.Version,
-					HomeDir:    opts.HomeDir,
-					Platform:   deploy.platform,
-					LocalBin:   deploy.localBin,
-					Downloader: defaultReleaseDownloader{},
-				})
-				if err != nil {
-					return err
-				}
-				deploy.localBin = localBin
-			}
-			deploy.store, err = configStore(opts)
-			if err != nil {
-				return err
-			}
-			deploy.storeReady = true
-			deploy.ctx = cmd.Context()
-			return runDaemonDeploy(cmd.OutOrStdout(), deploy)
+			return prepareAndRunDaemonDeploy(cmd, opts, deploy, dryRun)
 		},
 	}
 	cmd.Flags().StringArrayVar(&deploy.roots, "root", nil, "Remote allowed base root for remorkd; repeat to serve multiple base roots")
@@ -188,10 +183,226 @@ func newDaemonDeployCommand(action string, opts Options) *cobra.Command {
 	cmd.Flags().StringVar(&deploy.tokenEnv, "token-env", "", "Environment variable containing the daemon token for local host config")
 	cmd.Flags().BoolVar(&deploy.noProxy, "no-proxy", false, "Bypass proxies for this host in local host config")
 	cmd.Flags().BoolVar(&deploy.verify, "verify", false, "Call daemon status after host config is available")
-	cmd.Flags().BoolVar(&deploy.execute, "execute", false, "Run generated scp and ssh deployment commands")
-	cmd.Flags().BoolVar(&deploy.yes, "yes", false, "Confirm deployment command execution")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the deployment plan without running ssh or scp")
+	cmd.Flags().BoolVar(&deploy.execute, "execute", false, "Deprecated compatibility flag; deployment executes unless --dry-run is set")
+	cmd.Flags().BoolVarP(&deploy.yes, "yes", "y", false, "Confirm deployment command execution without prompting")
 	cmd.Flags().BoolVar(&deploy.allowUnauthenticatedNetworkBind, "allow-unauthenticated-network-bind", false, "Allow remorkd to listen on a non-loopback address without --token-file")
 	return cmd
+}
+
+func shouldRunDaemonDeployForm(mode interactionMode, action string, deploy daemonDeployOptions, dryRun bool) bool {
+	if !mode.Wizard && !mode.RichOutput {
+		return false
+	}
+	missingHost := strings.TrimSpace(deploy.hostName) == ""
+	missingRoots := len(deployAllowedRoots(deploy)) == 0 && (action == "install" || (action == "upgrade" && !dryRun))
+	if missingHost || missingRoots {
+		return mode.Wizard
+	}
+	return mode.RichOutput && !dryRun && !deploy.yes
+}
+
+func runDaemonDeployForm(cmd *cobra.Command, opts Options, action string, deploy daemonDeployOptions, dryRun bool) error {
+	for {
+		values, err := runTUIForm(cmd, "Daemon "+action, daemonDeployFormFields(action, deploy, dryRun))
+		if err != nil {
+			return err
+		}
+		formDryRun, err := applyDaemonDeployFormValues(&deploy, values)
+		if err != nil {
+			plainErrRenderer(cmd, false).Error(err.Error(), "update the form value and submit again")
+			continue
+		}
+		err = prepareAndRunDaemonDeploy(cmd, opts, deploy, formDryRun)
+		if err == nil {
+			return nil
+		}
+		if !daemonDeployFormRetryable(err) {
+			return err
+		}
+		plainErrRenderer(cmd, false).Error(err.Error(), commandErrorFix(err))
+		plainErrRenderer(cmd, false).Step("update the form values and submit again")
+		dryRun = formDryRun
+	}
+}
+
+func daemonDeployFormFields(action string, deploy daemonDeployOptions, dryRun bool) []tui.Field {
+	_ = action
+	return []tui.Field{
+		{Key: "host", Label: "Host", Placeholder: "my-lab", Initial: deploy.hostName},
+		{Key: "roots", Label: "Allowed roots (--root, comma separated)", Placeholder: "/absolute/allowed/root", Initial: strings.Join(deployAllowedRoots(deploy), ", ")},
+		{Key: "ssh", Label: "SSH target (--ssh)", Placeholder: "user@server or blank for host", Initial: deploy.sshTarget},
+		{Key: "url", Label: "Daemon URL (--url)", Placeholder: "http://server:17731", Initial: deploy.url},
+		{Key: "addr", Label: "Listen addr (--addr)", Placeholder: "0.0.0.0:17731", Initial: deploy.addr},
+		{Key: "remote_bin", Label: "Remote binary (--remote-bin)", Placeholder: ".local/bin/remorkd", Initial: deploy.remoteBin},
+		{Key: "local_bin", Label: "Local binary (--local-bin)", Placeholder: "auto", Initial: deploy.localBin},
+		{Key: "platform", Label: "Platform (--platform)", Placeholder: "auto, linux-arm64, linux-amd64", Initial: deploy.platform},
+		{Key: "token_file", Label: "Token file (--token-file)", Placeholder: ".remork/remork.token", Initial: deploy.tokenFile},
+		{Key: "token_env", Label: "Token env (--token-env)", Placeholder: "REMORK_TOKEN", Initial: deploy.tokenEnv},
+		{Key: "verify", Label: "Verify after install (--verify y/N)", Placeholder: "no", Initial: yesNo(deploy.verify)},
+		{Key: "no_proxy", Label: "Bypass proxy (--no-proxy y/N)", Placeholder: "no", Initial: yesNo(deploy.noProxy)},
+		{Key: "allow_unauthenticated_network_bind", Label: "Allow unauthenticated network bind (y/N)", Placeholder: "no", Initial: yesNo(deploy.allowUnauthenticatedNetworkBind)},
+		{Key: "dry_run", Label: "Dry run only (--dry-run y/N)", Placeholder: "no", Initial: yesNo(dryRun)},
+		{Key: "yes", Label: "Execute without final confirmation (-y/--yes y/N)", Placeholder: "no", Initial: yesNo(deploy.yes)},
+	}
+}
+
+func applyDaemonDeployFormValues(deploy *daemonDeployOptions, values map[string]string) (bool, error) {
+	deploy.hostName = strings.TrimSpace(values["host"])
+	deploy.root = ""
+	deploy.roots = splitDaemonDeployRoots(values["roots"])
+	deploy.sshTarget = strings.TrimSpace(values["ssh"])
+	deploy.url = strings.TrimSpace(values["url"])
+	if addr := strings.TrimSpace(values["addr"]); addr != "" {
+		deploy.addr = addr
+	}
+	if remoteBin := strings.TrimSpace(values["remote_bin"]); remoteBin != "" {
+		deploy.remoteBin = remoteBin
+	}
+	deploy.localBin = strings.TrimSpace(values["local_bin"])
+	deploy.platform = strings.TrimSpace(values["platform"])
+	deploy.tokenFile = strings.TrimSpace(values["token_file"])
+	deploy.tokenEnv = strings.TrimSpace(values["token_env"])
+
+	var err error
+	if deploy.verify, err = parseDaemonDeployBool(values["verify"], "verify"); err != nil {
+		return false, err
+	}
+	if deploy.noProxy, err = parseDaemonDeployBool(values["no_proxy"], "no proxy"); err != nil {
+		return false, err
+	}
+	if deploy.allowUnauthenticatedNetworkBind, err = parseDaemonDeployBool(values["allow_unauthenticated_network_bind"], "allow unauthenticated network bind"); err != nil {
+		return false, err
+	}
+	dryRun, err := parseDaemonDeployBool(values["dry_run"], "dry run")
+	if err != nil {
+		return false, err
+	}
+	if deploy.yes, err = parseDaemonDeployBool(values["yes"], "yes"); err != nil {
+		return false, err
+	}
+	return dryRun, nil
+}
+
+func splitDaemonDeployRoots(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '\n'
+	})
+	roots := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			roots = append(roots, part)
+		}
+	}
+	return roots
+}
+
+func parseDaemonDeployBool(value, label string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "n", "no", "false", "0", "off":
+		return false, nil
+	case "y", "yes", "true", "1", "on":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s must be y/yes/true or n/no/false", label)
+	}
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
+}
+
+func daemonDeployFormRetryable(err error) bool {
+	code := commandErrorExitCode(err)
+	return code == exitcode.InvalidUsageOrConfig || code == exitcode.NetworkUnavailable
+}
+
+func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDeployOptions, dryRun bool) error {
+	if strings.TrimSpace(deploy.hostName) == "" {
+		return fmt.Errorf("remork daemon %s requires HOST in non-interactive mode; run remork daemon %s from an interactive terminal or pass remork daemon %s HOST", deploy.action, deploy.action, deploy.action)
+	}
+	host, hasHost, err := loadConfiguredHost(opts, deploy.hostName)
+	if err != nil {
+		return err
+	}
+	if hasHost && deploy.sshTarget == "" {
+		deploy.sshTarget = sshTargetFromHost(host)
+	}
+	runner := opts.CommandRunner
+	if runner == nil {
+		runner = osCommandRunner{}
+	}
+	deploy.runner = runner
+	if len(deployAllowedRoots(deploy)) == 0 && (deploy.action == "install" || (deploy.action == "upgrade" && !dryRun)) {
+		if deploy.action == "install" {
+			return fmt.Errorf("--root is required for daemon install")
+		}
+		return fmt.Errorf("--root is required for daemon upgrade when executing")
+	}
+	for _, root := range deployAllowedRoots(deploy) {
+		if strings.TrimSpace(root) == "" {
+			return fmt.Errorf("--root cannot be empty")
+		}
+	}
+	if deploy.verify && deploy.url == "" && !hasHost {
+		return codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("--verify requires --url or an existing configured host %q", deploy.hostName),
+			fix:  "pass --url URL or run remork host add first",
+		}
+	}
+	if deploy.localBin == "" {
+		if deploy.platform == "" {
+			reporter := progress.NewTextReporter(cmd.ErrOrStderr(), progress.Options{Color: commandColorMode(cmd)})
+			reporter.Start("detecting remote platform over SSH...", 1)
+			platform, err := detectRemoteDaemonPlatform(cmd.Context(), runner, deploySSHTarget(deploy))
+			if err != nil {
+				reporter.FailMessage("remote platform detection failed")
+				return err
+			}
+			deploy.platform = platform
+			reporter.DoneMessage("detected remote platform: " + deploy.platform)
+		}
+		localBin, err := resolveReleaseDaemonBinary(cmd.Context(), releaseBinaryOptions{
+			Version:    opts.Version,
+			HomeDir:    opts.HomeDir,
+			Platform:   deploy.platform,
+			LocalBin:   deploy.localBin,
+			Downloader: defaultReleaseDownloader{},
+		})
+		if err != nil {
+			return err
+		}
+		deploy.localBin = localBin
+	}
+	deploy.store, err = configStore(opts)
+	if err != nil {
+		return err
+	}
+	mode := commandInteractionMode(cmd, interactionRequest{})
+	deploy.storeReady = true
+	deploy.ctx = cmd.Context()
+	deploy.color = commandColorMode(cmd)
+	deploy.canPrompt = mode.RichOutput
+	deploy.confirmIn = cmd.InOrStdin()
+	deploy.confirmOut = cmd.ErrOrStderr()
+	configureDaemonDeployExecution(&deploy, dryRun)
+	return runDaemonDeploy(cmd.OutOrStdout(), deploy)
+}
+
+func configureDaemonDeployExecution(deploy *daemonDeployOptions, dryRun bool) {
+	if dryRun {
+		deploy.execute = false
+		deploy.yes = false
+		deploy.dryRun = true
+		return
+	}
+	deploy.execute = true
+	deploy.dryRun = false
 }
 
 type daemonDeployOptions struct {
@@ -209,6 +420,7 @@ type daemonDeployOptions struct {
 	tokenEnv                        string
 	noProxy                         bool
 	verify                          bool
+	dryRun                          bool
 	execute                         bool
 	yes                             bool
 	allowUnauthenticatedNetworkBind bool
@@ -220,6 +432,10 @@ type daemonDeployOptions struct {
 	verifyInterval                  time.Duration
 	runner                          commandRunner
 	version                         string
+	color                           output.ColorMode
+	canPrompt                       bool
+	confirmIn                       io.Reader
+	confirmOut                      io.Writer
 }
 
 func loadConfiguredHost(opts Options, name string) (config.Host, bool, error) {
@@ -236,53 +452,72 @@ func loadConfiguredHost(opts Options, name string) (config.Host, bool, error) {
 }
 
 func printDaemonDeployPlan(out interface{ Write([]byte) (int, error) }, deploy daemonDeployOptions) {
-	renderer := output.NewPlainRenderer(out, output.PlainOptions{})
+	renderer := output.NewPlainRenderer(out, output.PlainOptions{Color: deploy.color})
 	renderer.Section("Daemon " + deploy.action)
 	remote := deploy.sshTarget
 	if remote == "" {
 		remote = deploy.hostName
 	}
 	startCmd := remoteStartCommand(deploy)
-	fmt.Fprintf(out, "remorkd %s plan for %s\n\n", deploy.action, deploy.hostName)
+	renderer.KeyValue("host", deploy.hostName)
+	renderer.KeyValue("remote", remote)
+	renderer.KeyValue("remote_bin", remoteCommandPath(deploy.remoteBin))
+	if deploy.execute {
+		if deploy.yes {
+			renderer.KeyValue("mode", "execute confirmed")
+		} else {
+			renderer.KeyValue("mode", "execute after confirmation")
+		}
+	} else {
+		renderer.KeyValue("mode", "dry run preview")
+		renderer.Warning("No remote commands were executed.")
+	}
 	if insecureNoTokenNonLoopbackAddr(deploy.addr, deploy.tokenFile != "") {
-		fmt.Fprintf(out, "%s this plan starts remorkd on a non-loopback or wildcard address without authentication.\n", output.Warning(out, "WARNING:"))
-		fmt.Fprintln(out, "Anyone who can reach that address can use apply/file access and writes, remote command execution, and shell endpoints.")
-		fmt.Fprintln(out, "Use --token-file for remorkd and configure the CLI with remork host add --token-env before using this on shared VPNs or multi-user networks.")
-		fmt.Fprintln(out)
+		renderer.Warning("WARNING: this plan starts remorkd on a non-loopback or wildcard address without authentication.")
+		renderer.List("Risk", []string{
+			"Anyone who can reach that address can use apply/file access and writes, remote command execution, and shell endpoints.",
+			"Use --token-file for remorkd and configure the CLI with remork host add --token-env before using this on shared VPNs or multi-user networks.",
+		})
 	}
-	fmt.Fprintln(out, "Run these commands from this machine. They copy a prebuilt daemon and start it without remote Go, npm, apt, brew, or internet.")
-	fmt.Fprintf(out, "ssh %s %s\n", shellQuote(remote), shellQuote(remotePrepareCommand(deploy)))
-	fmt.Fprintf(out, "scp %s %s:%s\n", shellQuote(deploy.localBin), shellQuote(remote), shellQuote(remoteSCPDestinationPath(deploy.remoteBin)))
-	fmt.Fprintf(out, "ssh %s %s\n", shellQuote(remote), shellQuote(remoteChmodCommand(deploy.remoteBin)))
+	plan := []string{"Copy a prebuilt daemon from this machine."}
 	if startCmd != "" {
-		fmt.Fprintf(out, "ssh %s %s\n", shellQuote(remote), shellQuote(startCmd))
+		plan = append(plan, "Start remorkd without remote Go, npm, apt, brew, or internet.")
+	} else {
+		plan = append(plan, "Do not start remorkd because no allowed root is part of this plan.")
 	}
-	fmt.Fprintln(out)
+	renderer.List("Plan", plan)
+	renderer.Command("ssh " + shellQuote(remote) + " " + shellQuote(remotePrepareCommand(deploy)))
+	renderer.Command("scp " + shellQuote(deploy.localBin) + " " + shellQuote(remote) + ":" + shellQuote(remoteSCPDestinationPath(deploy.remoteBin)))
+	renderer.Command("ssh " + shellQuote(remote) + " " + shellQuote(remoteChmodCommand(deploy.remoteBin)))
+	if startCmd != "" {
+		renderer.Command("ssh " + shellQuote(remote) + " " + shellQuote(startCmd))
+	}
 	if deploy.url != "" {
-		fmt.Fprintf(out, "Then configure the host URL:\n  %s\n", hostAddCommand(deploy))
+		renderer.List("Then configure the host URL:", []string{hostAddCommand(deploy)})
 	} else {
 		placeholder := deploy
 		placeholder.url = "http://HOST:" + daemonPort(deploy.addr)
-		fmt.Fprintf(out, "Then configure the host URL if needed:\n  %s\n", hostAddCommand(placeholder))
+		renderer.List("Then configure the host URL if needed:", []string{hostAddCommand(placeholder)})
 	}
-	fmt.Fprintf(out, "Verify:\n  remork daemon status %s\n", deploy.hostName)
+	renderer.List("Verify:", []string{"remork daemon status " + deploy.hostName})
+	if !deploy.execute {
+		renderer.List("Next:", []string{
+			"review the commands above",
+			"rerun without --dry-run and confirm, or pass -y/--yes to execute",
+		})
+		renderer.Success("preview generated; remote daemon was not changed")
+	}
 }
 
 func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonDeployOptions) error {
+	if deploy.dryRun {
+		deploy.execute = false
+		deploy.yes = false
+	}
 	if err := validateDaemonDeployPlan(deploy); err != nil {
 		return err
 	}
 	if deploy.execute {
-		if err := validateDaemonDeployExecution(deploy); err != nil {
-			return err
-		}
-		if !deploy.yes {
-			return codedCommandError{
-				code: exitcode.InvalidUsageOrConfig,
-				err:  fmt.Errorf("--execute requires --yes"),
-				fix:  "rerun with --yes after reviewing the install plan",
-			}
-		}
 		if deploy.verify && deploy.url == "" && !deploy.storeReady {
 			return codedCommandError{
 				code: exitcode.InvalidUsageOrConfig,
@@ -290,10 +525,30 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 				fix:  "pass --url URL or run remork host add first",
 			}
 		}
+		if err := validateDaemonDeployExecution(deploy); err != nil {
+			return err
+		}
+	} else {
+		if err := validateLocalDaemonBinary(deploy.localBin); err != nil {
+			return err
+		}
+	}
+	if deploy.execute && !deploy.yes && !deploy.canPrompt {
+		return daemonDeployRequiresConfirmationError(deploy.action)
 	}
 	printDaemonDeployPlan(out, deploy)
 	if !deploy.execute {
 		return nil
+	}
+	if !deploy.yes {
+		ok, err := prompt.Confirm(prompt.Options{In: deploy.confirmIn, Out: deploy.confirmOut}, fmt.Sprintf("execute daemon %s on %s?", deploy.action, deploy.hostName))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			output.NewPlainRenderer(out, output.PlainOptions{Color: deploy.color}).Warning("daemon " + deploy.action + " cancelled")
+			return nil
+		}
 	}
 	runner := deploy.runner
 	if runner == nil {
@@ -309,19 +564,19 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 		if err != nil {
 			return fmt.Errorf("remote remorkd preflight failed on %s: %w", remote, err)
 		}
-		printRemoteBinaryState(out, state, deploy.version, "before")
+		printRemoteBinaryState(out, state, deploy.version, "before", deploy.color)
 	}
 
-	if err := runDeployStep(out, runner, "prepare remote directories", "ssh", remote, remotePrepareCommand(deploy)); err != nil {
+	if err := runDeployStep(out, runner, deploy.color, "prepare remote directories", "ssh", remote, remotePrepareCommand(deploy)); err != nil {
 		return err
 	}
-	if err := runDeployStep(out, runner, "stop existing remorkd daemon", "ssh", remote, remoteStopCommand()); err != nil {
+	if err := runDeployStep(out, runner, deploy.color, "stop existing remorkd daemon", "ssh", remote, remoteStopCommand()); err != nil {
 		return err
 	}
-	if err := runDeployStep(out, runner, "copy remorkd binary", "scp", deploy.localBin, remote+":"+remoteSCPDestinationPath(deploy.remoteBin)); err != nil {
+	if err := runDeployStep(out, runner, deploy.color, "copy remorkd binary", "scp", deploy.localBin, remote+":"+remoteSCPDestinationPath(deploy.remoteBin)); err != nil {
 		return err
 	}
-	if err := runDeployStep(out, runner, "mark remorkd executable", "ssh", remote, remoteChmodCommand(deploy.remoteBin)); err != nil {
+	if err := runDeployStep(out, runner, deploy.color, "mark remorkd executable", "ssh", remote, remoteChmodCommand(deploy.remoteBin)); err != nil {
 		return err
 	}
 	if want := expectedDaemonVersion(deploy.version); want != "" {
@@ -329,7 +584,7 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 		if err != nil {
 			return fmt.Errorf("remote remorkd version check after copy failed on %s: %w", remote, err)
 		}
-		printRemoteBinaryState(out, state, deploy.version, "after")
+		printRemoteBinaryState(out, state, deploy.version, "after", deploy.color)
 		if !state.Installed || state.Version != want {
 			got := state.Version
 			if got == "" {
@@ -337,10 +592,10 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 			}
 			return fmt.Errorf("remote remorkd version mismatch after copy: got %s, want %s", got, want)
 		}
-		output.NewPlainRenderer(out, output.PlainOptions{}).Success("copied remorkd version verified: " + want)
+		output.NewPlainRenderer(out, output.PlainOptions{Color: deploy.color}).Success("copied remorkd version verified: " + want)
 	}
 	if startCmd := remoteStartCommand(deploy); startCmd != "" {
-		if err := runDeployStep(out, runner, "start remorkd daemon", "ssh", remote, startCmd); err != nil {
+		if err := runDeployStep(out, runner, deploy.color, "start remorkd daemon", "ssh", remote, startCmd); err != nil {
 			return err
 		}
 	}
@@ -348,7 +603,7 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 		if err := saveDeployHost(deploy); err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "%s host %s configured: %s\n", output.Success(out, "ok"), deploy.hostName, deploy.url)
+		output.NewPlainRenderer(out, output.PlainOptions{Color: deploy.color}).Success(fmt.Sprintf("host %s configured: %s", deploy.hostName, deploy.url))
 	}
 	if deploy.verify {
 		ctx := deploy.ctx
@@ -358,13 +613,49 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 		if err := verifyDeployHostReady(ctx, deploy); err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "%s daemon status verified for %s\n", output.Success(out, "ok"), deploy.hostName)
+		output.NewPlainRenderer(out, output.PlainOptions{Color: deploy.color}).Success("daemon status verified for " + deploy.hostName)
 	}
-	fmt.Fprintf(out, "%s daemon deploy executed\n", output.Success(out, "ok"))
+	output.NewPlainRenderer(out, output.PlainOptions{Color: deploy.color}).Success("daemon deploy executed")
 	return nil
 }
 
+func daemonDeployRequiresConfirmationError(action string) error {
+	return codedCommandError{
+		code: exitcode.PromptRequired,
+		err:  fmt.Errorf("daemon %s requires confirmation", action),
+		fix:  "run from an interactive terminal, pass -y/--yes to execute, or pass --dry-run to preview without changing the server",
+	}
+}
+
 func validateDaemonDeployPlan(deploy daemonDeployOptions) error {
+	if err := validateDaemonAddr(deploy.addr); err != nil {
+		return err
+	}
+	if deploy.url != "" {
+		if err := validateDaemonURL(deploy.url); err != nil {
+			return codedCommandError{
+				code: exitcode.InvalidUsageOrConfig,
+				err:  err,
+				fix:  "pass an http:// or https:// daemon URL",
+			}
+		}
+	}
+	for _, root := range deployAllowedRoots(deploy) {
+		if !pathpkg.IsAbs(root) {
+			return codedCommandError{
+				code: exitcode.InvalidUsageOrConfig,
+				err:  fmt.Errorf("--root must be an absolute remote path: %s", root),
+				fix:  "pass a remote absolute path such as --root /home/me/project",
+			}
+		}
+	}
+	if deploy.execute && deploy.action == "upgrade" && len(deployAllowedRoots(deploy)) == 0 {
+		return codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("daemon upgrade requires at least one --root when --execute is used"),
+			fix:  "pass every root remorkd should continue serving, for example --root /home/me/project",
+		}
+	}
 	if deploy.tokenFile != "" && deploy.tokenEnv == "" {
 		return codedCommandError{
 			code: exitcode.InvalidUsageOrConfig,
@@ -383,16 +674,157 @@ func validateDaemonDeployExecution(deploy daemonDeployOptions) error {
 			fix:  "pass --token-file with --token-env, bind to 127.0.0.1, or explicitly pass --allow-unauthenticated-network-bind",
 		}
 	}
+	if err := validateLocalDaemonBinary(deploy.localBin); err != nil {
+		return err
+	}
 	return nil
 }
 
-func runDeployStep(out interface{ Write([]byte) (int, error) }, runner commandRunner, label, name string, args ...string) error {
-	renderer := output.NewPlainRenderer(out, output.PlainOptions{})
-	renderer.Step(label + "...")
+func validateDaemonAddr(addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return invalidDaemonAddrError(addr, fmt.Errorf("listen address is empty"))
+	}
+	_, portValue, err := net.SplitHostPort(addr)
+	if err != nil {
+		return invalidDaemonAddrError(addr, err)
+	}
+	port, err := strconv.Atoi(portValue)
+	if err != nil || port < 1 || port > 65535 {
+		return invalidDaemonAddrError(addr, fmt.Errorf("port must be an integer from 1 to 65535"))
+	}
+	return nil
+}
+
+func invalidDaemonAddrError(addr string, err error) error {
+	return codedCommandError{
+		code: exitcode.InvalidUsageOrConfig,
+		err:  fmt.Errorf("invalid daemon listen address %q: %w", addr, err),
+		fix:  "pass --addr HOST:PORT, for example --addr 127.0.0.1:17731 or --addr :17731",
+	}
+}
+
+func validateLocalDaemonBinary(localBin string) error {
+	if strings.TrimSpace(localBin) == "" {
+		return codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("local remorkd binary is required for --execute"),
+			fix:  "pass --local-bin /path/to/remorkd or use a released remork version that can resolve the daemon binary",
+		}
+	}
+	info, err := os.Stat(localBin)
+	if err != nil {
+		return codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("local remorkd binary %q is not available: %w", localBin, err),
+			fix:  "build or download remorkd, then rerun with --local-bin /path/to/remorkd",
+		}
+	}
+	if !info.Mode().IsRegular() {
+		return codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("local remorkd binary %q is not a regular file", localBin),
+			fix:  "pass --local-bin /path/to/remorkd",
+		}
+	}
+	if info.Mode()&0o111 == 0 {
+		return codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("local remorkd binary %q is not executable", localBin),
+			fix:  "run chmod 0755 /path/to/remorkd, then rerun remork daemon install",
+		}
+	}
+	f, err := os.Open(localBin)
+	if err != nil {
+		return codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("local remorkd binary %q is not readable: %w", localBin, err),
+			fix:  "check file permissions, then rerun remork daemon install",
+		}
+	}
+	_ = f.Close()
+	return nil
+}
+
+func deploySSHTarget(deploy daemonDeployOptions) string {
+	if deploy.sshTarget != "" {
+		return deploy.sshTarget
+	}
+	return deploy.hostName
+}
+
+func detectRemoteDaemonPlatform(ctx context.Context, runner commandRunner, sshTarget string) (string, error) {
+	_ = ctx
+	sshTarget = strings.TrimSpace(sshTarget)
+	if sshTarget == "" {
+		return "", codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("remote SSH target is required to auto-detect daemon platform"),
+			fix:  "pass HOST or --ssh SSH_TARGET, or pass --platform linux-arm64 or --platform linux-amd64",
+		}
+	}
+	if runner == nil {
+		runner = osCommandRunner{}
+	}
+	out, err := runner.Output("ssh", sshTarget, "uname -s; uname -m")
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			err = fmt.Errorf("%w: %s", err, msg)
+		}
+		return "", codedCommandError{
+			code: exitcode.NetworkUnavailable,
+			err:  fmt.Errorf("failed to auto-detect remote daemon platform via ssh %s: %w", sshTarget, err),
+			fix:  "check SSH connectivity, pass --ssh SSH_TARGET, or pass --platform linux-arm64 or --platform linux-amd64",
+		}
+	}
+	platform, err := parseRemoteDaemonPlatform(string(out))
+	if err != nil {
+		return "", err
+	}
+	return platform, nil
+}
+
+func parseRemoteDaemonPlatform(out string) (string, error) {
+	fields := strings.Fields(strings.ToLower(out))
+	if len(fields) < 2 {
+		return "", codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("could not parse remote platform from uname output %q", strings.TrimSpace(out)),
+			fix:  "pass --platform linux-arm64 or --platform linux-amd64",
+		}
+	}
+	osName := fields[0]
+	arch := fields[len(fields)-1]
+	if osName != "linux" {
+		return "", codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("unsupported remote daemon OS %q; only linux daemon releases are supported", osName),
+			fix:  "install remorkd manually with --local-bin for this server, or use a linux server",
+		}
+	}
+	switch arch {
+	case "aarch64", "arm64":
+		return "linux-arm64", nil
+	case "x86_64", "amd64":
+		return "linux-amd64", nil
+	default:
+		return "", codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("unsupported remote daemon architecture %q", arch),
+			fix:  "supported release platforms are linux-arm64 and linux-amd64; pass --local-bin for a custom daemon binary",
+		}
+	}
+}
+
+func runDeployStep(out interface{ Write([]byte) (int, error) }, runner commandRunner, color output.ColorMode, label, name string, args ...string) error {
+	reporter := progress.NewTextReporter(out, progress.Options{Color: color})
+	reporter.Start(label+"...", 1)
 	if err := runner.Run(name, args...); err != nil {
+		reporter.FailMessage(label + " failed")
 		return fmt.Errorf("%s failed: %w", label, err)
 	}
-	renderer.Success(label)
+	reporter.DoneMessage(label)
 	return nil
 }
 
@@ -448,13 +880,14 @@ func parseRemorkdVersion(line string) string {
 	return ""
 }
 
-func printRemoteBinaryState(out interface{ Write([]byte) (int, error) }, state remoteBinaryInfo, expected, phase string) {
+func printRemoteBinaryState(out interface{ Write([]byte) (int, error) }, state remoteBinaryInfo, expected, phase string, color output.ColorMode) {
+	r := output.NewPlainRenderer(out, output.PlainOptions{Color: color})
 	if !state.Installed {
 		if state.Path == "" {
-			fmt.Fprintln(out, "remote binary: not installed")
+			r.Warning("remote binary: not installed")
 			return
 		}
-		fmt.Fprintf(out, "remote binary: not installed at %s\n", state.Path)
+		r.Warning("remote binary: not installed at " + state.Path)
 		return
 	}
 	line := state.Line
@@ -463,11 +896,11 @@ func printRemoteBinaryState(out interface{ Write([]byte) (int, error) }, state r
 	}
 	if phase == "before" {
 		if want := expectedDaemonVersion(expected); want != "" && state.Version != "" && state.Version != want {
-			fmt.Fprintf(out, "%s remote binary: installed %s (will replace with %s)\n", output.Warning(out, "warn"), line, want)
+			r.Warning(fmt.Sprintf("remote binary: installed %s (will replace with %s)", line, want))
 			return
 		}
 	}
-	fmt.Fprintf(out, "%s remote binary: installed %s\n", output.Success(out, "ok"), line)
+	r.Success("remote binary: installed " + line)
 }
 
 func expectedDaemonVersion(version string) string {

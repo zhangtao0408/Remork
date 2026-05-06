@@ -65,7 +65,7 @@ func watchEvents(ctx context.Context, cmd *cobra.Command, runCtx runContext, opt
 				return err
 			}
 			lastRevision = manifest.Revision
-			fmt.Fprintf(cmd.OutOrStdout(), "watching %s revision %s\n", runCtx.binding.RemoteRoot, lastRevision)
+			plainRenderer(cmd, false).Success(fmt.Sprintf("watching %s revision %s", runCtx.binding.RemoteRoot, lastRevision))
 			return nil
 		}, handle, flush, opts.Debounce, opts.ReconcileInterval, func() error {
 			if _, err := syncForWatch(ctx, cmd, runCtx, ""); err != nil {
@@ -76,14 +76,14 @@ func watchEvents(ctx context.Context, cmd *cobra.Command, runCtx runContext, opt
 				return err
 			}
 			lastRevision = manifest.Revision
-			fmt.Fprintf(cmd.OutOrStdout(), "reconciled %s\n", lastRevision)
+			plainRenderer(cmd, false).Success("reconciled " + lastRevision)
 			return nil
 		})
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "watch disconnected: %v; reconnecting\n", err)
+			plainErrRenderer(cmd, false).Warning(fmt.Sprintf("watch disconnected: %v; reconnecting", err))
 		}
 		select {
 		case <-ctx.Done():
@@ -96,7 +96,7 @@ func watchEvents(ctx context.Context, cmd *cobra.Command, runCtx runContext, opt
 func newWatchEventAccumulator(ctx context.Context, cmd *cobra.Command, runCtx runContext, lastRevision *string) (func(watch.Event) error, func() error) {
 	var pending *pendingWatchSync
 	handle := func(ev watch.Event) error {
-		fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s\n", ev.Revision, ev.Kind, ev.Path)
+		plainRenderer(cmd, false).Step(fmt.Sprintf("%s %s %s", ev.Revision, ev.Kind, ev.Path))
 		target := watchSyncTarget(ev)
 		needsReconcile := target == ""
 		if pending == nil {
@@ -131,7 +131,7 @@ func newWatchEventAccumulator(ctx context.Context, cmd *cobra.Command, runCtx ru
 				return err
 			}
 			*lastRevision = manifest.Revision
-			fmt.Fprintf(cmd.OutOrStdout(), "reconciled %s\n", *lastRevision)
+			plainRenderer(cmd, false).Success("reconciled " + *lastRevision)
 			return nil
 		}
 		if current.revision != "" {
@@ -154,7 +154,7 @@ func syncForWatch(ctx context.Context, cmd *cobra.Command, runCtx runContext, ta
 		return result, err
 	}
 	if result.Downloaded > 0 || result.MetaWritten > 0 || result.Deleted > 0 || result.Conflicts > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "synced downloaded %d, meta %d, deleted %d, conflicts %d\n", result.Downloaded, result.MetaWritten, result.Deleted, result.Conflicts)
+		plainRenderer(cmd, false).Success(fmt.Sprintf("synced downloaded %d, meta %d, deleted %d, conflicts %d", result.Downloaded, result.MetaWritten, result.Deleted, result.Conflicts))
 	}
 	return result, nil
 }

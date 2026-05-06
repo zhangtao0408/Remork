@@ -25,7 +25,7 @@ func addPullCommand(root *cobra.Command, opts Options) {
 	cmd := &cobra.Command{
 		Use:   "pull <path>",
 		Short: "Fetch a specific file or directory",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactArgsJSON(1, &jsonOut),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			binding, _, err := workspace.ResolveFrom(opts.WorkingDir)
 			if err != nil {
@@ -37,6 +37,16 @@ func addPullCommand(root *cobra.Command, opts Options) {
 			}
 			target, err := normalizePullTarget(args[0], binding)
 			if err != nil {
+				err = pullTargetCommandError(err)
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
+				return err
+			}
+			if err := validateWorkspacePathArg(target); err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			runner, err := newBoundSyncRunner(opts)
@@ -54,6 +64,14 @@ func addPullCommand(root *cobra.Command, opts Options) {
 				Out:          cmd.ErrOrStderr(),
 			})
 			if err != nil {
+				var missing syncer.MissingPullTargetError
+				if errors.As(err, &missing) {
+					err = codedCommandError{
+						code: exitcode.InvalidUsageOrConfig,
+						err:  err,
+						fix:  "check the remote path with remork status or remork run -- ls, then rerun remork pull <path>",
+					}
+				}
 				if errors.Is(err, prompt.ErrPromptRequired) {
 					err = codedCommandError{code: exitcode.PromptRequired, err: err, fix: "rerun with --force to confirm large-file download in non-interactive mode"}
 					if jsonOut {
@@ -88,7 +106,13 @@ func addPullCommand(root *cobra.Command, opts Options) {
 				return output.WriteJSON(cmd.OutOrStdout(), result)
 			}
 			if !quiet {
-				fmt.Fprintf(cmd.OutOrStdout(), "pull complete: downloaded %d, meta %d, skipped %d, conflicts %d\n", result.Downloaded, result.MetaWritten, result.Skipped, result.Conflicts)
+				r := plainRenderer(cmd, false)
+				r.Section("Pull complete")
+				r.KeyValue("downloaded", result.Downloaded)
+				r.KeyValue("meta", result.MetaWritten)
+				r.KeyValue("skipped", result.Skipped)
+				r.KeyValue("conflicts", result.Conflicts)
+				r.Success(fmt.Sprintf("pull complete: downloaded %d, meta %d, skipped %d, conflicts %d", result.Downloaded, result.MetaWritten, result.Skipped, result.Conflicts))
 			}
 			return nil
 		},

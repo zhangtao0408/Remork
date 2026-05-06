@@ -8,6 +8,7 @@ func TestConflictCommandShowsRecoverySteps(t *testing.T) {
 		t.Fatalf("conflict command: %v", err)
 	}
 	for _, want := range []string{
+		"== Conflict ==",
 		"Conflict: a.txt",
 		"remork diff -- a.txt",
 		"Discard local edits back to synced base",

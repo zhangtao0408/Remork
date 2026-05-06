@@ -1,11 +1,9 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -37,13 +35,15 @@ func addWorkspaceCommand(root *cobra.Command, opts Options) {
 					StateDir:    binding.StateDir,
 				})
 			}
-			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "local: %s\n", localRoot)
-			fmt.Fprintf(out, "host: %s\n", binding.Host)
-			fmt.Fprintf(out, "remote_root: %s\n", binding.RemoteRoot)
-			fmt.Fprintf(out, "workspace_id: %s\n", binding.WorkspaceID)
-			fmt.Fprintf(out, "state_scope: local-checkout\n")
-			fmt.Fprintf(out, "state_dir: %s\n", binding.StateDir)
+			r := plainRenderer(cmd, false)
+			r.Section("Workspace")
+			r.KeyValue("local", localRoot)
+			r.KeyValue("host", binding.Host)
+			r.KeyValue("workspace root", binding.RemoteRoot)
+			r.KeyValue("workspace_id", binding.WorkspaceID)
+			r.KeyValue("state_scope", "local-checkout")
+			r.KeyValue("state_dir", binding.StateDir)
+			r.Command("remork status")
 			return nil
 		},
 	}
@@ -65,7 +65,10 @@ func addWorkspaceCommand(root *cobra.Command, opts Options) {
 			if err := removeWorkspaceRegistryEntry(opts, binding.WorkspaceID); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "removed workspace binding %s\n", marker)
+			r := plainRenderer(cmd, false)
+			r.Section("Workspace removed")
+			r.KeyValue("marker", marker)
+			r.Success("removed workspace binding " + marker)
 			return nil
 		},
 	}
@@ -106,7 +109,7 @@ func listWorkspaces(cmd *cobra.Command, opts Options, jsonOut bool) error {
 		}{Workspaces: cfg.Workspaces})
 	}
 	if len(cfg.Workspaces) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "no workspaces registered")
+		plainRenderer(cmd, false).Empty("no workspaces registered", "run remork init HOST:/absolute/remote/workspace")
 		return nil
 	}
 	ids := make([]string, 0, len(cfg.Workspaces))
@@ -114,13 +117,15 @@ func listWorkspaces(cmd *cobra.Command, opts Options, jsonOut bool) error {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "id\thost\tremote_root\tlocal_root")
+	rows := make([][]string, 0, len(ids))
 	for _, id := range ids {
 		ws := cfg.Workspaces[id]
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", id, ws.Host, ws.RemoteRoot, ws.LocalRoot)
+		rows = append(rows, []string{id, ws.Host, ws.RemoteRoot, ws.LocalRoot})
 	}
-	return tw.Flush()
+	r := plainRenderer(cmd, false)
+	r.Section("Workspaces")
+	r.Table([]string{"id", "host", "workspace_root", "local_root"}, rows)
+	return nil
 }
 
 func removeWorkspaceRegistryEntry(opts Options, id string) error {

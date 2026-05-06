@@ -15,6 +15,15 @@ func executeCommand(cmd *cobra.Command, args ...string) (*bytes.Buffer, error) {
 	return &out, cmd.Execute()
 }
 
+func executeCommandSplit(cmd *cobra.Command, args ...string) (*bytes.Buffer, *bytes.Buffer, error) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs(args)
+	return &stdout, &stderr, cmd.Execute()
+}
+
 func mustContain(t *testing.T, got, want string) {
 	t.Helper()
 	if !bytes.Contains([]byte(got), []byte(want)) {

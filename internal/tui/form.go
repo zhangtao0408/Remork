@@ -17,8 +17,11 @@ var (
 
 type Field struct {
 	Key         string
+	Section     string
 	Label       string
+	Help        string
 	Placeholder string
+	Initial     string
 }
 
 type FieldValueMsg struct {
@@ -42,6 +45,9 @@ func NewFormModel(title string, fields []Field) FormModel {
 		input.Placeholder = field.Placeholder
 		input.Prompt = field.Label + ": "
 		input.Width = 60
+		if field.Initial != "" {
+			input.SetValue(field.Initial)
+		}
 		if i == 0 {
 			_ = input.Focus()
 		}
@@ -78,6 +84,12 @@ func (m FormModel) Update(msg tea.Msg) (FormModel, tea.Cmd) {
 			}
 			m.move(1)
 			return m, nil
+		case tea.KeyUp:
+			m.move(-1)
+			return m, nil
+		case tea.KeyDown:
+			m.move(1)
+			return m, nil
 		case tea.KeyTab:
 			m.move(1)
 			return m, nil
@@ -107,15 +119,26 @@ func (m FormModel) View() string {
 	var b strings.Builder
 	title := lipgloss.NewStyle().Bold(true).Render(m.title)
 	fmt.Fprintf(&b, "%s\n\n", title)
+	lastSection := ""
 	for i, input := range m.inputs {
+		if section := strings.TrimSpace(m.fields[i].Section); section != "" && section != lastSection {
+			if lastSection != "" {
+				fmt.Fprintln(&b)
+			}
+			fmt.Fprintf(&b, "%s\n", lipgloss.NewStyle().Faint(true).Render(section))
+			lastSection = section
+		}
 		prefix := "  "
 		if i == m.current {
 			prefix = "> "
 		}
 		fmt.Fprintf(&b, "%s%s\n", prefix, input.View())
+		if help := strings.TrimSpace(m.fields[i].Help); help != "" {
+			fmt.Fprintf(&b, "    %s\n", lipgloss.NewStyle().Faint(true).Render(help))
+		}
 	}
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "enter next/submit  tab switch  esc cancel")
+	fmt.Fprintln(&b, "enter next/submit  up/down switch  tab switch  esc cancel")
 	return b.String()
 }
 

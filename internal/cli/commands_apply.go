@@ -53,6 +53,12 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 		Short: "Write local changes to the remote after base checks",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateWorkspacePathArgs(args); err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
+				return err
+			}
 			runner, binding, localRoot, workspaceRef, err := boundApplyContext(opts)
 			if err != nil {
 				if jsonOut {
@@ -94,8 +100,8 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 				return nil
 			}
 			if len(changeset.Changes) == 0 && len(skipped) > 0 && !jsonOut {
-				fmt.Fprintln(cmd.OutOrStdout(), "applied 0")
-				fmt.Fprintln(cmd.ErrOrStderr(), "Skipped untracked or ignored files. Use remork apply <path> or --include-untracked when you intend to create remote files.")
+				plainRenderer(cmd, false).Success("applied 0")
+				plainErrRenderer(cmd, false).Warning("Skipped untracked or ignored files. Use remork apply <path> or --include-untracked when you intend to create remote files.")
 				return nil
 			}
 			if len(changeset.Changes) == 0 {
@@ -108,7 +114,9 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 					})
 				}
 				if !jsonOut {
-					fmt.Fprintln(cmd.OutOrStdout(), "applied 0")
+					r := plainRenderer(cmd, false)
+					r.Section("Apply complete")
+					r.Success("applied 0")
 				}
 				return nil
 			}
@@ -126,7 +134,7 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 					return err
 				}
 				if !ok {
-					fmt.Fprintln(cmd.OutOrStdout(), "apply cancelled")
+					plainRenderer(cmd, false).Warning("apply cancelled")
 					return nil
 				}
 			}
@@ -174,7 +182,7 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the apply plan without writing remote files")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON output")
 	cmd.Flags().BoolVar(&includeUntracked, "include-untracked", false, "Include untracked local files in the apply changeset")
-	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm apply without prompting")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Confirm apply without prompting")
 	root.AddCommand(cmd)
 }
 
@@ -333,12 +341,13 @@ func writeApplyConflict(cmd *cobra.Command, paths []string, jsonOut bool) {
 		return
 	}
 	if len(paths) == 0 {
-		fmt.Fprintln(cmd.ErrOrStderr(), "conflict")
+		plainErrRenderer(cmd, false).Error("conflict", "run remork status")
 		return
 	}
+	r := plainErrRenderer(cmd, false)
+	r.Section("Apply conflict")
 	for _, path := range paths {
-		fmt.Fprintf(cmd.ErrOrStderr(), "conflict: %s\n", path)
-		fmt.Fprintf(cmd.ErrOrStderr(), "inspect: %s\n", pathCommand("conflict", path))
+		r.Error("conflict: "+path, "inspect: "+pathCommand("conflict", path))
 	}
 }
 
@@ -347,15 +356,16 @@ func writeApplyPartialFailure(cmd *cobra.Command, result apply.Result, jsonOut b
 		_ = output.WriteJSON(cmd.OutOrStdout(), result)
 		return
 	}
+	r := plainErrRenderer(cmd, false)
+	r.Section("Apply failed")
 	if result.FailedPath != "" {
-		fmt.Fprintf(cmd.ErrOrStderr(), "apply failed at: %s\n", result.FailedPath)
+		r.Error("apply failed at: "+result.FailedPath, "Run remork status and remork sync before retrying.")
 	} else {
-		fmt.Fprintln(cmd.ErrOrStderr(), "apply failed after partial mutation")
+		r.Error("apply failed after partial mutation", "Run remork status and remork sync before retrying.")
 	}
 	if len(result.Partial) == 0 {
-		fmt.Fprintln(cmd.ErrOrStderr(), "changed paths: none")
+		r.KeyValue("changed paths", "none")
 	} else {
-		fmt.Fprintf(cmd.ErrOrStderr(), "changed paths: %v\n", result.Partial)
+		r.KeyValue("changed paths", result.Partial)
 	}
-	fmt.Fprintln(cmd.ErrOrStderr(), "Run remork status and remork sync before retrying.")
 }

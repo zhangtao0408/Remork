@@ -128,7 +128,7 @@ func TestResolveReleaseDaemonBinaryRejectsDevWithoutLocalBin(t *testing.T) {
 	}
 }
 
-func TestResolveReleaseDaemonBinaryRejectsDevBeforeDist(t *testing.T) {
+func TestResolveReleaseDaemonBinaryUsesDistForDev(t *testing.T) {
 	wd := t.TempDir()
 	oldwd, err := os.Getwd()
 	if err != nil {
@@ -145,13 +145,44 @@ func TestResolveReleaseDaemonBinaryRejectsDevBeforeDist(t *testing.T) {
 		t.Fatalf("write dist binary: %v", err)
 	}
 
-	_, err = resolveReleaseDaemonBinary(context.Background(), releaseBinaryOptions{
+	got, err := resolveReleaseDaemonBinary(context.Background(), releaseBinaryOptions{
 		Version:  "dev",
 		HomeDir:  t.TempDir(),
 		Platform: "linux-arm64",
 	})
-	if err == nil {
-		t.Fatal("resolveReleaseDaemonBinary returned nil error, want dev rejection")
+	if err != nil {
+		t.Fatalf("resolveReleaseDaemonBinary returned error: %v", err)
+	}
+	if got != filepath.Join("dist", "remorkd-linux-arm64") {
+		t.Fatalf("path = %q, want dist binary", got)
+	}
+}
+
+func TestResolveReleaseDaemonBinaryUsesCachedDevBinary(t *testing.T) {
+	home := t.TempDir()
+	cachePath := filepath.Join(home, ".cache", "remork", "releases", "dev", "remorkd-linux-arm64")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		t.Fatalf("mkdir cache: %v", err)
+	}
+	if err := os.WriteFile(cachePath, []byte("daemon"), 0o755); err != nil {
+		t.Fatalf("write cache binary: %v", err)
+	}
+	downloader := &fakeAssetDownloader{}
+
+	got, err := resolveReleaseDaemonBinary(context.Background(), releaseBinaryOptions{
+		Version:    "dev",
+		HomeDir:    home,
+		Platform:   "linux-arm64",
+		Downloader: downloader,
+	})
+	if err != nil {
+		t.Fatalf("resolveReleaseDaemonBinary returned error: %v", err)
+	}
+	if got != cachePath {
+		t.Fatalf("path = %q, want cached dev binary", got)
+	}
+	if len(downloader.urls) != 0 {
+		t.Fatalf("dev binary should not be downloaded: %v", downloader.urls)
 	}
 }
 

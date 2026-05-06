@@ -373,6 +373,11 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		s.finishOperation(op, status, "error", err.Error())
 		return
 	}
+	if req.TimeoutMillis < 0 {
+		http.Error(w, "timeout_millis must be greater than or equal to 0", http.StatusBadRequest)
+		s.finishOperation(op, http.StatusBadRequest, "error", "timeout_millis must be greater than or equal to 0")
+		return
+	}
 	rawRoot := req.Root
 	op.Command = append([]string(nil), req.Command...)
 	op.RequestSummary = map[string]any{"cwd": req.Cwd, "timeout_millis": req.TimeoutMillis}
