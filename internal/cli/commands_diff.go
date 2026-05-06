@@ -54,7 +54,7 @@ type localChangeContext struct {
 func loadLocalChangeContext(opts Options) (localChangeContext, error) {
 	binding, localRoot, err := workspace.ResolveFrom(opts.WorkingDir)
 	if err != nil {
-		return localChangeContext{}, fmt.Errorf("current directory is not bound to a remork workspace: %w", err)
+		return localChangeContext{}, unboundWorkspaceError(err)
 	}
 	store := state.NewStore(binding.StateDir)
 	workspaceRef := binding.Host + ":" + binding.RemoteRoot

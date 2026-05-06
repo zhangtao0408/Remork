@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1189,13 +1190,12 @@ func TestShellEndpointRunsInteractiveCommand(t *testing.T) {
 	if err := conn.WriteMessage(websocket.TextMessage, []byte("echo shell-ok\nexit\n")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	var out strings.Builder
-	for time.Now().Before(deadline) {
-		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
-			continue
+			break
 		}
 		out.Write(msg)
 		if strings.Contains(out.String(), "shell-ok") {
@@ -1205,6 +1205,56 @@ func TestShellEndpointRunsInteractiveCommand(t *testing.T) {
 		}
 	}
 	t.Fatalf("shell output missing marker: %q", out.String())
+}
+
+func TestShellEndpointUsesInteractiveUserShellAndRC(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty shell is not supported on windows")
+	}
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is required for rc-file shell test")
+	}
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".bashrc"), []byte("export REMORK_RC_MARKER=from-bashrc\n"), 0o644); err != nil {
+		t.Fatalf("write bashrc: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", bashPath)
+
+	root := t.TempDir()
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	srv := httptest.NewServer(NewServer(Config{Roots: []string{root}}).Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/shell?root=" + url.QueryEscape(root)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("printf '%s:%s:%s\\n' \"$REMORK_RC_MARKER\" \"$PWD\" \"$-\"; exit\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var out strings.Builder
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		out.Write(msg)
+		transcript := out.String()
+		if strings.Contains(transcript, "from-bashrc:"+resolvedRoot+":") {
+			if !strings.Contains(transcript, "from-bashrc:"+resolvedRoot+":") || !strings.Contains(transcript, "i") {
+				t.Fatalf("shell did not look interactive with rc sourced: %q", transcript)
+			}
+			return
+		}
+	}
+	t.Fatalf("shell did not source bashrc or start in root: %q", out.String())
 }
 
 func TestDownloadEncodedTraversalReturnsBadRequest(t *testing.T) {

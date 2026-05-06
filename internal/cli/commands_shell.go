@@ -58,6 +58,9 @@ func addShellCommand(root *cobra.Command, opts Options) {
 				fmt.Fprintf(cmd.OutOrStdout(), "killed %s\n", killID)
 				return nil
 			}
+			if err := requireInteractiveTerminal(cmd, "interactive shell"); err != nil {
+				return codedCommandError{code: exitcode.InvalidUsageOrConfig, err: err}
+			}
 			if !remoteOnly && !noSyncCheck {
 				status, err := runCtx.runner.Status(ctx)
 				if err != nil {
@@ -88,9 +91,7 @@ func addShellCommand(root *cobra.Command, opts Options) {
 					RemoteOnly:  remoteOnly,
 					NoSyncCheck: noSyncCheck,
 				})
-				if remoteOnly {
-					fmt.Fprintln(cmd.ErrOrStderr(), "Remote-only shell: local pending changes are ignored.")
-				} else if decision.Warning != "" {
+				if decision.Warning != "" {
 					fmt.Fprintln(cmd.ErrOrStderr(), decision.Warning)
 				}
 			}

@@ -23,14 +23,14 @@ explicit `remork apply` to write back to the remote server.
 ## First Checks
 
 1. Confirm the current directory is the intended local working copy.
-2. Run `remork status`.
+2. Run `remork status --json` when machine parsing matters; otherwise `remork status`.
 3. If the directory is not bound, ask for the intended host and workspace root,
    or bind it:
 
 ```bash
 remork host add HOST --url http://VPN_OR_PRIVATE_IP:17731 --no-proxy
-remork init HOST:/absolute/remote/workspace
-remork sync
+remork init HOST:/absolute/remote/workspace --non-interactive
+remork sync --non-interactive
 ```
 
 Use `--no-proxy` when the remote address is reachable through VPN/private
@@ -42,14 +42,32 @@ Prefer client-driven daemon install. The `--root` value is the allowed root, not
 necessarily the project workspace:
 
 ```bash
+export REMORK_TOKEN="$(openssl rand -hex 32)"
+mkdir -p "$HOME/.remork"
+printf '%s\n' "$REMORK_TOKEN" > "$HOME/.remork/remork.token"
+chmod 0600 "$HOME/.remork/remork.token"
+REMOTE_TOKEN_FILE=".remork/remork.token"
+
+printf '%s\n' "$REMORK_TOKEN" | ssh SSH_TARGET \
+  "mkdir -p \"\$HOME/.remork\" && umask 077 && cat > \"\$HOME/$REMOTE_TOKEN_FILE\""
+
 remork daemon install HOST \
   --ssh SSH_TARGET \
   --url http://VPN_OR_PRIVATE_IP:17731 \
   --root /absolute/allowed/root \
   --platform linux-arm64 \
-  --execute --yes \
+  --token-file "$REMOTE_TOKEN_FILE" \
+  --token-env REMORK_TOKEN \
+  --execute --yes --non-interactive \
   --verify \
   --no-proxy
+```
+
+Before later `remork` calls in a new shell or agent session, restore the env var
+from the local token file:
+
+```bash
+export REMORK_TOKEN="$(cat "$HOME/.remork/remork.token")"
 ```
 
 Repeat `--root` if one daemon should advertise multiple independent allowed base
@@ -61,13 +79,18 @@ checks daemon `/status` when `--verify` is used. Treat version mismatch,
 connection refused, timeout, auth failure, or missing advertised roots as setup
 blockers, not as normal warnings.
 
+Only use `--allow-unauthenticated-network-bind` for trusted VPN/private
+networks where the user explicitly accepts unauthenticated access. Otherwise use
+the token-first flow above; Remork requires explicit approval before executing
+an unauthenticated non-loopback daemon bind.
+
 Then bind a local working copy to the workspace root:
 
 ```bash
 mkdir -p ~/remork/PROJECT
 cd ~/remork/PROJECT
-remork init HOST:/absolute/allowed/root/project-directory
-remork sync
+remork init HOST:/absolute/allowed/root/project-directory --non-interactive
+remork sync --non-interactive
 remork status
 ```
 
@@ -75,6 +98,9 @@ The daemon URL IP is the VPN/private IP or DNS name reachable from the local
 machine on port `17731`. Verify with `remork daemon status HOST`. If the URL
 uses a non-default port, pass the same port with `--addr 0.0.0.0:PORT` during
 `remork daemon install`.
+
+The `--platform` flag is the remote Linux server platform. Use `linux-arm64`
+for arm64 Linux servers and `linux-amd64` for x86_64 Linux servers.
 
 For additional projects on the same host, bind another child workspace under the
 same allowed root with a separate local working copy.
@@ -84,20 +110,24 @@ same allowed root with a separate local working copy.
 Before reading or editing remote-backed files:
 
 ```bash
-remork sync
-remork status
+remork sync --non-interactive
+remork status --json
 ```
 
 `remork sync` prints stage and operation progress unless `--quiet` or `--json`
 is used. If it is slow, use those progress lines to distinguish manifest fetch,
 local scan, file transfer, and state save delays.
 
+Remork defaults to interactive, human-oriented output in a terminal. Agents
+should pass `--non-interactive` for scripted flows, use `--json` for parsing,
+and use `--yes` only when the planned remote write has already been reviewed.
+
 After editing locally:
 
 ```bash
 remork status
 remork diff
-remork apply
+remork apply --yes --non-interactive
 ```
 
 After applying, run the remote check through Remork:
@@ -126,7 +156,19 @@ file only when the task requires it:
 remork pull path/to/file
 ```
 
-Use `--force` only when overwriting the local copy is intentional.
+Agents and scripts should confirm large downloads explicitly:
+
+```bash
+remork pull --force path/to/file
+```
+
+Use `--force` only when overwriting the local copy or downloading a large remote
+file is intentional.
+
+Do not use `apply` for large local artifacts. Files above `128MB` are rejected
+before upload; keep them remote and pull them explicitly when needed. If a
+tracked file was replaced by a directory, rename or restore one side before
+applying.
 
 ## Remote Commands
 
@@ -138,7 +180,7 @@ remork run -- make test
 remork run -- python scripts/check.py
 ```
 
-Use `shell` only for workflows that need interactivity:
+Use `shell` only from a real terminal for workflows that need interactivity:
 
 ```bash
 remork shell
@@ -146,6 +188,8 @@ remork shell --list
 remork shell --attach <session-id>
 remork shell --kill <session-id>
 ```
+
+For scripted or agent work, use `remork run -- ...` instead.
 
 Product V1 shell sessions are durable daemon sessions. If the local client
 disconnects, list and reattach to the retained session or kill it explicitly.
@@ -162,6 +206,7 @@ Check setup and daemon reachability:
 
 ```bash
 remork doctor
+remork doctor --json
 remork daemon status HOST
 ```
 

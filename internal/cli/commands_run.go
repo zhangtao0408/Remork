@@ -53,7 +53,7 @@ func newRunCommand(opts Options) *cobra.Command {
 				}, preflight.Options{})
 				if !decision.Allow {
 					fmt.Fprintln(cmd.ErrOrStderr(), decision.Message)
-					return codedCommandError{code: decision.ExitCode, err: fmt.Errorf("%s", decision.Message)}
+					return silentCommandError{err: codedCommandError{code: decision.ExitCode, err: fmt.Errorf("%s", decision.Message)}}
 				}
 				if status.RemoteUpdates > 0 {
 					syncResult, err := runCtx.runner.Sync(ctx, syncer.SyncOptions{})
@@ -63,7 +63,7 @@ func newRunCommand(opts Options) *cobra.Command {
 					if syncResult.Conflicts > 0 {
 						msg := "Remote updates conflict with local files; resolve conflicts before running remote commands."
 						fmt.Fprintln(cmd.ErrOrStderr(), msg)
-						return codedCommandError{code: exitcode.Conflict, err: fmt.Errorf("%s", msg)}
+						return silentCommandError{err: codedCommandError{code: exitcode.Conflict, err: fmt.Errorf("%s", msg)}}
 					}
 				}
 			} else {
@@ -128,7 +128,7 @@ type runContext struct {
 func newRunContext(opts Options) (runContext, error) {
 	binding, localRoot, err := workspace.ResolveFrom(opts.WorkingDir)
 	if err != nil {
-		return runContext{}, fmt.Errorf("current directory is not bound to a remork workspace: %w", err)
+		return runContext{}, unboundWorkspaceError(err)
 	}
 	store, err := configStore(opts)
 	if err != nil {

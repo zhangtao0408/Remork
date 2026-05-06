@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -68,6 +69,26 @@ Global Flags:
 {{end}}
 `
 
+const commandHelpTemplate = `{{if .Long}}{{.Long}}{{else}}{{.Short}}{{end}}
+
+Usage:
+  {{.UseLine}}
+{{if .HasExample}}
+Examples:
+{{.Example}}
+{{end}}{{if .HasAvailableSubCommands}}
+Commands:
+{{range .Commands}}{{if (or .IsAvailableCommand (eq .Name "help"))}}  {{rpad .Name .NamePadding }} {{.Short}}
+{{end}}{{end}}
+{{end}}{{if .HasAvailableLocalFlags}}
+Flags:
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}
+{{end}}{{if .HasAvailableInheritedFlags}}
+Global Flags:
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}
+{{end}}
+`
+
 func NewRootCommand(opts Options) *cobra.Command {
 	if opts.Version == "" {
 		opts.Version = "dev"
@@ -89,11 +110,14 @@ func NewRootCommand(opts Options) *cobra.Command {
 	}
 
 	root := &cobra.Command{
-		Use:           "remork",
-		Short:         "Control remote workspaces from a local working copy",
-		SilenceUsage:  true,
-		SilenceErrors: true,
+		Use:               "remork",
+		Short:             "Control remote workspaces from a local working copy",
+		SilenceUsage:      true,
+		SilenceErrors:     true,
+		PersistentPreRunE: validateGlobalFlags,
 	}
+	root.PersistentFlags().Bool("non-interactive", false, "Disable interactive prompts and TUI rendering")
+	root.PersistentFlags().String("color", "auto", "Color output: auto, always, or never")
 	root.SetHelpTemplate(productHelpTemplate)
 	addVersionCommand(root, opts.Version)
 	addHostCommand(root, opts)
@@ -114,7 +138,318 @@ func NewRootCommand(opts Options) *cobra.Command {
 	addDaemonCommand(root, opts)
 	addWorkspaceCommand(root, opts)
 	addPlaceholderProductCommands(root)
+	applyDetailedCommandDocs(root)
+	applySubcommandHelpTemplate(root)
 	return root
+}
+
+type commandDoc struct {
+	long    string
+	example string
+}
+
+func applyDetailedCommandDocs(root *cobra.Command) {
+	docs := map[string]commandDoc{
+		"init": {
+			long: `Bind the current local directory to a remote workspace managed by remorkd.
+
+When to use:
+  Use init once per local working copy before sync, status, run, shell, or apply.
+
+Interactive:
+  In a terminal, remork init without arguments opens a guided prompt.
+
+Automation:
+  Pass HOST:/absolute/remote/path and --non-interactive to avoid prompts.`,
+			example: `  remork init
+  remork init HOST:/absolute/remote/path --non-interactive
+  remork sync`,
+		},
+		"sync": {
+			long: `Download remote changes into the local working copy.
+
+When to use:
+  Run sync before editing, before reading local files, or after remote commands
+  may have changed the workspace.
+
+Large files:
+  Files above the large-file threshold are represented as .meta placeholders
+  unless you explicitly pull them.`,
+			example: `  remork sync
+  remork sync src/
+  remork sync --json
+  remork sync --force`,
+		},
+		"status": {
+			long: `Show whether the local working copy is clean, has local edits, has remote updates, conflicts, or large-file placeholders.
+
+When to use:
+  Run status before apply or when sync/run refuses to continue.`,
+			example: `  remork status
+  remork status --verbose
+  remork status --json`,
+		},
+		"diff": {
+			long: `Show local file changes compared with the last synced base snapshot.
+
+When to use:
+  Review exactly what apply would send to the remote.`,
+			example: `  remork diff
+  remork diff src/main.go`,
+		},
+		"restore": {
+			long: `Discard local changes and restore files from the last synced base snapshot.
+
+When to use:
+  Use after reviewing a conflict or local edit that should not be applied.`,
+			example: `  remork restore a.txt
+  remork restore .`,
+		},
+		"conflict": {
+			long: `Print recovery guidance for a conflicted path.
+
+When to use:
+  Use when status reports conflicts after sync, pull, or apply.`,
+			example: `  remork conflict a.txt
+  remork conflict -- --dash-prefixed-file`,
+		},
+		"apply": {
+			long: `Send reviewed local changes to the remote workspace.
+
+When to use:
+  Edit locally, inspect with diff/status, then apply to update the remote.
+
+Safety:
+  Apply checks the synced base first. In scripts or JSON mode, pass --yes to
+  confirm that the reviewed changes should be written.`,
+			example: `  remork diff
+  remork apply
+  remork apply --yes --non-interactive
+  remork apply src/main.go --yes`,
+		},
+		"pull": {
+			long: `Fetch a specific remote file or directory into the local working copy.
+
+When to use:
+  Use pull for large files represented by .meta placeholders or when you only
+  need one path instead of a full sync.`,
+			example: `  remork pull model.tar.gz
+  remork pull --force model.tar.gz
+  remork pull HOST:/absolute/remote/path/to/file`,
+		},
+		"run": {
+			long: `Run a command inside the bound remote workspace.
+
+When to use:
+  Use run for non-interactive commands such as tests, build steps, grep, or
+  one-shot diagnostics.
+
+Safety:
+  By default run checks local/remote state and syncs remote updates when safe.
+  Use --remote-only only when you intentionally want to ignore local edits.`,
+			example: `  remork run -- pwd
+  remork run "pytest -q"
+  remork run --timeout 30s "go test ./..."
+  remork run --remote-only -- nvidia-smi`,
+		},
+		"shell": {
+			long: `Open an interactive shell inside the bound remote workspace.
+
+When to use:
+  Use shell when a human needs an exploratory terminal session on the remote
+  workspace. Use run for scripts and Agent automation.`,
+			example: `  remork shell
+  remork shell --no-sync-check`,
+		},
+		"log": {
+			long: `Show recent operation records stored by the remote daemon for this workspace.
+
+When to use:
+  Use log to see which Remork clients requested sync, apply, run, pull, and
+  other daemon operations.`,
+			example: `  remork log
+  remork log --limit 50
+  remork log --json`,
+		},
+		"watch": {
+			long: `Watch remote workspace events and keep the local working copy updated.
+
+When to use:
+  Use watch during active remote editing or long-running remote workflows where
+  you want local files to follow remote changes.`,
+			example: `  remork watch`,
+		},
+		"doctor": {
+			long: `Check local configuration, workspace binding, daemon reachability, advertised roots, and workspace APIs.
+
+When to use:
+  Run doctor when init, sync, status, apply, run, or shell fail and you need an
+  actionable diagnosis.`,
+			example: `  remork doctor
+  remork doctor --json`,
+		},
+		"host": {
+			long: `Manage named daemon endpoints used by workspace bindings.
+
+When to use:
+  Add a host after installing remorkd, list saved hosts, or remove stale
+  endpoints.`,
+			example: `  remork host add my-lab --url http://daemon-host:17731 --token-env REMORK_TOKEN
+  remork host list
+  remork host remove my-lab`,
+		},
+		"host add": {
+			long: `Save a named daemon endpoint in the local Remork config.
+
+When to use:
+  Run this after remorkd is installed or when a daemon URL/token variable
+  changes.`,
+			example: `  remork host add my-lab --url http://daemon-host:17731
+  remork host add my-lab --url http://daemon-host:17731 --token-env REMORK_TOKEN --no-proxy
+  remork daemon status my-lab`,
+		},
+		"host list": {
+			long: `List daemon endpoints saved on this machine.
+
+When to use:
+  Use this to confirm which host names init can reference.`,
+			example: `  remork host list
+  remork host list --json`,
+		},
+		"host remove": {
+			long: `Remove a saved daemon endpoint from local Remork config.
+
+When to use:
+  Use this when a daemon endpoint is no longer valid or should not be used.`,
+			example: `  remork host remove my-lab`,
+		},
+		"workspace": {
+			long: `Inspect local workspace bindings and remove the current binding marker.
+
+When to use:
+  Use workspace commands when a directory is bound to the wrong remote root or
+  when you need to audit local bindings.`,
+			example: `  remork workspace
+  remork workspace list
+  remork workspace remove`,
+		},
+		"workspace list": {
+			long: `List local workspaces registered in Remork config.
+
+When to use:
+  Use this to find existing local directories and their remote roots.`,
+			example: `  remork workspace list
+  remork workspace list --json`,
+		},
+		"workspace remove": {
+			long: `Remove the .remork binding marker from the current directory.
+
+When to use:
+  Use this before rebinding a directory to a different remote workspace.`,
+			example: `  remork workspace remove
+  remork init HOST:/absolute/remote/path`,
+		},
+		"daemon": {
+			long: `Install, upgrade, or inspect the remote remorkd daemon.
+
+When to use:
+  Use daemon commands to place an offline remorkd binary on a server, verify
+  version/root/auth state, or print an installation plan.`,
+			example: `  remork daemon install my-lab --root /absolute/allowed/root
+  remork daemon install my-lab --root /absolute/allowed/root --execute --yes --verify
+  remork daemon status my-lab`,
+		},
+		"daemon status": {
+			long: `Show daemon version, platform, allowed roots, large-file threshold, watch support, and auth state.
+
+When to use:
+  Run after daemon install/upgrade or when init says a root is not advertised.`,
+			example: `  remork daemon status my-lab`,
+		},
+		"daemon install": {
+			long: `Prepare or execute an offline remorkd installation on a remote server.
+
+When to use:
+  Use install when the server cannot build Remork itself. The command copies a
+  prebuilt daemon binary over SSH and can start it under the remote user's home.
+
+Token-first:
+  Prefer --token-file plus --token-env for shared VPNs or multi-user networks.`,
+			example: `  remork daemon install my-lab --root /absolute/allowed/root
+  remork daemon install my-lab --root /absolute/allowed/root --ssh user@server --url http://daemon-host:17731 --token-file ~/.remork/remork.token --token-env REMORK_TOKEN --execute --yes --verify`,
+		},
+		"daemon upgrade": {
+			long: `Replace an existing remote remorkd binary with the current release binary.
+
+When to use:
+  Use upgrade when daemon status shows an older version or install verification
+  reports a version mismatch.`,
+			example: `  remork daemon upgrade my-lab --root /absolute/allowed/root --execute --yes --verify`,
+		},
+		"debug": {
+			long: `Inspect low-level daemon APIs and event streams.
+
+When to use:
+  Use debug commands when doctor is not enough and you need raw manifest,
+  event, or API probe details.`,
+			example: `  remork debug api
+  remork debug manifest --json
+  remork debug events`,
+		},
+		"debug manifest": {
+			long: `Fetch and print the remote manifest for the bound workspace.
+
+When to use:
+  Use this to inspect what the daemon currently advertises for files, hashes,
+  directories, and large-file placeholders.`,
+			example: `  remork debug manifest
+  remork debug manifest --json`,
+		},
+		"debug events": {
+			long: `Stream remote workspace events as JSON lines.
+
+When to use:
+  Use this to verify watch/events behavior or diagnose whether daemon-side file
+  changes are being observed.`,
+			example: `  remork debug events`,
+		},
+		"debug api": {
+			long: `Probe the daemon status, manifest, and operations APIs for the bound workspace.
+
+When to use:
+  Use this when doctor points to daemon API trouble and you need individual
+  endpoint results.`,
+			example: `  remork debug api`,
+		},
+	}
+	applyDocsRecursive(root, docs)
+}
+
+func applyDocsRecursive(cmd *cobra.Command, docs map[string]commandDoc) {
+	for _, child := range cmd.Commands() {
+		if doc, ok := docs[commandDocKey(child)]; ok {
+			child.Long = doc.long
+			child.Example = doc.example
+		}
+		applyDocsRecursive(child, docs)
+	}
+}
+
+func commandDocKey(cmd *cobra.Command) string {
+	return strings.TrimPrefix(cmd.CommandPath(), "remork ")
+}
+
+func applySubcommandHelpTemplate(root *cobra.Command) {
+	for _, cmd := range root.Commands() {
+		applyCommandHelpTemplate(cmd)
+	}
+}
+
+func applyCommandHelpTemplate(cmd *cobra.Command) {
+	cmd.SetHelpTemplate(commandHelpTemplate)
+	for _, child := range cmd.Commands() {
+		applyCommandHelpTemplate(child)
+	}
 }
 
 func configStore(opts Options) (config.Store, error) {

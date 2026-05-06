@@ -29,7 +29,11 @@ func addPullCommand(root *cobra.Command, opts Options) {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			binding, _, err := workspace.ResolveFrom(opts.WorkingDir)
 			if err != nil {
-				return fmt.Errorf("current directory is not bound to a remork workspace: %w", err)
+				err = unboundWorkspaceError(err)
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
+				return err
 			}
 			target, err := normalizePullTarget(args[0], binding)
 			if err != nil {
@@ -37,23 +41,48 @@ func addPullCommand(root *cobra.Command, opts Options) {
 			}
 			runner, err := newBoundSyncRunner(opts)
 			if err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			result, err := runner.Pull(cmd.Context(), target, syncer.PullOptions{
 				Force:        force,
-				Quiet:        quiet,
+				Quiet:        quiet || jsonOut || boolFlag(cmd, "non-interactive"),
 				IncludeLarge: includeLarge,
 				In:           cmd.InOrStdin(),
 				Out:          cmd.ErrOrStderr(),
 			})
 			if err != nil {
 				if errors.Is(err, prompt.ErrPromptRequired) {
-					return codedCommandError{code: exitcode.PromptRequired, err: err}
+					err = codedCommandError{code: exitcode.PromptRequired, err: err, fix: "rerun with --force to confirm large-file download in non-interactive mode"}
+					if jsonOut {
+						return writeJSONCommandError(cmd, err)
+					}
+					return err
+				}
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
 				}
 				return err
 			}
 			if result.Conflicts > 0 {
-				return codedCommandError{code: exitcode.Conflict, err: fmt.Errorf("pull completed with %d conflicts", result.Conflicts)}
+				if jsonOut {
+					if writeErr := output.WriteJSON(cmd.OutOrStdout(), result); writeErr != nil {
+						return writeErr
+					}
+				} else if !quiet {
+					writeConflictSummary(cmd, "pull", result.Conflicts)
+				}
+				err := codedCommandError{
+					code: exitcode.Conflict,
+					err:  fmt.Errorf("pull completed with %d conflicts", result.Conflicts),
+					fix:  "run remork status, resolve conflicts, then rerun remork pull",
+				}
+				if jsonOut {
+					return silentCommandError{err: err}
+				}
+				return err
 			}
 			if jsonOut {
 				return output.WriteJSON(cmd.OutOrStdout(), result)

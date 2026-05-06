@@ -14,6 +14,7 @@ import (
 	"remork/internal/apply"
 	"remork/internal/client"
 	"remork/internal/daemon"
+	"remork/internal/limits"
 	"remork/internal/prompt"
 	"remork/internal/state"
 )
@@ -979,6 +980,49 @@ func TestBuildChangesetIncludesUntrackedWithFlag(t *testing.T) {
 	}
 	if len(changes.Changes) != 1 || changes.Changes[0].Path != "new.txt" {
 		t.Fatalf("changes = %#v", changes.Changes)
+	}
+}
+
+func TestBuildChangesetRejectsTrackedFileReplacedByDirectory(t *testing.T) {
+	local := t.TempDir()
+	if err := os.Mkdir(filepath.Join(local, "tracked.txt"), 0o755); err != nil {
+		t.Fatalf("mkdir tracked path: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(local, "tracked.txt", "child.txt"), []byte("child\n"))
+	snap := state.Snapshot{
+		WorkspaceRef: "lab:/remote",
+		Entries: map[string]state.TrackedFile{
+			"tracked.txt": {Path: "tracked.txt", BaseHash: state.HashBytes([]byte("before\n")), Revision: "r1"},
+		},
+	}
+
+	_, _, err := BuildChangeset(local, snap)
+	if err == nil || !strings.Contains(err.Error(), "replaced by a directory") {
+		t.Fatalf("BuildChangeset error = %v, want tracked file replaced by directory", err)
+	}
+}
+
+func TestBuildChangesetRejectsLargeApplyFileBeforeReading(t *testing.T) {
+	local := t.TempDir()
+	path := filepath.Join(local, "huge.bin")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create sparse file: %v", err)
+	}
+	if err := file.Truncate(limits.MaxApplyFileBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("truncate sparse file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close sparse file: %v", err)
+	}
+
+	_, _, err = BuildChangesetWithOptions(local, state.Snapshot{Entries: map[string]state.TrackedFile{}}, BuildChangesetOptions{
+		UseIgnoreFiles:   true,
+		IncludeUntracked: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "too large to apply") || !strings.Contains(err.Error(), "remork pull") {
+		t.Fatalf("BuildChangesetWithOptions error = %v, want actionable large-file apply error", err)
 	}
 }
 

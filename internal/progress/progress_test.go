@@ -19,6 +19,20 @@ func TestTextReporterShowsProgressWhenInteractive(t *testing.T) {
 	}
 }
 
+func TestTextReporterUsesStructuredPlainOutput(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewTextReporter(&buf, Options{Quiet: false})
+	r.Start("sync: fetching remote manifest", 1)
+	r.Done()
+
+	out := buf.String()
+	for _, want := range []string{"-> sync: fetching remote manifest", "ok sync: fetching remote manifest"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output should contain %q, got %q", want, out)
+		}
+	}
+}
+
 func TestTextReporterQuietSuppressesOutput(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewTextReporter(&buf, Options{Quiet: true})

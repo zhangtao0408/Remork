@@ -70,15 +70,31 @@ SSH_TARGET=user@my-server
 DAEMON_URL=http://remork-daemon.example.internal:17731
 ALLOWED_ROOT=/home/me
 REMOTE_PLATFORM=linux-arm64
+export REMORK_TOKEN="\$(openssl rand -hex 32)"
+mkdir -p "\$HOME/.remork"
+printf '%s\n' "\$REMORK_TOKEN" > "\$HOME/.remork/remork.token"
+chmod 0600 "\$HOME/.remork/remork.token"
+REMOTE_TOKEN_FILE=.remork/remork.token
+
+printf '%s\n' "\$REMORK_TOKEN" | ssh "\$SSH_TARGET" \\
+  "mkdir -p \"\\\$HOME/.remork\" && umask 077 && cat > \"\\\$HOME/\$REMOTE_TOKEN_FILE\""
 
 remork daemon install "\$HOST_ALIAS" \\
   --ssh "\$SSH_TARGET" \\
   --url "\$DAEMON_URL" \\
   --root "\$ALLOWED_ROOT" \\
   --platform "\$REMOTE_PLATFORM" \\
+  --token-file "\$REMOTE_TOKEN_FILE" \\
+  --token-env REMORK_TOKEN \\
   --execute --yes \\
   --verify \\
   --no-proxy
+\`\`\`
+
+For future terminals, load the same token before running Remork:
+
+\`\`\`bash
+export REMORK_TOKEN="\$(cat "\$HOME/.remork/remork.token")"
 \`\`\`
 
 \`--root\` is an allowed base root. Any workspace under that directory can be
@@ -87,6 +103,9 @@ Repeat \`--root\` if one daemon should advertise multiple independent allowed
 base roots.
 If \`DAEMON_URL\` uses a non-default port, pass the same port with
 \`--addr 0.0.0.0:PORT\`.
+On a trusted VPN/private network, you can skip the token setup and add
+\`--allow-unauthenticated-network-bind\`. Without a token, Remork refuses an
+executed non-loopback install unless that flag is passed explicitly.
 
 ## Use Remork
 

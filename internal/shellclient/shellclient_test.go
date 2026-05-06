@@ -2,7 +2,9 @@ package shellclient
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -75,6 +77,48 @@ func TestNewDialerNoProxyDisablesProxyFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunEnablesAndRestoresTerminalMode(t *testing.T) {
+	oldEnable := enableRawTerminal
+	var enabled bool
+	var restored bool
+	enableRawTerminal = func(in io.Reader) (func(), error) {
+		enabled = true
+		return func() {
+			restored = true
+		}, nil
+	}
+	t.Cleanup(func() { enableRawTerminal = oldEnable })
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read resize: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(api.ShellFrame{Type: "exit", ExitCode: 0})
+	}))
+	defer server.Close()
+
+	err := Run(context.Background(), Options{
+		BaseURL: server.URL,
+		Root:    "/data/project",
+		Stdin:   strings.NewReader(""),
+		Stdout:  io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !enabled || !restored {
+		t.Fatalf("raw terminal enabled=%t restored=%t, want both true", enabled, restored)
+	}
+}
+
 func TestRunWaitsForSocketOutputAfterStdinEOF(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +142,7 @@ func TestRunWaitsForSocketOutputAfterStdinEOF(t *testing.T) {
 	defer server.Close()
 
 	var out bytes.Buffer
-	err := Run(t.Context(), Options{
+	err := Run(context.Background(), Options{
 		BaseURL: server.URL,
 		Root:    "/data/project",
 		Stdin:   strings.NewReader("exit\n"),
@@ -138,7 +182,7 @@ func TestRunSendsEOTAfterStdinEOF(t *testing.T) {
 	defer server.Close()
 
 	var out bytes.Buffer
-	err := Run(t.Context(), Options{
+	err := Run(context.Background(), Options{
 		BaseURL: server.URL,
 		Root:    "/data/project",
 		Stdin:   strings.NewReader("echo hi\n"),
@@ -171,7 +215,7 @@ func TestRunReturnsRemoteShellExitCode(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := Run(t.Context(), Options{
+	err := Run(context.Background(), Options{
 		BaseURL: server.URL,
 		Root:    "/data/project",
 		Stdin:   strings.NewReader("exit 7\n"),

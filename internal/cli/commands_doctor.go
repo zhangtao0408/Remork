@@ -11,29 +11,59 @@ import (
 	"remork/internal/auth"
 	"remork/internal/client"
 	"remork/internal/exitcode"
+	"remork/internal/output"
 	"remork/internal/workspace"
 )
 
 func addDoctorCommand(root *cobra.Command, opts Options) {
+	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check local and remote readiness",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if jsonOut {
+				return runDoctorJSON(cmd, opts)
+			}
+			r := plainRenderer(cmd, false)
+			r.Section("Doctor")
 			warnings, err := runDoctor(cmd.Context(), opts)
 			if err != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "FAILED: %s\n", err.reason)
-				fmt.Fprintf(cmd.OutOrStdout(), "Fix: %s\n", err.fix)
-				return codedCommandError{code: err.code, err: errors.New(err.reason)}
+				r.Error("FAILED: "+err.reason, "Fix: "+err.fix)
+				return silentCommandError{err: codedCommandError{code: err.code, err: errors.New(err.reason), fix: err.fix}}
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "OK: workspace is ready")
+			r.Success("OK: workspace is ready")
 			for _, warning := range warnings {
-				fmt.Fprintf(cmd.OutOrStdout(), "WARN: %s\n", warning)
+				r.Warning("WARN: " + warning)
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON output")
 	root.AddCommand(cmd)
+}
+
+type doctorJSONResult struct {
+	Ready    bool     `json:"ready"`
+	Warnings []string `json:"warnings,omitempty"`
+	Error    string   `json:"error,omitempty"`
+	Fix      string   `json:"fix,omitempty"`
+	Code     int      `json:"code,omitempty"`
+}
+
+func runDoctorJSON(cmd *cobra.Command, opts Options) error {
+	warnings, failure := runDoctor(cmd.Context(), opts)
+	result := doctorJSONResult{Ready: failure == nil, Warnings: warnings}
+	if failure != nil {
+		result.Error = failure.reason
+		result.Fix = failure.fix
+		result.Code = failure.code
+		if err := output.WriteJSON(cmd.OutOrStdout(), result); err != nil {
+			return err
+		}
+		return silentCommandError{err: codedCommandError{code: failure.code, err: errors.New(failure.reason)}}
+	}
+	return output.WriteJSON(cmd.OutOrStdout(), result)
 }
 
 type doctorFailure struct {
@@ -52,7 +82,7 @@ func runDoctor(ctx context.Context, opts Options) ([]string, *doctorFailure) {
 	}
 	cfg, err := store.Load()
 	if err != nil {
-		return nil, configDoctorFailure(err, "run remork host add NAME --url URL")
+		return nil, configDoctorFailure(err, "run remork host add NAME --url URL, then run remork init HOST:/absolute/remote/path in your local project directory")
 	}
 	binding, _, err := workspace.ResolveFrom(opts.WorkingDir)
 	if err != nil {
@@ -109,7 +139,7 @@ func runDoctor(ctx context.Context, opts Options) ([]string, *doctorFailure) {
 func configDoctorFailure(err error, fix string) *doctorFailure {
 	reason := err.Error()
 	if errors.Is(err, os.ErrNotExist) {
-		reason = "config file is not readable"
+		reason = "remork has not been configured on this machine"
 	}
 	return &doctorFailure{reason: reason, fix: fix, code: exitcode.InvalidUsageOrConfig}
 }
@@ -117,8 +147,10 @@ func configDoctorFailure(err error, fix string) *doctorFailure {
 func networkDoctorFailure(err error, fix string) *doctorFailure {
 	code := exitcode.NetworkUnavailable
 	var httpErr *client.HTTPError
-	if errors.As(err, &httpErr) && httpErr.StatusCode == 403 {
-		code = exitcode.PermissionDenied
+	if errors.As(err, &httpErr) {
+		if httpErr.StatusCode == 401 || httpErr.StatusCode == 403 {
+			code = exitcode.PermissionDenied
+		}
 	}
-	return &doctorFailure{reason: err.Error(), fix: fix, code: code}
+	return &doctorFailure{reason: explainDaemonStatusError(err), fix: fix, code: code}
 }

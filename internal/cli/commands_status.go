@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"remork/internal/auth"
+	"remork/internal/exitcode"
 	"remork/internal/output"
 	"remork/internal/state"
 	"remork/internal/syncer"
@@ -23,24 +24,33 @@ func addStatusCommand(root *cobra.Command, opts Options) {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runner, err := newBoundSyncRunner(opts)
 			if err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			status, err := runner.Status(cmd.Context())
 			if err != nil {
+				err = daemonReachabilityCommandError(err, "start remorkd, check VPN/firewall reachability, then run remork doctor")
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			if jsonOut {
 				return output.WriteJSON(cmd.OutOrStdout(), status)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Workspace: %s\n", status.Workspace)
-			fmt.Fprintf(cmd.OutOrStdout(), "Local: %s\n", status.LocalRoot)
-			fmt.Fprintf(cmd.OutOrStdout(), "Clean: %d\n", status.Clean)
-			fmt.Fprintf(cmd.OutOrStdout(), "Local changes: %d\n", status.LocalChanges)
-			fmt.Fprintf(cmd.OutOrStdout(), "Remote updates: %d\n", status.RemoteUpdates)
-			fmt.Fprintf(cmd.OutOrStdout(), "Conflicts: %d\n", status.Conflicts)
-			fmt.Fprintf(cmd.OutOrStdout(), "Large placeholders: %d\n", status.LargePlaceholders)
+			r := plainRenderer(cmd, false)
+			r.Section("Workspace status")
+			r.KeyValue("Workspace", status.Workspace)
+			r.KeyValue("Local", status.LocalRoot)
+			r.KeyValue("Clean", status.Clean)
+			r.KeyValue("Local changes", status.LocalChanges)
+			r.KeyValue("Remote updates", status.RemoteUpdates)
+			r.KeyValue("Conflicts", status.Conflicts)
+			r.KeyValue("Large placeholders", status.LargePlaceholders)
 			writeStatusPaths(cmd, status, verbose)
-			fmt.Fprintf(cmd.OutOrStdout(), "Next: %s\n", nextStatusAction(status))
+			r.KeyValue("Next", nextStatusAction(status))
 			return nil
 		},
 	}
@@ -52,7 +62,7 @@ func addStatusCommand(root *cobra.Command, opts Options) {
 func newBoundSyncRunner(opts Options) (syncer.Runner, error) {
 	binding, localRoot, err := workspace.ResolveFrom(opts.WorkingDir)
 	if err != nil {
-		return syncer.Runner{}, fmt.Errorf("current directory is not bound to a remork workspace: %w", err)
+		return syncer.Runner{}, unboundWorkspaceError(err)
 	}
 	store, err := configStore(opts)
 	if err != nil {
@@ -64,11 +74,15 @@ func newBoundSyncRunner(opts Options) (syncer.Runner, error) {
 	}
 	host, ok := cfg.Hosts[binding.Host]
 	if !ok {
-		return syncer.Runner{}, fmt.Errorf("host %q is not configured", binding.Host)
+		return syncer.Runner{}, codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("host %q is not configured", binding.Host),
+			fix:  fmt.Sprintf("run remork host add %s --url URL", binding.Host),
+		}
 	}
 	token, err := auth.TokenFromEnv(host.TokenEnv)
 	if err != nil {
-		return syncer.Runner{}, err
+		return syncer.Runner{}, tokenEnvCommandError(host, err)
 	}
 	workspaceRef := binding.Host + ":" + binding.RemoteRoot
 	return syncer.NewRunner(syncer.RunnerOptions{

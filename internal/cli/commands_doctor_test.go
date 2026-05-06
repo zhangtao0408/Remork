@@ -69,6 +69,97 @@ func TestRemorkProductDoctorReportsReadyWithNoTokenWarning(t *testing.T) {
 	}
 }
 
+func TestDoctorJSONReportsReady(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	probe := fakeDaemonProbe{Roots: []string{"/data"}}
+	store := config.NewStore(filepath.Join(home, ".remork"))
+	if err := store.Save(config.Config{
+		Hosts: map[string]config.Host{
+			"lab": {Name: "lab", URL: "http://127.0.0.1:17731"},
+		},
+		Workspaces: map[string]config.Workspace{},
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := workspace.WriteBinding(local, workspace.Binding{
+		Version:     1,
+		Host:        "lab",
+		RemoteRoot:  "/data/project",
+		WorkspaceID: "ws-test",
+		StateDir:    filepath.Join(t.TempDir(), "state"),
+	}); err != nil {
+		t.Fatalf("write binding: %v", err)
+	}
+
+	out, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home, WorkingDir: local, DaemonProbe: probe}), "doctor", "--json")
+	if err != nil {
+		t.Fatalf("doctor --json: %v\n%s", err, out.String())
+	}
+	var got struct {
+		Ready    bool     `json:"ready"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode output %q: %v", out.String(), err)
+	}
+	if !got.Ready || len(got.Warnings) != 1 {
+		t.Fatalf("doctor json = %#v, want ready with missing token warning", got)
+	}
+}
+
+func TestDoctorFirstRunExplainsMissingConfig(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+
+	out, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home, WorkingDir: local}), "doctor")
+	if err == nil {
+		t.Fatal("doctor without config should fail")
+	}
+	got := out.String()
+	mustContain(t, got, "remork has not been configured")
+	mustContain(t, got, "remork host add")
+	mustContain(t, got, "remork init")
+	mustNotContain(t, got, "config file is not readable")
+}
+
+func TestDoctorNetworkFailureIsActionableAndNotDuplicated(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	store := config.NewStore(filepath.Join(home, ".remork"))
+	if err := store.Save(config.Config{
+		Hosts: map[string]config.Host{
+			"lab": {Name: "lab", URL: "http://127.0.0.1:1"},
+		},
+		Workspaces: map[string]config.Workspace{},
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := workspace.WriteBinding(local, workspace.Binding{
+		Version:     1,
+		Host:        "lab",
+		RemoteRoot:  "/data/project",
+		WorkspaceID: "ws_test",
+		StateDir:    filepath.Join(t.TempDir(), "state"),
+	}); err != nil {
+		t.Fatalf("write binding: %v", err)
+	}
+
+	out, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home, WorkingDir: local}), "doctor")
+	if err == nil {
+		t.Fatal("doctor returned nil error")
+	}
+	got := out.String()
+	mustContain(t, got, "connection refused")
+	mustContain(t, got, "Fix: start remorkd")
+	if strings.Contains(got, "Get ") || strings.Contains(got, "/status") {
+		t.Fatalf("doctor leaked raw HTTP error:\n%s", got)
+	}
+	if count := strings.Count(got, "connection refused"); count != 1 {
+		t.Fatalf("doctor printed connection failure %d times, want once:\n%s", count, got)
+	}
+}
+
 func TestDoctorAcceptsWorkspaceUnderAdvertisedParentRoot(t *testing.T) {
 	home := t.TempDir()
 	local := t.TempDir()

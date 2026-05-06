@@ -16,13 +16,13 @@ func TestRemorkProductApplyUpdatesRemoteAndConflictPreservesLocal(t *testing.T) 
 	h.bindAndSync()
 	h.writeLocal("a.txt", "local\n")
 
-	applyOut := h.runInLocal("apply")
+	applyOut := h.runInLocal("apply", "--yes")
 	mustContain(t, applyOut, "applied 1")
 	h.assertRemote("a.txt", "local\n")
 
 	h.writeLocal("a.txt", "local-two\n")
 	h.writeRemote("a.txt", "remote-two\n")
-	errOut, code := h.runInLocalExpectCode(5, "apply")
+	errOut, code := h.runInLocalExpectCode(5, "apply", "--yes")
 	mustContain(t, errOut, "conflict")
 	mustContain(t, errOut, "inspect: remork conflict -- a.txt")
 	h.assertLocal("a.txt", "local-two\n")
@@ -62,7 +62,7 @@ func TestStatusAndApplyConflictSuggestDashPrefixedPathWithTerminator(t *testing.
 	mustContain(t, statusOut, "remork conflict -- -dash.txt")
 	mustContain(t, statusOut, "remork restore -- -dash.txt")
 
-	errOut, code := h.runInLocalExpectCode(5, "apply")
+	errOut, code := h.runInLocalExpectCode(5, "apply", "--yes")
 	mustContain(t, errOut, "inspect: remork conflict -- -dash.txt")
 	if code != 5 {
 		t.Fatalf("exit code = %d", code)

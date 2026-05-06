@@ -33,6 +33,7 @@ func addLogCommand(root *cobra.Command, opts Options) {
 			if jsonOut {
 				return output.WriteJSON(cmd.OutOrStdout(), entries)
 			}
+			plainRenderer(cmd, false).Section("Operations")
 			printOperationTable(cmd.OutOrStdout(), entries)
 			return nil
 		},

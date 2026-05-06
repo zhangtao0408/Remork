@@ -5,6 +5,7 @@ import "time"
 const (
 	MaxErrorBodyBytes       = 64 << 10
 	MaxApplyResultBodyBytes = 8 << 20
+	MaxApplyFileBytes       = 128 << 20
 	MaxApplyBodyBytes       = 256 << 20
 	MaxExecBodyBytes        = 1 << 20
 	MaxExecOutputBytes      = 8 << 20

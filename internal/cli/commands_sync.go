@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"remork/internal/auth"
+	"remork/internal/exitcode"
 	"remork/internal/output"
 	"remork/internal/progress"
 	"remork/internal/state"
@@ -25,22 +26,44 @@ func addSyncCommand(root *cobra.Command, opts Options) {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			binding, localRoot, err := workspace.ResolveFrom(opts.WorkingDir)
 			if err != nil {
-				return fmt.Errorf("current directory is not bound to a remork workspace: %w", err)
+				err = unboundWorkspaceError(err)
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
+				return err
 			}
 			store, err := configStore(opts)
 			if err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			cfg, err := store.Load()
 			if err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			host, ok := cfg.Hosts[binding.Host]
 			if !ok {
-				return fmt.Errorf("host %q is not configured", binding.Host)
+				err := codedCommandError{
+					code: exitcode.InvalidUsageOrConfig,
+					err:  fmt.Errorf("host %q is not configured", binding.Host),
+					fix:  fmt.Sprintf("run remork host add %s --url URL", binding.Host),
+				}
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
+				return err
 			}
 			token, err := auth.TokenFromEnv(host.TokenEnv)
 			if err != nil {
+				err = tokenEnvCommandError(host, err)
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			targetPath := ""
@@ -54,7 +77,7 @@ func addSyncCommand(root *cobra.Command, opts Options) {
 				LocalRoot:    localRoot,
 				WorkspaceRef: workspaceRef,
 				RemoteRoot:   binding.RemoteRoot,
-				Progress:     progress.NewTextReporter(cmd.ErrOrStderr(), progress.Options{Quiet: quiet || jsonOut}),
+				Progress:     progress.NewTextReporter(cmd.OutOrStdout(), progress.Options{Quiet: quiet || jsonOut, Color: commandColorMode(cmd)}),
 			})
 			result, err := runner.Sync(cmd.Context(), syncer.SyncOptions{
 				TargetPath: targetPath,
@@ -62,17 +85,42 @@ func addSyncCommand(root *cobra.Command, opts Options) {
 				Quiet:      quiet,
 			})
 			if err != nil {
+				err = daemonReachabilityCommandError(err, "start remorkd, check VPN/firewall reachability, then rerun remork sync")
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			if result.Conflicts > 0 {
-				return fmt.Errorf("sync completed with %d conflicts", result.Conflicts)
+				if jsonOut {
+					if writeErr := output.WriteJSON(cmd.OutOrStdout(), result); writeErr != nil {
+						return writeErr
+					}
+				} else if !quiet {
+					writeConflictSummary(cmd, "sync", result.Conflicts)
+				}
+				err := codedCommandError{
+					code: exitcode.Conflict,
+					err:  fmt.Errorf("sync completed with %d conflicts", result.Conflicts),
+					fix:  "run remork status, resolve conflicts, then rerun remork sync",
+				}
+				if jsonOut {
+					return silentCommandError{err: err}
+				}
+				return err
 			}
 			if jsonOut {
 				if writeErr := output.WriteJSON(cmd.OutOrStdout(), result); writeErr != nil {
 					return writeErr
 				}
 			} else if !quiet {
-				fmt.Fprintf(cmd.OutOrStdout(), "sync complete: downloaded %d, meta %d, deleted %d, conflicts %d\n", result.Downloaded, result.MetaWritten, result.Deleted, result.Conflicts)
+				r := plainRenderer(cmd, false)
+				r.Section("Sync complete")
+				r.KeyValue("downloaded", result.Downloaded)
+				r.KeyValue("meta", result.MetaWritten)
+				r.KeyValue("deleted", result.Deleted)
+				r.KeyValue("conflicts", result.Conflicts)
+				r.Success(fmt.Sprintf("downloaded %d, meta %d, deleted %d, conflicts %d", result.Downloaded, result.MetaWritten, result.Deleted, result.Conflicts))
 			}
 			return nil
 		},

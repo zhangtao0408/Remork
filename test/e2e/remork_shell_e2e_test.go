@@ -18,22 +18,24 @@ func TestRemorkProductShellRemoteOnlySmoke(t *testing.T) {
 	h.writeRemote("a.txt", "shell\n")
 	h.bindAndSync()
 
-	out := h.runShellScript("shell", "--remote-only", "printf 'cat a.txt\\nexit\\n'")
-	mustContain(t, out, "shell")
-	mustContain(t, out, "Remote-only shell")
+	out, code := h.runShellScriptExpectCode(2, "shell", "--remote-only", "printf 'cat a.txt\\nexit\\n'")
+	mustContain(t, out, "interactive shell requires a terminal")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
 }
 
-func TestRemorkProductShellReturnsRemoteExitCode(t *testing.T) {
+func TestRemorkProductShellNonTTYDoesNotOpenSession(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pty shell is not supported on windows")
 	}
 	h := newProductHarness(t)
 	h.bindAndSync()
 
-	out, code := h.runShellScriptExpectCode(7, "shell", "--remote-only", "printf 'exit 7\\n'")
-	mustContain(t, out, "Remote-only shell")
-	if code != 7 {
-		t.Fatalf("exit code = %d, want 7", code)
+	out, code := h.runShellScriptExpectCode(2, "shell", "--remote-only", "printf 'exit 7\\n'")
+	mustContain(t, out, "interactive shell requires a terminal")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
 	}
 }
 

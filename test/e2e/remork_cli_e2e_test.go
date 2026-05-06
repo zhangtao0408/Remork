@@ -29,9 +29,7 @@ func TestRemorkProductSyncFromBoundDirectory(t *testing.T) {
 	h.writeRemote("src/main.txt", "hello from remote")
 
 	out := h.run("host", "add", "lab", "--url", h.serverURL)
-	if out != "" {
-		t.Fatalf("host add output = %q, want empty", out)
-	}
+	mustContain(t, out, "saved host lab")
 	h.runInLocal("init", "lab:"+h.remote)
 	syncOut := h.runInLocal("sync")
 	if !bytes.Contains([]byte(syncOut), []byte("downloaded 1")) {
@@ -46,9 +44,7 @@ func TestRemorkProductFullWorkflow(t *testing.T) {
 	h.writeRemoteBytes("model.tar.gz", bytes.Repeat([]byte("x"), 64))
 
 	out := h.run("host", "add", "lab", "--url", h.serverURL)
-	if out != "" {
-		t.Fatalf("host add output = %q, want empty", out)
-	}
+	mustContain(t, out, "saved host lab")
 	h.runInLocal("init", "lab:"+h.remote)
 
 	syncOut := h.runInLocal("sync")
@@ -71,7 +67,7 @@ func TestRemorkProductFullWorkflow(t *testing.T) {
 	mustContain(t, diffOut, "-hello from remote")
 	mustContain(t, diffOut, "+hello from local")
 
-	applyOut := h.runInLocal("apply")
+	applyOut := h.runInLocal("apply", "--yes")
 	mustContain(t, applyOut, "applied 1")
 	h.assertRemote("src/main.txt", "hello from local\n")
 
@@ -131,7 +127,7 @@ func TestRemorkApplyExplicitPathPreservesOtherDirtyLocalFiles(t *testing.T) {
 	h.writeLocal("a.txt", "local-a\n")
 	h.writeLocal("b.txt", "local-b\n")
 
-	applyOut := h.runInLocal("apply", "a.txt")
+	applyOut := h.runInLocal("apply", "--yes", "a.txt")
 	mustContain(t, applyOut, "applied 1")
 	h.assertRemote("a.txt", "local-a\n")
 	h.assertRemote("b.txt", "remote-b\n")
@@ -150,7 +146,7 @@ func TestRemorkApplyExplicitDeletePreservesOtherDirtyLocalFiles(t *testing.T) {
 	}
 	h.writeLocal("b.txt", "local-b\n")
 
-	applyOut := h.runInLocal("apply", "a.txt")
+	applyOut := h.runInLocal("apply", "--yes", "a.txt")
 	mustContain(t, applyOut, "applied 1")
 	if _, err := os.Stat(filepath.Join(h.remote, "a.txt")); !os.IsNotExist(err) {
 		t.Fatalf("remote a.txt still exists after apply delete: %v", err)
@@ -171,12 +167,21 @@ func TestRemorkProductSyncJSONConflictDoesNotPrintSuccess(t *testing.T) {
 	h.writeLocal("a.txt", "local-dirty")
 	h.writeRemote("a.txt", "remote-new")
 
-	stdout, _, err := h.runInLocalExpectError("sync", "--json")
+	stdout, stderr, err := h.runInLocalExpectError("sync", "--json")
 	if err == nil {
 		h.t.Fatal("expected sync conflict error")
 	}
-	if stdout != "" {
-		h.t.Fatalf("stdout = %q, want empty", stdout)
+	if stderr != "" {
+		h.t.Fatalf("sync --json should not write stderr on conflict, got %q", stderr)
+	}
+	var result struct {
+		Conflicts int `json:"conflicts"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		h.t.Fatalf("stdout should contain conflict JSON, got %q: %v", stdout, err)
+	}
+	if result.Conflicts != 1 {
+		h.t.Fatalf("conflicts = %d, want 1; stdout=%s", result.Conflicts, stdout)
 	}
 }
 
@@ -336,7 +341,7 @@ func TestRemorkProductRunSafeMode(t *testing.T) {
 
 	remoteOnly := h.runInLocal("run", "--remote-only", "cat a.txt")
 	mustContain(t, remoteOnly, "remote")
-	mustContain(t, remoteOnly, "local pending changes are ignored")
+	mustContain(t, remoteOnly, "sync checks skipped by --remote-only")
 }
 
 func TestRemorkProductRunSyncsCleanStaleWorkspace(t *testing.T) {

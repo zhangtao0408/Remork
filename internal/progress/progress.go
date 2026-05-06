@@ -9,18 +9,20 @@ import (
 
 type Options struct {
 	Quiet bool
+	Color output.ColorMode
 }
 
 type TextReporter struct {
 	w       io.Writer
 	quiet   bool
+	color   output.ColorMode
 	label   string
 	total   int64
 	current int64
 }
 
 func NewTextReporter(w io.Writer, opts Options) *TextReporter {
-	return &TextReporter{w: w, quiet: opts.Quiet}
+	return &TextReporter{w: w, quiet: opts.Quiet, color: opts.Color}
 }
 
 func (r *TextReporter) Start(label string, total int64) {
@@ -30,11 +32,12 @@ func (r *TextReporter) Start(label string, total int64) {
 	if r.quiet || r.w == nil {
 		return
 	}
+	renderer := output.NewPlainRenderer(r.w, output.PlainOptions{Quiet: r.quiet, Color: r.color})
 	if total > 1 {
-		fmt.Fprintf(r.w, "%s %s 0/%d\n", output.Info(r.w, "->"), label, total)
+		renderer.Step(fmt.Sprintf("%s 0/%d", label, total))
 		return
 	}
-	fmt.Fprintf(r.w, "%s %s\n", output.Info(r.w, "->"), label)
+	renderer.Step(label)
 }
 
 func (r *TextReporter) Advance(delta int64) {
@@ -50,11 +53,12 @@ func (r *TextReporter) Done() {
 	if r.quiet || r.w == nil {
 		return
 	}
+	renderer := output.NewPlainRenderer(r.w, output.PlainOptions{Quiet: r.quiet, Color: r.color})
 	if r.total > 1 {
-		fmt.Fprintf(r.w, "%s %s %d/%d\n", output.Success(r.w, "ok"), r.label, r.current, r.total)
+		renderer.Success(fmt.Sprintf("%s %d/%d", r.label, r.current, r.total))
 		return
 	}
-	fmt.Fprintf(r.w, "%s %s\n", output.Success(r.w, "ok"), r.label)
+	renderer.Success(r.label)
 }
 
 func (r *TextReporter) print() {

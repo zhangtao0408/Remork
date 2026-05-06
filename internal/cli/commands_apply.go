@@ -13,6 +13,7 @@ import (
 	"remork/internal/client"
 	"remork/internal/exitcode"
 	"remork/internal/output"
+	"remork/internal/prompt"
 	"remork/internal/state"
 	"remork/internal/syncer"
 	"remork/internal/transfer"
@@ -22,6 +23,7 @@ import (
 type codedCommandError struct {
 	code int
 	err  error
+	fix  string
 }
 
 func (e codedCommandError) Error() string {
@@ -36,10 +38,15 @@ func (e codedCommandError) ExitCode() int {
 	return e.code
 }
 
+func (e codedCommandError) Fix() string {
+	return e.fix
+}
+
 func addApplyCommand(root *cobra.Command, opts Options) {
 	var dryRun bool
 	var jsonOut bool
 	var includeUntracked bool
+	var yes bool
 
 	cmd := &cobra.Command{
 		Use:   "apply [path...]",
@@ -48,6 +55,9 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runner, binding, localRoot, workspaceRef, err := boundApplyContext(opts)
 			if err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			snap, err := state.NewStore(binding.StateDir).Load(workspaceRef)
@@ -63,6 +73,9 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 				ExplicitPaths:    args,
 			})
 			if err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			summary := summarizeApplyPlan(changeset.Changes, skipped)
@@ -74,7 +87,7 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 					return output.WriteJSON(cmd.OutOrStdout(), applyJSONResult{
 						ID:      changeset.ID,
 						Plan:    summary,
-						Skipped: skipped,
+						Skipped: normalizeSkipped(skipped),
 						DryRun:  true,
 					})
 				}
@@ -90,7 +103,7 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 					return output.WriteJSON(cmd.OutOrStdout(), applyJSONResult{
 						ID:      changeset.ID,
 						Plan:    summary,
-						Skipped: skipped,
+						Skipped: normalizeSkipped(skipped),
 						Applied: 0,
 					})
 				}
@@ -99,12 +112,30 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 				}
 				return nil
 			}
+			mode := commandInteractionMode(cmd, interactionRequest{JSON: jsonOut, Yes: yes})
+			if !yes && !mode.RichOutput {
+				err := applyRequiresYesError()
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
+				return err
+			}
+			if mode.RichOutput && !yes {
+				ok, err := prompt.Confirm(prompt.Options{In: cmd.InOrStdin(), Out: cmd.ErrOrStderr()}, fmt.Sprintf("apply %d change(s) to the remote?", len(changeset.Changes)))
+				if err != nil {
+					return err
+				}
+				if !ok {
+					fmt.Fprintln(cmd.OutOrStdout(), "apply cancelled")
+					return nil
+				}
+			}
 			ctx := cmd.Context()
 			result, err := runner.ApplyChangesetContext(ctx, changeset)
 			if err != nil {
 				if isApplyConflict(err, result) {
 					writeApplyConflict(cmd, result.Conflicts, jsonOut)
-					return applyConflictError(result.Conflicts)
+					return silentCommandError{err: applyConflictError(result.Conflicts)}
 				}
 				if isApplyPartialFailure(result) {
 					writeApplyPartialFailure(cmd, result, jsonOut)
@@ -118,7 +149,7 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 			}
 			if !result.Applied {
 				writeApplyConflict(cmd, result.Conflicts, jsonOut)
-				return applyConflictError(result.Conflicts)
+				return silentCommandError{err: applyConflictError(result.Conflicts)}
 			}
 			if err := refreshAppliedChanges(ctx, runner, binding, localRoot, workspaceRef, changeset.Changes); err != nil {
 				return err
@@ -127,17 +158,23 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 				return output.WriteJSON(cmd.OutOrStdout(), applyJSONResult{
 					ID:      changeset.ID,
 					Plan:    summary,
-					Skipped: skipped,
+					Skipped: normalizeSkipped(skipped),
 					Applied: len(changeset.Changes),
 				})
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "applied %d\n", len(changeset.Changes))
+			if !jsonOut {
+				r := plainRenderer(cmd, false)
+				r.Section("Apply complete")
+				r.KeyValue("applied", len(changeset.Changes))
+				r.Success(fmt.Sprintf("applied %d", len(changeset.Changes)))
+			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the apply plan without writing remote files")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print JSON output")
 	cmd.Flags().BoolVar(&includeUntracked, "include-untracked", false, "Include untracked local files in the apply changeset")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm apply without prompting")
 	root.AddCommand(cmd)
 }
 
@@ -149,10 +186,25 @@ type applyJSONResult struct {
 	Applied int                    `json:"applied,omitempty"`
 }
 
+func normalizeSkipped(skipped []syncer.SkippedChange) []syncer.SkippedChange {
+	if skipped == nil {
+		return []syncer.SkippedChange{}
+	}
+	return skipped
+}
+
+func applyRequiresYesError() error {
+	return codedCommandError{
+		code: exitcode.PromptRequired,
+		err:  errors.New("apply requires --yes in non-interactive, JSON, or non-TTY mode"),
+		fix:  "review remork diff, then rerun remork apply --yes",
+	}
+}
+
 func boundApplyContext(opts Options) (syncer.Runner, workspace.Binding, string, string, error) {
 	binding, localRoot, err := workspace.ResolveFrom(opts.WorkingDir)
 	if err != nil {
-		return syncer.Runner{}, workspace.Binding{}, "", "", fmt.Errorf("current directory is not bound to a remork workspace: %w", err)
+		return syncer.Runner{}, workspace.Binding{}, "", "", unboundWorkspaceError(err)
 	}
 	runner, err := newBoundSyncRunner(opts)
 	if err != nil {
@@ -234,7 +286,12 @@ func summarizeApplyPlan(changes []apply.Change, skipped []syncer.SkippedChange) 
 }
 
 func printApplyPlan(cmd *cobra.Command, summary map[string]int) {
-	fmt.Fprintf(cmd.OutOrStdout(), "apply plan: create %d, update %d, delete %d, skipped %d\n", summary["create"], summary["update"], summary["delete"], summary["skipped"])
+	r := plainRenderer(cmd, false)
+	r.Section("Apply plan")
+	r.KeyValue("create", summary["create"])
+	r.KeyValue("update", summary["update"])
+	r.KeyValue("delete", summary["delete"])
+	r.KeyValue("skipped", summary["skipped"])
 }
 
 func isApplyConflict(err error, result apply.Result) bool {
@@ -248,9 +305,9 @@ func isApplyPartialFailure(result apply.Result) bool {
 
 func applyConflictError(paths []string) error {
 	if len(paths) == 0 {
-		return codedCommandError{code: exitcode.Conflict, err: errors.New("conflict")}
+		return codedCommandError{code: exitcode.Conflict, err: errors.New("conflict"), fix: "run remork status, inspect conflicts, then run remork sync before retrying"}
 	}
-	return codedCommandError{code: exitcode.Conflict, err: fmt.Errorf("conflict: %v", paths)}
+	return codedCommandError{code: exitcode.Conflict, err: fmt.Errorf("conflict: %v", paths), fix: "run remork conflict -- <path> for each conflict, then run remork sync before retrying"}
 }
 
 func applyPartialError(result apply.Result) error {
@@ -263,8 +320,16 @@ func applyPartialError(result apply.Result) error {
 func writeApplyConflict(cmd *cobra.Command, paths []string, jsonOut bool) {
 	if jsonOut {
 		_ = output.WriteJSON(cmd.OutOrStdout(), struct {
+			Error     string   `json:"error"`
+			Fix       string   `json:"fix"`
+			Code      int      `json:"code"`
 			Conflicts []string `json:"conflicts"`
-		}{Conflicts: paths})
+		}{
+			Error:     applyConflictError(paths).Error(),
+			Fix:       commandErrorFix(applyConflictError(paths)),
+			Code:      commandErrorExitCode(applyConflictError(paths)),
+			Conflicts: paths,
+		})
 		return
 	}
 	if len(paths) == 0 {

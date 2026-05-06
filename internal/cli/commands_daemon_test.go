@@ -3,7 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -90,6 +94,7 @@ func TestRunDaemonDeployExecuteRunsCommandsInOrder(t *testing.T) {
 
 	want := []recordedCommand{
 		{name: "ssh", args: []string{"lab.example", remotePrepareCommand(daemonDeployOptions{remoteBin: ".local/bin/remorkd"})}},
+		{name: "ssh", args: []string{"lab.example", remoteStopCommand()}},
 		{name: "scp", args: []string{"dist/remorkd-linux-arm64", "lab.example:.local/bin/remorkd"}},
 		{name: "ssh", args: []string{"lab.example", remoteChmodCommand(".local/bin/remorkd")}},
 		{name: "ssh", args: []string{"lab.example", remoteStartCommand(daemonDeployOptions{
@@ -108,6 +113,115 @@ func TestRunDaemonDeployExecuteRunsCommandsInOrder(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "daemon deploy executed") {
 		t.Fatalf("output should confirm execution, got:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "== Daemon install ==") {
+		t.Fatalf("output should include styled daemon section, got:\n%s", out.String())
+	}
+}
+
+func TestDaemonInstallWithoutHostInPlainModeReturnsHelpfulError(t *testing.T) {
+	cmd := NewRootCommand(Options{Version: "test", HomeDir: t.TempDir()})
+
+	_, err := executeCommand(cmd, "daemon", "install", "--non-interactive")
+	if err == nil {
+		t.Fatal("daemon install without host should fail in non-interactive mode")
+	}
+	if !strings.Contains(err.Error(), "requires HOST") {
+		t.Fatalf("error should explain missing host, got %v", err)
+	}
+}
+
+func TestDaemonStatusFreshConfigReturnsHelpfulError(t *testing.T) {
+	out, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: t.TempDir()}), "daemon", "status", "lab")
+	if err == nil {
+		t.Fatal("daemon status without config should fail")
+	}
+	if strings.Contains(err.Error(), "config.json") || strings.Contains(out.String(), "config.json") {
+		t.Fatalf("daemon status leaked raw config path: err=%v out=%q", err, out.String())
+	}
+	if !strings.Contains(err.Error(), "remork is not configured") || !strings.Contains(err.Error(), "remork host add lab --url URL") {
+		t.Fatalf("daemon status error = %v, want first-run host add guidance", err)
+	}
+}
+
+func TestDaemonStatusMapsConnectionErrorsToActionableMessage(t *testing.T) {
+	home := t.TempDir()
+	store := config.NewStore(filepath.Join(home, ".remork"))
+	if err := store.Save(config.Config{
+		Hosts: map[string]config.Host{
+			"lab": {Name: "lab", URL: "http://127.0.0.1:1"},
+		},
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	_, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home}), "daemon", "status", "lab")
+	if err == nil {
+		t.Fatal("daemon status returned nil error")
+	}
+	if strings.Contains(err.Error(), "Get ") || strings.Contains(err.Error(), "/status") {
+		t.Fatalf("daemon status leaked raw HTTP error: %v", err)
+	}
+	mustContain(t, err.Error(), "connection refused")
+	var coded interface{ Fix() string }
+	if !errors.As(err, &coded) || !strings.Contains(coded.Fix(), "start remorkd") {
+		t.Fatalf("daemon status fix = %q, want start guidance", commandErrorFix(err))
+	}
+}
+
+func TestDaemonStatusMapsAuthErrorsToActionableMessage(t *testing.T) {
+	home := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+	}))
+	t.Cleanup(server.Close)
+
+	store := config.NewStore(filepath.Join(home, ".remork"))
+	if err := store.Save(config.Config{
+		Hosts: map[string]config.Host{
+			"lab": {Name: "lab", URL: server.URL, TokenEnv: "REMORK_TOKEN"},
+		},
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	t.Setenv("REMORK_TOKEN", "wrong")
+
+	_, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home}), "daemon", "status", "lab")
+	if err == nil {
+		t.Fatal("daemon status returned nil error")
+	}
+	mustContain(t, err.Error(), "auth failed")
+	if !strings.Contains(commandErrorFix(err), "export REMORK_TOKEN") {
+		t.Fatalf("fix = %q, want token env guidance", commandErrorFix(err))
+	}
+}
+
+func TestDaemonStatusMissingTokenEnvHasFixAndPermissionCode(t *testing.T) {
+	home := t.TempDir()
+	store := config.NewStore(filepath.Join(home, ".remork"))
+	if err := store.Save(config.Config{
+		Hosts: map[string]config.Host{
+			"lab": {Name: "lab", URL: "http://127.0.0.1:17731", TokenEnv: "REMORK_TOKEN"},
+		},
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	_, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home}), "daemon", "status", "lab")
+	if err == nil {
+		t.Fatal("daemon status returned nil error")
+	}
+	mustContain(t, err.Error(), "REMORK_TOKEN")
+	if code := commandErrorExitCode(err); code != 6 {
+		t.Fatalf("exit code = %d, want permission code 6", code)
+	}
+	if fix := commandErrorFix(err); !strings.Contains(fix, "export REMORK_TOKEN") {
+		t.Fatalf("fix = %q, want token export guidance", fix)
 	}
 }
 
@@ -143,6 +257,7 @@ func TestRunDaemonDeployReportsRemoteBinaryStateAndChecksCopiedVersion(t *testin
 		"remote binary: installed remorkd v0.1.0",
 		"will replace with v0.1.1.beta01",
 		"remote binary: installed remorkd v0.1.1.beta01",
+		"copied remorkd version verified: v0.1.1.beta01",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output should contain %q, got:\n%s", want, out.String())
@@ -175,7 +290,7 @@ func TestRunDaemonDeployRejectsCopiedVersionMismatch(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "remote remorkd version mismatch after copy") || !strings.Contains(err.Error(), "want v0.1.1.beta01") {
 		t.Fatalf("runDaemonDeploy error = %v, want copied version mismatch", err)
 	}
-	if len(fake.commands) != 3 {
+	if len(fake.commands) != 4 {
 		t.Fatalf("commands after mismatch = %d, want stop before start: %#v", len(fake.commands), fake.commands)
 	}
 }
@@ -270,7 +385,7 @@ func TestRunDaemonDeployQuotesRemoteChmodPath(t *testing.T) {
 		t.Fatalf("ran %d commands, want chmod and start commands: %#v", len(fake.commands), fake.commands)
 	}
 
-	chmod := fake.commands[2]
+	chmod := fake.commands[3]
 	want := "chmod 0755 '/tmp/remork d;touch x'"
 	if chmod.name != "ssh" || len(chmod.args) != 2 || chmod.args[1] != want {
 		t.Fatalf("chmod command = %#v, want %q", chmod, want)
@@ -306,6 +421,7 @@ func TestRunDaemonDeployUpgradeRunsChmodWithoutStart(t *testing.T) {
 	}
 	want := []recordedCommand{
 		{name: "ssh", args: []string{"lab.example", remotePrepareCommand(daemonDeployOptions{remoteBin: ".local/bin/remorkd"})}},
+		{name: "ssh", args: []string{"lab.example", remoteStopCommand()}},
 		{name: "scp", args: []string{"dist/remorkd-linux-arm64", "lab.example:.local/bin/remorkd"}},
 		{name: "ssh", args: []string{"lab.example", remoteChmodCommand(".local/bin/remorkd")}},
 	}
@@ -336,8 +452,174 @@ func TestRunDaemonDeployExecuteRequiresYes(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "--execute requires --yes") {
 		t.Fatalf("runDaemonDeploy error = %v, want --execute requires --yes", err)
 	}
+	if code := commandErrorExitCode(err); code != 2 {
+		t.Fatalf("exit code = %d, want invalid usage code 2", code)
+	}
+	if fix := commandErrorFix(err); !strings.Contains(fix, "--yes") {
+		t.Fatalf("fix = %q, want --yes guidance", fix)
+	}
 	if len(fake.commands) != 0 {
 		t.Fatalf("ran commands despite missing --yes: %#v", fake.commands)
+	}
+}
+
+func TestRunDaemonDeployRejectsUnauthenticatedNetworkBindWithoutExplicitAllow(t *testing.T) {
+	var out bytes.Buffer
+	fake := &fakeCommandRunner{}
+
+	err := runDaemonDeploy(&out, daemonDeployOptions{
+		action:    "install",
+		hostName:  "lab",
+		root:      "/data/project",
+		addr:      "0.0.0.0:17731",
+		remoteBin: ".local/bin/remorkd",
+		localBin:  "dist/remorkd-linux-arm64",
+		execute:   true,
+		yes:       true,
+		runner:    fake,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--allow-unauthenticated-network-bind") {
+		t.Fatalf("runDaemonDeploy error = %v, want explicit unsafe bind approval", err)
+	}
+	if coded, ok := err.(interface{ ExitCode() int }); !ok || coded.ExitCode() != 2 {
+		t.Fatalf("exit code = %v, want 2", err)
+	}
+	if out.String() != "" {
+		t.Fatalf("deploy should reject before printing a plan, got:\n%s", out.String())
+	}
+	if len(fake.commands) != 0 {
+		t.Fatalf("ran commands despite unsafe bind rejection: %#v", fake.commands)
+	}
+}
+
+func TestRunDaemonDeployAllowsExplicitUnauthenticatedNetworkBind(t *testing.T) {
+	var out bytes.Buffer
+	fake := &fakeCommandRunner{}
+
+	err := runDaemonDeploy(&out, daemonDeployOptions{
+		action:                          "install",
+		hostName:                        "lab",
+		root:                            "/data/project",
+		addr:                            "0.0.0.0:17731",
+		remoteBin:                       ".local/bin/remorkd",
+		localBin:                        "dist/remorkd-linux-arm64",
+		execute:                         true,
+		yes:                             true,
+		allowUnauthenticatedNetworkBind: true,
+		runner:                          fake,
+	})
+	if err != nil {
+		t.Fatalf("runDaemonDeploy returned error: %v", err)
+	}
+	if len(fake.commands) == 0 {
+		t.Fatal("expected deploy commands after explicit unsafe bind approval")
+	}
+}
+
+func TestRunDaemonDeployRequiresTokenEnvWhenTokenFileConfiguresAndVerifiesHost(t *testing.T) {
+	var out bytes.Buffer
+	fake := &fakeCommandRunner{}
+
+	err := runDaemonDeploy(&out, daemonDeployOptions{
+		action:     "install",
+		hostName:   "lab",
+		root:       "/data/project",
+		addr:       "127.0.0.1:17731",
+		remoteBin:  ".local/bin/remorkd",
+		localBin:   "dist/remorkd-linux-arm64",
+		tokenFile:  "$HOME/.remork/token",
+		url:        "http://127.0.0.1:17731",
+		verify:     true,
+		execute:    true,
+		yes:        true,
+		store:      config.NewStore(filepath.Join(t.TempDir(), ".remork")),
+		storeReady: true,
+		runner:     fake,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--token-env") {
+		t.Fatalf("runDaemonDeploy error = %v, want --token-env requirement", err)
+	}
+	if coded, ok := err.(interface{ ExitCode() int }); !ok || coded.ExitCode() != 2 {
+		t.Fatalf("exit code = %v, want 2", err)
+	}
+	if len(fake.commands) != 0 {
+		t.Fatalf("ran commands despite token env preflight failure: %#v", fake.commands)
+	}
+}
+
+func TestRunDaemonDeployDryRunRequiresTokenEnvWhenTokenFileConfiguresHost(t *testing.T) {
+	var out bytes.Buffer
+
+	err := runDaemonDeploy(&out, daemonDeployOptions{
+		action:    "install",
+		hostName:  "lab",
+		root:      "/data/project",
+		addr:      "127.0.0.1:17731",
+		remoteBin: ".local/bin/remorkd",
+		localBin:  "dist/remorkd-linux-arm64",
+		tokenFile: "$HOME/.remork/token",
+		url:       "http://127.0.0.1:17731",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--token-env") {
+		t.Fatalf("runDaemonDeploy error = %v, want --token-env requirement", err)
+	}
+	if out.String() != "" {
+		t.Fatalf("dry-run should reject before printing bad host add command, got:\n%s", out.String())
+	}
+}
+
+func TestRunDaemonDeployDryRunRequiresTokenEnvWhenTokenFileOmitsURL(t *testing.T) {
+	var out bytes.Buffer
+
+	err := runDaemonDeploy(&out, daemonDeployOptions{
+		action:    "install",
+		hostName:  "lab",
+		root:      "/data/project",
+		addr:      "127.0.0.1:17731",
+		remoteBin: ".local/bin/remorkd",
+		localBin:  "dist/remorkd-linux-arm64",
+		tokenFile: "$HOME/.remork/token",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--token-env") {
+		t.Fatalf("runDaemonDeploy error = %v, want --token-env requirement", err)
+	}
+	if out.String() != "" {
+		t.Fatalf("dry-run should reject before printing bad host add guidance, got:\n%s", out.String())
+	}
+}
+
+func TestDaemonDeployPlanWithoutURLPreservesTokenEnvAndNoProxy(t *testing.T) {
+	var out bytes.Buffer
+
+	err := runDaemonDeploy(&out, daemonDeployOptions{
+		action:    "install",
+		hostName:  "lab",
+		root:      "/data/project",
+		addr:      "127.0.0.1:17731",
+		remoteBin: ".local/bin/remorkd",
+		localBin:  "dist/remorkd-linux-arm64",
+		tokenFile: "$HOME/.remork/token",
+		tokenEnv:  "REMORK_TOKEN",
+		noProxy:   true,
+	})
+	if err != nil {
+		t.Fatalf("runDaemonDeploy returned error: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"'remork' 'host' 'add' 'lab' '--url' 'http://HOST:17731'", "'--token-env' 'REMORK_TOKEN'", "'--no-proxy'"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("deploy plan missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestDaemonDeployVerifyWithoutURLReturnsUsageCode(t *testing.T) {
+	_, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: t.TempDir()}), "daemon", "install", "lab", "--root", "/data/project", "--verify", "--platform", "linux-arm64", "--non-interactive")
+	if err == nil || !strings.Contains(err.Error(), "--verify requires --url") {
+		t.Fatalf("daemon install verify error = %v, want --verify requires --url", err)
+	}
+	if coded, ok := err.(interface{ ExitCode() int }); !ok || coded.ExitCode() != 2 {
+		t.Fatalf("exit code = %v, want 2", err)
 	}
 }
 

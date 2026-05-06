@@ -15,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 
+	term "github.com/charmbracelet/x/term"
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 
@@ -127,6 +128,11 @@ func Run(ctx context.Context, opts Options) error {
 	if err := writeJSON(&writeMu, conn, api.ShellFrame{Type: "resize", Rows: rows, Cols: cols}); err != nil {
 		return err
 	}
+	restoreTerminal, err := enableRawTerminal(opts.Stdin)
+	if err != nil {
+		return err
+	}
+	defer restoreTerminal()
 	stopResize := watchResize(ctx, opts.Stdin, conn, &writeMu)
 	defer stopResize()
 	stopInterrupt := watchInterrupt(ctx, conn, &writeMu)
@@ -155,6 +161,22 @@ func Run(ctx context.Context, opts Options) error {
 			return classifyCopyResult(result)
 		}
 	}
+}
+
+var enableRawTerminal = enableRawTerminalMode
+
+func enableRawTerminalMode(in io.Reader) (func(), error) {
+	f, ok := in.(*os.File)
+	if !ok || !term.IsTerminal(f.Fd()) {
+		return func() {}, nil
+	}
+	state, err := term.MakeRaw(f.Fd())
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		_ = term.Restore(f.Fd(), state)
+	}, nil
 }
 
 func classifyCopyResult(result copyResult) error {

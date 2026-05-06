@@ -14,6 +14,7 @@ Options:
   --probe-host HOST       Hostname or IP used for local HTTP probes. Defaults to --host without user@.
   --remote-bin PATH       Remote daemon path. Defaults to .local/bin/remorkd-smoke under the remote home.
   --listen ADDR           Remote listen host. Defaults to 0.0.0.0.
+  --no-token              Start without a bearer token. Use only on trusted private networks.
   --keep                  Leave daemon and files in place; print cleanup command.
 
 The remote host does not need Go, npm, apt, brew, or internet access.
@@ -28,6 +29,7 @@ probe_host=""
 remote_bin=".local/bin/remorkd-smoke"
 listen_host="0.0.0.0"
 keep="false"
+use_token="true"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -38,6 +40,7 @@ while [ "$#" -gt 0 ]; do
     --probe-host) probe_host="${2:-}"; shift 2 ;;
     --remote-bin) remote_bin="${2:-}"; shift 2 ;;
     --listen) listen_host="${2:-}"; shift 2 ;;
+    --no-token) use_token="false"; shift ;;
     --keep) keep="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -53,7 +56,12 @@ if [ ! -x "$binary" ]; then
   exit 2
 fi
 if [ -z "$probe_host" ]; then
-  probe_host="${host#*@}"
+  resolved_probe_host="$(ssh -G "$host" 2>/dev/null | awk 'tolower($1) == "hostname" { print $2; exit }')"
+  if [ -n "$resolved_probe_host" ]; then
+    probe_host="$resolved_probe_host"
+  else
+    probe_host="${host#*@}"
+  fi
 fi
 
 if [[ "$remote_bin" == /* ]]; then
@@ -72,40 +80,76 @@ fi
 
 pid_file="\$HOME/.remork/run/remorkd-smoke-${port}.pid"
 log_file="\$HOME/.remork/log/remorkd-smoke-${port}.log"
+token_file="\$HOME/.remork/run/remorkd-smoke-${port}.token"
 url="http://${probe_host}:${port}"
 status_file="$(mktemp)"
+token=""
+auth_args=()
+remote_auth_args=""
+daemon_auth_args=""
+ssh_opts=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
+scp_opts=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2)
+if [ "$use_token" = "true" ]; then
+  token="remork-smoke-${port}-$$-$(date +%s)"
+  auth_args=(-H "Authorization: Bearer $token")
+  remote_auth_args="-H 'Authorization: Bearer $token'"
+  daemon_auth_args="--token-file \"$token_file\""
+fi
 
-remote_cleanup="if [ -f \"$pid_file\" ]; then kill \"\$(cat \"$pid_file\")\" 2>/dev/null || true; rm -f \"$pid_file\"; fi; rm -f \"$remote_exec_bin\" \"$log_file\""
+remote_stop="if [ -f \"$pid_file\" ]; then kill \"\$(cat \"$pid_file\")\" 2>/dev/null || true; rm -f \"$pid_file\"; fi; rm -f \"$log_file\""
+remote_cleanup="$remote_stop; rm -f \"$remote_exec_bin\" \"$token_file\" '$root/remork-smoke.txt'; rm -rf '$root/.remork'; rmdir '$root' 2>/dev/null || true"
 cleanup() {
   rm -f "$status_file"
   if [ "$keep" = "false" ]; then
-    ssh "$host" "$remote_cleanup" >/dev/null 2>&1 || true
+    ssh "${ssh_opts[@]}" "$host" "$remote_cleanup" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
 echo "Preparing remote workspace $host:$root"
-ssh "$host" "mkdir -p '$root' \"$remote_bin_dir\" \"\$HOME/.remork/run\" \"\$HOME/.remork/log\" && printf 'remork smoke\n' > '$root/remork-smoke.txt'"
+ssh "${ssh_opts[@]}" "$host" "mkdir -p '$root' \"$remote_bin_dir\" \"\$HOME/.remork/run\" \"\$HOME/.remork/log\" && printf 'remork smoke\n' > '$root/remork-smoke.txt'"
 
 echo "Copying $binary to $host:$remote_scp_bin"
-scp "$binary" "$host:$remote_scp_bin" >/dev/null
-ssh "$host" "chmod 0755 \"$remote_exec_bin\""
+if ! scp "${scp_opts[@]}" "$binary" "$host:$remote_scp_bin" >/dev/null; then
+  echo "Failed to copy daemon binary to $host:$remote_scp_bin." >&2
+  echo "Check SSH BatchMode authentication, remote sftp/scp support, disk quota, and --remote-bin." >&2
+  exit 1
+fi
+ssh "${ssh_opts[@]}" "$host" "chmod 0755 \"$remote_exec_bin\""
 
 echo "Starting remorkd on $listen_host:$port"
-ssh "$host" "$remote_cleanup; nohup \"$remote_exec_bin\" --root '$root' --addr '$listen_host:$port' </dev/null >\"$log_file\" 2>&1 & echo \$! > \"$pid_file\""
+if [ "$use_token" = "true" ]; then
+  ssh "${ssh_opts[@]}" "$host" "printf '%s\n' '$token' > \"$token_file\" && chmod 0600 \"$token_file\""
+fi
+ssh "${ssh_opts[@]}" "$host" "$remote_stop; nohup \"$remote_exec_bin\" --root '$root' --addr '$listen_host:$port' $daemon_auth_args </dev/null >\"$log_file\" 2>&1 & echo \$! > \"$pid_file\""
 
 echo "Probing $url/status"
+status_ok="false"
 for _ in 1 2 3 4 5; do
-  if curl --noproxy '*' -fsS "$url/status" >"$status_file"; then
+  if curl --noproxy '*' -fsS "${auth_args[@]}" "$url/status" >"$status_file"; then
+    status_ok="true"
     break
   fi
   sleep 1
 done
-curl --noproxy '*' -fsS "$url/status"
+if [ "$status_ok" != "true" ]; then
+  echo "Local probe failed for $url/status." >&2
+  echo "Checking whether remorkd is reachable from the remote host itself..." >&2
+  if ssh "${ssh_opts[@]}" "$host" "curl -fsS $remote_auth_args 'http://127.0.0.1:$port/status'" >&2; then
+    echo >&2
+    echo "remorkd is running on remote localhost, but this machine cannot reach $probe_host:$port." >&2
+    echo "Check VPN routing, firewall rules, --probe-host, and --listen." >&2
+  else
+    echo "remorkd was not reachable from remote localhost. Remote log follows:" >&2
+    ssh "${ssh_opts[@]}" "$host" "tail -n 80 \"$log_file\"" >&2 || true
+  fi
+  exit 1
+fi
+cat "$status_file"
 echo
 
 echo "Probing $url/manifest"
-curl --noproxy '*' -fsS --get "$url/manifest" --data-urlencode "root=$root" --data-urlencode "path=." --data-urlencode "recursive=true"
+curl --noproxy '*' -fsS "${auth_args[@]}" --get "$url/manifest" --data-urlencode "root=$root" --data-urlencode "path=." --data-urlencode "recursive=true"
 echo
 
 cat <<EOF
@@ -113,8 +157,9 @@ cat <<EOF
 Smoke passed.
 
 Cleanup command:
-  ssh $host "$remote_cleanup; rm -rf '$root/.remork'"
 EOF
+printf '  %q' ssh "${ssh_opts[@]}" "$host" "$remote_cleanup"
+echo
 
 if [ "$keep" = "true" ]; then
   trap - EXIT

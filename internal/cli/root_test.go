@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"remork/internal/api"
 	"remork/internal/config"
 	"remork/internal/limits"
@@ -122,6 +124,44 @@ func TestSubcommandHelpShowsCommandFlags(t *testing.T) {
 	}
 }
 
+func TestInitHelpIsSelfDescribing(t *testing.T) {
+	cmd := NewRootCommand(Options{Version: "test"})
+	out, err := executeCommand(cmd, "init", "--help")
+	if err != nil {
+		t.Fatalf("execute help: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"When to use:",
+		"Interactive:",
+		"Automation:",
+		"remork init HOST:/absolute/remote/path",
+		"remork sync",
+	} {
+		mustContain(t, got, want)
+	}
+}
+
+func TestVisibleCommandsHaveDetailedHelp(t *testing.T) {
+	root := NewRootCommand(Options{Version: "test"})
+	var check func(*cobra.Command)
+	check = func(cmd *cobra.Command) {
+		for _, child := range cmd.Commands() {
+			if child.Hidden || child.Name() == "help" || child.Name() == "version" {
+				continue
+			}
+			if child.Long == "" || child.Long == child.Short {
+				t.Fatalf("%s help needs a detailed Long description", child.CommandPath())
+			}
+			if child.Example == "" {
+				t.Fatalf("%s help needs runnable examples", child.CommandPath())
+			}
+			check(child)
+		}
+	}
+	check(root)
+}
+
 func TestDaemonInstallAcceptsRepeatedRootFlags(t *testing.T) {
 	home := t.TempDir()
 	cmd := NewRootCommand(Options{Version: "test", HomeDir: home})
@@ -225,6 +265,22 @@ func TestInitWritesLocalBinding(t *testing.T) {
 	}
 	if got, want := manifestRoots, []string{"/data/project-a"}; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("manifest probes = %v, want %v", got, want)
+	}
+}
+
+func TestInitWithoutConfigReturnsHelpfulFirstRunError(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+
+	out, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home, WorkingDir: local}), "init", "lab:/data/project")
+	if err == nil {
+		t.Fatal("init without config should fail")
+	}
+	if strings.Contains(err.Error(), "config.json") || strings.Contains(out.String(), "config.json") {
+		t.Fatalf("init leaked raw config path: err=%v out=%q", err, out.String())
+	}
+	if !strings.Contains(err.Error(), "remork is not configured") || !strings.Contains(err.Error(), "remork host add lab --url URL") {
+		t.Fatalf("init error = %v, want first-run host add guidance", err)
 	}
 }
 

@@ -35,6 +35,9 @@ func resolveReleaseDaemonBinary(ctx context.Context, opts releaseBinaryOptions) 
 	platform := opts.Platform
 	if platform == "" {
 		platform = runtime.GOOS + "-" + runtime.GOARCH
+		if runtime.GOOS != "linux" {
+			return "", fmt.Errorf("remote daemon platform is required from %s; pass --platform linux-arm64 or --platform linux-amd64", platform)
+		}
 	}
 	if err := validateDaemonReleasePlatform(platform); err != nil {
 		return "", err

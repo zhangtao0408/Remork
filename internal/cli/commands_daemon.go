@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -15,8 +16,10 @@ import (
 	"remork/internal/auth"
 	"remork/internal/client"
 	"remork/internal/config"
+	"remork/internal/exitcode"
 	"remork/internal/output"
 	"remork/internal/safety"
+	"remork/internal/tui"
 )
 
 func addDaemonCommand(root *cobra.Command, opts Options) {
@@ -42,6 +45,13 @@ func newDaemonStatusCommand(opts Options) *cobra.Command {
 			}
 			cfg, err := store.Load()
 			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return codedCommandError{
+						code: exitcode.InvalidUsageOrConfig,
+						err:  fmt.Errorf("remork is not configured on this machine; run remork host add %s --url URL", args[0]),
+						fix:  fmt.Sprintf("run remork host add %s --url URL", args[0]),
+					}
+				}
 				return err
 			}
 			host, ok := cfg.Hosts[args[0]]
@@ -50,7 +60,7 @@ func newDaemonStatusCommand(opts Options) *cobra.Command {
 			}
 			token, err := auth.TokenFromEnv(host.TokenEnv)
 			if err != nil {
-				return err
+				return tokenEnvCommandError(host, err)
 			}
 			clientID := cfg.ClientID
 			if clientID == "" {
@@ -58,16 +68,18 @@ func newDaemonStatusCommand(opts Options) *cobra.Command {
 			}
 			status, err := client.NewWithOptions(client.Options{BaseURL: host.URL, ClientID: clientID, Token: token, NoProxy: host.NoProxy}).StatusContext(cmd.Context())
 			if err != nil {
-				return err
+				return daemonStatusCommandError(host, err)
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "host: %s\n", host.Name)
-			fmt.Fprintf(out, "url: %s\n", host.URL)
-			fmt.Fprintf(out, "version: %s\n", emptyAs(status.Version, "unknown"))
-			fmt.Fprintf(out, "platform: %s\n", emptyAs(status.Platform, "unknown"))
-			fmt.Fprintf(out, "large_file_threshold: %d bytes\n", status.Threshold)
-			fmt.Fprintf(out, "watch_supported: %t\n", status.WatchSupported)
-			fmt.Fprintf(out, "auth: %s\n", daemonAuthState(host, token))
+			r := plainRenderer(cmd, false)
+			r.Section("Daemon status")
+			r.KeyValue("host", host.Name)
+			r.KeyValue("url", host.URL)
+			r.KeyValue("version", emptyAs(status.Version, "unknown"))
+			r.KeyValue("platform", emptyAs(status.Platform, "unknown"))
+			r.KeyValue("large_file_threshold", fmt.Sprintf("%d bytes", status.Threshold))
+			r.KeyValue("watch_supported", status.WatchSupported)
+			r.KeyValue("auth", daemonAuthState(host, token))
 			fmt.Fprintln(out, "roots:")
 			for _, root := range status.Roots {
 				fmt.Fprintf(out, "  - %s\n", root)
@@ -89,12 +101,29 @@ func newDaemonDeployCommand(action string, opts Options) *cobra.Command {
 		version:   opts.Version,
 	}
 	cmd := &cobra.Command{
-		Use:   action + " HOST --root /absolute/allowed/root [--root /another/root]",
+		Use:   action + " [HOST] --root /absolute/allowed/root [--root /another/root]",
 		Short: action + " remorkd using an offline binary",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			deploy.hostName = args[0]
-			host, hasHost, err := loadConfiguredHost(opts, args[0])
+			if len(args) == 0 {
+				mode := commandInteractionMode(cmd, interactionRequest{MissingInput: true})
+				if !mode.Wizard {
+					return fmt.Errorf("remork daemon %s requires HOST in non-interactive mode; run remork daemon %s from an interactive terminal or pass remork daemon %s HOST", action, action, action)
+				}
+				values, err := runTUIForm(cmd, "Daemon "+action, []tui.Field{
+					{Key: "host", Label: "Host", Placeholder: "my-lab"},
+				})
+				if err != nil {
+					return err
+				}
+				if strings.TrimSpace(values["host"]) == "" {
+					return fmt.Errorf("HOST is required")
+				}
+				deploy.hostName = strings.TrimSpace(values["host"])
+			} else {
+				deploy.hostName = args[0]
+			}
+			host, hasHost, err := loadConfiguredHost(opts, deploy.hostName)
 			if err != nil {
 				return err
 			}
@@ -102,11 +131,28 @@ func newDaemonDeployCommand(action string, opts Options) *cobra.Command {
 				deploy.sshTarget = sshTargetFromHost(host)
 			}
 			if len(deployAllowedRoots(deploy)) == 0 && action == "install" {
-				return fmt.Errorf("--root is required for daemon install")
+				mode := commandInteractionMode(cmd, interactionRequest{MissingInput: true})
+				if !mode.Wizard {
+					return fmt.Errorf("--root is required for daemon install")
+				}
+				values, err := runTUIForm(cmd, "Daemon "+action, []tui.Field{
+					{Key: "root", Label: "Allowed root", Placeholder: "/absolute/allowed/root"},
+				})
+				if err != nil {
+					return err
+				}
+				deploy.roots = append(deploy.roots, strings.TrimSpace(values["root"]))
 			}
 			for _, root := range deployAllowedRoots(deploy) {
 				if strings.TrimSpace(root) == "" {
 					return fmt.Errorf("--root cannot be empty")
+				}
+			}
+			if deploy.verify && deploy.url == "" && !hasHost {
+				return codedCommandError{
+					code: exitcode.InvalidUsageOrConfig,
+					err:  fmt.Errorf("--verify requires --url or an existing configured host %q", deploy.hostName),
+					fix:  "pass --url URL or run remork host add first",
 				}
 			}
 			if deploy.localBin == "" {
@@ -128,9 +174,6 @@ func newDaemonDeployCommand(action string, opts Options) *cobra.Command {
 			}
 			deploy.storeReady = true
 			deploy.ctx = cmd.Context()
-			if deploy.verify && deploy.url == "" && !hasHost {
-				return fmt.Errorf("--verify requires --url or an existing configured host %q", deploy.hostName)
-			}
 			return runDaemonDeploy(cmd.OutOrStdout(), deploy)
 		},
 	}
@@ -147,34 +190,36 @@ func newDaemonDeployCommand(action string, opts Options) *cobra.Command {
 	cmd.Flags().BoolVar(&deploy.verify, "verify", false, "Call daemon status after host config is available")
 	cmd.Flags().BoolVar(&deploy.execute, "execute", false, "Run generated scp and ssh deployment commands")
 	cmd.Flags().BoolVar(&deploy.yes, "yes", false, "Confirm deployment command execution")
+	cmd.Flags().BoolVar(&deploy.allowUnauthenticatedNetworkBind, "allow-unauthenticated-network-bind", false, "Allow remorkd to listen on a non-loopback address without --token-file")
 	return cmd
 }
 
 type daemonDeployOptions struct {
-	action         string
-	hostName       string
-	sshTarget      string
-	root           string
-	roots          []string
-	addr           string
-	localBin       string
-	remoteBin      string
-	platform       string
-	tokenFile      string
-	url            string
-	tokenEnv       string
-	noProxy        bool
-	verify         bool
-	execute        bool
-	yes            bool
-	store          config.Store
-	storeReady     bool
-	probe          DaemonProbe
-	ctx            context.Context
-	verifyTimeout  time.Duration
-	verifyInterval time.Duration
-	runner         commandRunner
-	version        string
+	action                          string
+	hostName                        string
+	sshTarget                       string
+	root                            string
+	roots                           []string
+	addr                            string
+	localBin                        string
+	remoteBin                       string
+	platform                        string
+	tokenFile                       string
+	url                             string
+	tokenEnv                        string
+	noProxy                         bool
+	verify                          bool
+	execute                         bool
+	yes                             bool
+	allowUnauthenticatedNetworkBind bool
+	store                           config.Store
+	storeReady                      bool
+	probe                           DaemonProbe
+	ctx                             context.Context
+	verifyTimeout                   time.Duration
+	verifyInterval                  time.Duration
+	runner                          commandRunner
+	version                         string
 }
 
 func loadConfiguredHost(opts Options, name string) (config.Host, bool, error) {
@@ -191,6 +236,8 @@ func loadConfiguredHost(opts Options, name string) (config.Host, bool, error) {
 }
 
 func printDaemonDeployPlan(out interface{ Write([]byte) (int, error) }, deploy daemonDeployOptions) {
+	renderer := output.NewPlainRenderer(out, output.PlainOptions{})
+	renderer.Section("Daemon " + deploy.action)
 	remote := deploy.sshTarget
 	if remote == "" {
 		remote = deploy.hostName
@@ -214,21 +261,39 @@ func printDaemonDeployPlan(out interface{ Write([]byte) (int, error) }, deploy d
 	if deploy.url != "" {
 		fmt.Fprintf(out, "Then configure the host URL:\n  %s\n", hostAddCommand(deploy))
 	} else {
-		fmt.Fprintf(out, "Then configure the host URL if needed:\n  remork host add %s --url http://HOST:%s\n", deploy.hostName, daemonPort(deploy.addr))
+		placeholder := deploy
+		placeholder.url = "http://HOST:" + daemonPort(deploy.addr)
+		fmt.Fprintf(out, "Then configure the host URL if needed:\n  %s\n", hostAddCommand(placeholder))
 	}
 	fmt.Fprintf(out, "Verify:\n  remork daemon status %s\n", deploy.hostName)
 }
 
 func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonDeployOptions) error {
+	if err := validateDaemonDeployPlan(deploy); err != nil {
+		return err
+	}
+	if deploy.execute {
+		if err := validateDaemonDeployExecution(deploy); err != nil {
+			return err
+		}
+		if !deploy.yes {
+			return codedCommandError{
+				code: exitcode.InvalidUsageOrConfig,
+				err:  fmt.Errorf("--execute requires --yes"),
+				fix:  "rerun with --yes after reviewing the install plan",
+			}
+		}
+		if deploy.verify && deploy.url == "" && !deploy.storeReady {
+			return codedCommandError{
+				code: exitcode.InvalidUsageOrConfig,
+				err:  fmt.Errorf("--verify requires --url or an existing configured host %q", deploy.hostName),
+				fix:  "pass --url URL or run remork host add first",
+			}
+		}
+	}
 	printDaemonDeployPlan(out, deploy)
 	if !deploy.execute {
 		return nil
-	}
-	if !deploy.yes {
-		return fmt.Errorf("--execute requires --yes")
-	}
-	if deploy.verify && deploy.url == "" && !deploy.storeReady {
-		return fmt.Errorf("--verify requires --url or an existing configured host %q", deploy.hostName)
 	}
 	runner := deploy.runner
 	if runner == nil {
@@ -250,6 +315,9 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 	if err := runDeployStep(out, runner, "prepare remote directories", "ssh", remote, remotePrepareCommand(deploy)); err != nil {
 		return err
 	}
+	if err := runDeployStep(out, runner, "stop existing remorkd daemon", "ssh", remote, remoteStopCommand()); err != nil {
+		return err
+	}
 	if err := runDeployStep(out, runner, "copy remorkd binary", "scp", deploy.localBin, remote+":"+remoteSCPDestinationPath(deploy.remoteBin)); err != nil {
 		return err
 	}
@@ -269,6 +337,7 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 			}
 			return fmt.Errorf("remote remorkd version mismatch after copy: got %s, want %s", got, want)
 		}
+		output.NewPlainRenderer(out, output.PlainOptions{}).Success("copied remorkd version verified: " + want)
 	}
 	if startCmd := remoteStartCommand(deploy); startCmd != "" {
 		if err := runDeployStep(out, runner, "start remorkd daemon", "ssh", remote, startCmd); err != nil {
@@ -295,12 +364,35 @@ func runDaemonDeploy(out interface{ Write([]byte) (int, error) }, deploy daemonD
 	return nil
 }
 
+func validateDaemonDeployPlan(deploy daemonDeployOptions) error {
+	if deploy.tokenFile != "" && deploy.tokenEnv == "" {
+		return codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("--token-env is required with --token-file so the local CLI can authenticate to the protected daemon"),
+			fix:  "set an environment variable with the daemon token and pass --token-env NAME",
+		}
+	}
+	return nil
+}
+
+func validateDaemonDeployExecution(deploy daemonDeployOptions) error {
+	if insecureNoTokenNonLoopbackAddr(deploy.addr, deploy.tokenFile != "") && !deploy.allowUnauthenticatedNetworkBind {
+		return codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("refusing to execute remorkd on %s without authentication; pass --token-file, bind to 127.0.0.1, or add --allow-unauthenticated-network-bind for a trusted private network", deploy.addr),
+			fix:  "pass --token-file with --token-env, bind to 127.0.0.1, or explicitly pass --allow-unauthenticated-network-bind",
+		}
+	}
+	return nil
+}
+
 func runDeployStep(out interface{ Write([]byte) (int, error) }, runner commandRunner, label, name string, args ...string) error {
-	fmt.Fprintf(out, "%s %s...\n", output.Info(out, "->"), label)
+	renderer := output.NewPlainRenderer(out, output.PlainOptions{})
+	renderer.Step(label + "...")
 	if err := runner.Run(name, args...); err != nil {
 		return fmt.Errorf("%s failed: %w", label, err)
 	}
-	fmt.Fprintf(out, "   %s %s\n", output.Success(out, "ok"), label)
+	renderer.Success(label)
 	return nil
 }
 
@@ -399,6 +491,12 @@ func remoteChmodCommand(remoteBin string) string {
 	return "chmod 0755 " + remotePathShellArg(remoteCommandPath(remoteBin))
 }
 
+func remoteStopCommand() string {
+	pidFile := "$HOME/.remork/run/remorkd.pid"
+	quotedPidFile := remotePathShellArg(pidFile)
+	return "if [ -f " + quotedPidFile + " ]; then pid=\"$(cat " + quotedPidFile + ")\"; if kill -0 \"$pid\" 2>/dev/null; then kill \"$pid\"; for i in 1 2 3 4 5; do kill -0 \"$pid\" 2>/dev/null || break; sleep 1; done; fi; rm -f " + quotedPidFile + "; fi"
+}
+
 func insecureNoTokenNonLoopbackAddr(addr string, hasToken bool) bool {
 	return safety.UnsafeNoTokenNonLoopbackBind(addr, hasToken)
 }
@@ -419,9 +517,8 @@ func remoteStartCommand(deploy daemonDeployOptions) string {
 	if deploy.tokenFile != "" {
 		args = append(args, shellQuote("--token-file"), shellQuote(deploy.tokenFile))
 	}
-	stopCmd := "if [ -f " + remotePathShellArg(pidFile) + " ] && kill -0 \"$(cat " + remotePathShellArg(pidFile) + ")\" 2>/dev/null; then kill \"$(cat " + remotePathShellArg(pidFile) + ")\"; fi"
 	startCmd := "nohup " + strings.Join(args, " ") + " </dev/null >" + remotePathShellArg(logFile) + " 2>&1 & echo $! >" + remotePathShellArg(pidFile)
-	return stopCmd + "; " + startCmd
+	return remoteStopCommand() + "; " + startCmd
 }
 
 func filepathForDaemonBinary(platform string) string {
@@ -580,6 +677,56 @@ func explainDaemonStatusError(err error) string {
 		return "connection timed out; check VPN reachability, host, firewall, and daemon port"
 	default:
 		return msg
+	}
+}
+
+func daemonStatusCommandError(host config.Host, err error) error {
+	return daemonReachabilityCommandError(err, daemonStatusErrorFix(host, err))
+}
+
+func daemonReachabilityCommandError(err error, fix string) error {
+	code := exitcode.NetworkUnavailable
+	var httpErr *client.HTTPError
+	if errors.As(err, &httpErr) {
+		if httpErr.StatusCode == 401 || httpErr.StatusCode == 403 {
+			code = exitcode.PermissionDenied
+		}
+	}
+	return codedCommandError{
+		code: code,
+		err:  errors.New(explainDaemonStatusError(err)),
+		fix:  fix,
+	}
+}
+
+func daemonStatusErrorFix(host config.Host, err error) string {
+	var httpErr *client.HTTPError
+	if errors.As(err, &httpErr) {
+		switch httpErr.StatusCode {
+		case 401, 403:
+			if host.TokenEnv != "" {
+				return "export " + host.TokenEnv + "=<token>, or update the host with remork host add " + host.Name + " --url " + host.URL + " --token-env TOKEN_ENV"
+			}
+			return "configure a token with remork host add " + host.Name + " --url " + host.URL + " --token-env TOKEN_ENV, or restart remorkd without auth only on trusted private networks"
+		case 404:
+			return "check the daemon URL path and port with remork host add " + host.Name + " --url URL"
+		}
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "connection refused"), strings.Contains(lower, "i/o timeout"), strings.Contains(lower, "no such host"):
+		return "start remorkd, check VPN/firewall reachability, then verify the host URL with remork host add " + host.Name + " --url URL"
+	default:
+		return "run remork doctor for a full workspace readiness check"
+	}
+}
+
+func tokenEnvCommandError(host config.Host, err error) error {
+	fix := "export " + host.TokenEnv + "=<token>, or update the host with remork host add " + host.Name + " --url " + host.URL + " --token-env TOKEN_ENV"
+	return codedCommandError{
+		code: exitcode.PermissionDenied,
+		err:  err,
+		fix:  fix,
 	}
 }
 

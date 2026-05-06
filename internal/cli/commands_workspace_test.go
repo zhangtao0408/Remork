@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,6 +38,39 @@ func TestWorkspaceCommandShowsCurrentBinding(t *testing.T) {
 	mustNotContain(t, out.String(), "token")
 }
 
+func TestWorkspaceCommandPrintsJSONBinding(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	stateDir := filepath.Join(home, ".remork", "state", "ws_test")
+	if err := workspace.WriteBinding(local, workspace.Binding{
+		Version:     1,
+		Host:        "lab",
+		RemoteRoot:  "/data/project",
+		WorkspaceID: "ws_test",
+		StateDir:    stateDir,
+	}); err != nil {
+		t.Fatalf("write binding: %v", err)
+	}
+
+	out, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home, WorkingDir: local}), "workspace", "--json")
+	if err != nil {
+		t.Fatalf("workspace --json: %v", err)
+	}
+	var got struct {
+		LocalRoot   string `json:"local_root"`
+		Host        string `json:"host"`
+		RemoteRoot  string `json:"remote_root"`
+		WorkspaceID string `json:"workspace_id"`
+		StateDir    string `json:"state_dir"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode workspace json %q: %v", out.String(), err)
+	}
+	if got.LocalRoot != local || got.Host != "lab" || got.RemoteRoot != "/data/project" || got.WorkspaceID != "ws_test" || got.StateDir != stateDir {
+		t.Fatalf("workspace json = %#v", got)
+	}
+}
+
 func TestWorkspaceRemoveDeletesLocalBinding(t *testing.T) {
 	home := t.TempDir()
 	local := t.TempDir()
@@ -62,6 +96,70 @@ func TestWorkspaceRemoveDeletesLocalBinding(t *testing.T) {
 	if _, _, err := workspace.ResolveFrom(local); err == nil {
 		t.Fatal("binding should no longer resolve")
 	}
+}
+
+func TestWorkspaceListShowsRegisteredWorkspaces(t *testing.T) {
+	home := t.TempDir()
+	localA := t.TempDir()
+	localB := t.TempDir()
+	store := config.NewStore(filepath.Join(home, ".remork"))
+	if err := store.Save(config.Config{
+		Hosts: map[string]config.Host{},
+		Workspaces: map[string]config.Workspace{
+			"ws-a": {Host: "lab-a", RemoteRoot: "/data/a", LocalRoot: localA},
+			"ws-b": {Host: "lab-b", RemoteRoot: "/data/b", LocalRoot: localB},
+		},
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	cmd := NewRootCommand(Options{Version: "test", HomeDir: home})
+	out, err := executeCommand(cmd, "workspace", "list")
+	if err != nil {
+		t.Fatalf("workspace list: %v", err)
+	}
+	for _, want := range []string{"ws-a", "lab-a", "/data/a", localA, "ws-b", "lab-b", "/data/b", localB} {
+		mustContain(t, out.String(), want)
+	}
+}
+
+func TestWorkspaceListPrintsJSON(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	store := config.NewStore(filepath.Join(home, ".remork"))
+	if err := store.Save(config.Config{
+		Hosts: map[string]config.Host{},
+		Workspaces: map[string]config.Workspace{
+			"ws-a": {Host: "lab-a", RemoteRoot: "/data/a", LocalRoot: local},
+		},
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	out, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home}), "workspace", "list", "--json")
+	if err != nil {
+		t.Fatalf("workspace list --json: %v", err)
+	}
+	var got struct {
+		Workspaces map[string]config.Workspace `json:"workspaces"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode workspace list json %q: %v", out.String(), err)
+	}
+	if got.Workspaces["ws-a"].LocalRoot != local {
+		t.Fatalf("workspace list json = %#v", got)
+	}
+}
+
+func TestWorkspaceHelpShowsSubcommands(t *testing.T) {
+	cmd := NewRootCommand(Options{Version: "test"})
+	out, err := executeCommand(cmd, "workspace", "--help")
+	if err != nil {
+		t.Fatalf("workspace help: %v", err)
+	}
+	mustContain(t, out.String(), "remove")
+	mustContain(t, out.String(), "list")
+	mustNotContain(t, out.String(), "Must know: init sync")
 }
 
 func TestHostListAndRemove(t *testing.T) {
@@ -100,6 +198,53 @@ func TestHostListAndRemove(t *testing.T) {
 	if _, ok := cfg.Hosts["lab-b"]; !ok {
 		t.Fatal("lab-b should remain")
 	}
+}
+
+func TestHostAddAndListPrintJSON(t *testing.T) {
+	home := t.TempDir()
+	out, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home}), "host", "add", "lab", "--url", "http://127.0.0.1:17731", "--no-proxy", "--json")
+	if err != nil {
+		t.Fatalf("host add --json: %v", err)
+	}
+	var added config.Host
+	if err := json.Unmarshal(out.Bytes(), &added); err != nil {
+		t.Fatalf("decode host add json %q: %v", out.String(), err)
+	}
+	if added.Name != "lab" || added.URL != "http://127.0.0.1:17731" || !added.NoProxy {
+		t.Fatalf("host add json = %#v", added)
+	}
+
+	out, err = executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home}), "host", "list", "--json")
+	if err != nil {
+		t.Fatalf("host list --json: %v", err)
+	}
+	var got struct {
+		Hosts map[string]config.Host `json:"hosts"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode host list json %q: %v", out.String(), err)
+	}
+	if got.Hosts["lab"].URL != "http://127.0.0.1:17731" {
+		t.Fatalf("host list json = %#v", got)
+	}
+}
+
+func TestHostAddPrintsConfirmationAndRejectsInvalidURL(t *testing.T) {
+	home := t.TempDir()
+	cmd := NewRootCommand(Options{Version: "test", HomeDir: home})
+	out, err := executeCommand(cmd, "host", "add", "lab", "--url", "http://127.0.0.1:17731", "--no-proxy")
+	if err != nil {
+		t.Fatalf("host add: %v", err)
+	}
+	mustContain(t, out.String(), "saved host lab")
+	mustContain(t, out.String(), "remork daemon status lab")
+
+	cmd = NewRootCommand(Options{Version: "test", HomeDir: home})
+	_, err = executeCommand(cmd, "host", "add", "bad", "--url", "daemon-host")
+	if err == nil {
+		t.Fatal("host add should reject URL without scheme")
+	}
+	mustContain(t, err.Error(), "daemon URL must include http:// or https://")
 }
 
 func TestHostRemoveMissingFails(t *testing.T) {

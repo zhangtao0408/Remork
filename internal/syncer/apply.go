@@ -14,6 +14,7 @@ import (
 
 	"remork/internal/api"
 	"remork/internal/apply"
+	"remork/internal/limits"
 	"remork/internal/paths"
 	"remork/internal/state"
 	"remork/internal/transfer"
@@ -78,21 +79,13 @@ func BuildChangesetWithOptions(localRoot string, snap state.Snapshot, opts Build
 				skipped = append(skipped, SkippedChange{Path: change.Path, Reason: "untracked local file; pass --include-untracked or an explicit path"})
 				continue
 			}
-			localPath, err := transfer.LocalPath(localRoot, change.Path)
-			if err != nil {
-				return apply.Changeset{}, nil, err
-			}
-			data, err := os.ReadFile(localPath)
+			data, err := readApplyFile(localRoot, change.Path, "create")
 			if err != nil {
 				return apply.Changeset{}, nil, err
 			}
 			changes = append(changes, apply.Change{Path: change.Path, Kind: apply.ChangeCreate, Content: data})
 		case state.ChangeModify:
-			localPath, err := transfer.LocalPath(localRoot, change.Path)
-			if err != nil {
-				return apply.Changeset{}, nil, err
-			}
-			data, err := os.ReadFile(localPath)
+			data, err := readApplyFile(localRoot, change.Path, "update")
 			if err != nil {
 				return apply.Changeset{}, nil, err
 			}
@@ -112,6 +105,27 @@ func BuildChangesetWithOptions(localRoot string, snap state.Snapshot, opts Build
 		return skipped[i].Path < skipped[j].Path
 	})
 	return apply.Changeset{ID: changesetID(changes, skipped), Changes: changes}, skipped, nil
+}
+
+func readApplyFile(localRoot, remotePath, operation string) ([]byte, error) {
+	localPath, err := transfer.LocalPath(localRoot, remotePath)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(localPath)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("tracked file %q was replaced by a directory; restore it, rename the directory, or sync before apply", remotePath)
+	}
+	if info.Mode()&os.ModeType != 0 {
+		return nil, fmt.Errorf("cannot %s non-regular file %q with remork apply", operation, remotePath)
+	}
+	if info.Size() > limits.MaxApplyFileBytes {
+		return nil, fmt.Errorf("file %q is too large to apply (%d bytes; limit %d bytes); keep it remote and use remork pull when you need a local copy", remotePath, info.Size(), limits.MaxApplyFileBytes)
+	}
+	return os.ReadFile(localPath)
 }
 
 type explicitPathSet []string

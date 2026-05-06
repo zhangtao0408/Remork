@@ -13,7 +13,7 @@ func TestApplySkipsUntrackedFilesUnlessExplicit(t *testing.T) {
 	h.writeLocal("tracked.txt", "changed\n")
 	h.writeLocal("local.log", "do-not-upload\n")
 
-	out := h.runInLocal("apply")
+	out := h.runInLocal("apply", "--yes")
 	mustContain(t, out, "applied 1")
 	h.assertRemote("tracked.txt", "changed\n")
 	if _, err := os.Stat(filepath.Join(h.remote, "local.log")); !os.IsNotExist(err) {
@@ -22,7 +22,7 @@ func TestApplySkipsUntrackedFilesUnlessExplicit(t *testing.T) {
 
 	h.writeLocal("src/new.txt", "intentional\n")
 	h.writeLocal("tracked.txt", "unrelated dirty edit\n")
-	h.runInLocal("apply", "src/new.txt")
+	h.runInLocal("apply", "--yes", "src/new.txt")
 	h.assertRemote("src/new.txt", "intentional\n")
 	h.assertRemote("tracked.txt", "changed\n")
 }
@@ -34,7 +34,7 @@ func TestApplyIncludesUntrackedWithFlag(t *testing.T) {
 	h.writeLocal("new.txt", "intentional\n")
 	h.writeLocal("src/other.txt", "also intentional\n")
 
-	out := h.runInLocal("apply", "--include-untracked")
+	out := h.runInLocal("apply", "--yes", "--include-untracked")
 	mustContain(t, out, "applied 2")
 	h.assertRemote("new.txt", "intentional\n")
 	h.assertRemote("src/other.txt", "also intentional\n")
@@ -45,7 +45,7 @@ func TestApplyWarnsWhenOnlyUntrackedFilesWereSkipped(t *testing.T) {
 	h.bindAndSync()
 	h.writeLocal("local.log", "do-not-upload\n")
 
-	out := h.runInLocal("apply")
+	out := h.runInLocal("apply", "--yes")
 	mustContain(t, out, "applied 0")
 	mustContain(t, out, "Skipped untracked or ignored files")
 	if _, err := os.Stat(filepath.Join(h.remote, "local.log")); !os.IsNotExist(err) {

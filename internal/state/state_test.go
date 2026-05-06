@@ -78,6 +78,23 @@ func TestDirtyDetectionFindsModifyCreateDelete(t *testing.T) {
 	assertChange(t, dirty, "deleted.txt", ChangeDelete)
 }
 
+func TestDetectDirtyReportsTrackedFileReplacedByDirectory(t *testing.T) {
+	local := t.TempDir()
+	if err := os.Mkdir(filepath.Join(local, "tracked.txt"), 0o755); err != nil {
+		t.Fatalf("mkdir tracked path: %v", err)
+	}
+	mustWrite(t, filepath.Join(local, "tracked.txt", "child.txt"), []byte("child"))
+
+	snap := Snapshot{WorkspaceRef: "lab:/workspace", Entries: map[string]TrackedFile{
+		"tracked.txt": {Path: "tracked.txt", BaseHash: HashBytes([]byte("before")), Type: api.FileTypeFile},
+	}}
+	dirty, err := DetectDirty(local, snap)
+	if err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	assertChange(t, dirty, "tracked.txt", ChangeModify)
+}
+
 func TestDetectDirtyRejectsTrackedPathEscape(t *testing.T) {
 	parent := t.TempDir()
 	local := filepath.Join(parent, "local")

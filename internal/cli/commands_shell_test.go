@@ -77,6 +77,17 @@ func TestShellKillDoesNotRunStatusOrPreflight(t *testing.T) {
 	}
 }
 
+func TestShellNonInteractiveRefusesInteractiveSession(t *testing.T) {
+	home, local := shellCommandWorkspace(t)
+	writeShellCommandConfig(t, home, local, "http://127.0.0.1:1")
+
+	_, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home, WorkingDir: local}), "shell", "--non-interactive")
+	if err == nil {
+		t.Fatal("shell --non-interactive should fail before opening an interactive session")
+	}
+	mustContain(t, err.Error(), "interactive shell requires a terminal")
+}
+
 func shellCommandWorkspace(t *testing.T) (string, string) {
 	t.Helper()
 	home := t.TempDir()

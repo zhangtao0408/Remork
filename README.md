@@ -32,7 +32,7 @@ remorkd-linux-amd64     Linux daemon, amd64
 Install the macOS client:
 
 ```bash
-VERSION=v0.1.1.beta01
+VERSION=<release-tag>
 case "$(uname -m)" in
   arm64) CLIENT_PLATFORM=darwin-arm64 ;;
   x86_64) CLIENT_PLATFORM=darwin-amd64 ;;
@@ -53,27 +53,56 @@ If a new terminal cannot find `remork`, add this to your shell profile:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Install or start the remote daemon through SSH:
+Install or start the remote daemon through SSH. The default example uses a
+shared token so the daemon is not exposed unauthenticated on the network:
 
 ```bash
+export REMORK_TOKEN="$(openssl rand -hex 32)"
+mkdir -p "$HOME/.remork"
+printf '%s\n' "$REMORK_TOKEN" > "$HOME/.remork/remork.token"
+chmod 0600 "$HOME/.remork/remork.token"
+REMOTE_TOKEN_FILE=".remork/remork.token"
+
+printf '%s\n' "$REMORK_TOKEN" | ssh my-lab \
+  "mkdir -p \"\$HOME/.remork\" && umask 077 && cat > \"\$HOME/$REMOTE_TOKEN_FILE\""
+
 remork daemon install my-lab \
   --ssh my-lab \
   --url http://remork-daemon.example.internal:17731 \
   --root /home/me \
   --platform linux-arm64 \
+  --token-file "$REMOTE_TOKEN_FILE" \
+  --token-env REMORK_TOKEN \
   --execute --yes \
   --verify \
   --no-proxy
+```
+
+`--token-env REMORK_TOKEN` means future `remork` commands need the same
+environment variable. For new terminals, load it from the local token file or
+add the export to your shell profile:
+
+```bash
+export REMORK_TOKEN="$(cat "$HOME/.remork/remork.token")"
 ```
 
 The daemon binary is copied to durable paths under the remote user's home
 directory. The remote server does not need Go installed and does not need
 internet access.
 
+`--platform` is the remote Linux server platform, not your Mac platform. Use
+`linux-arm64` for arm64 Linux servers and `linux-amd64` for x86_64 Linux
+servers.
+
 During an executed install, Remork checks whether `remorkd` is already present
 on the remote host, reports the existing version when available, copies the new
 binary, verifies the copied binary version, and then verifies daemon `/status`
 when `--verify` is used.
+
+On a trusted VPN or private network you can skip the token setup and add
+`--allow-unauthenticated-network-bind` to the install command. Without a token,
+Remork refuses executed non-loopback installs unless that flag is passed
+explicitly.
 
 Use `linux-amd64` instead of `linux-arm64` for x86_64 servers. Repeat `--root`
 when one daemon should manage multiple base directories.
@@ -90,6 +119,14 @@ remork init my-lab:/home/me/project
 remork sync
 remork status
 ```
+
+When you run Remork from a normal terminal, commands prefer an interactive,
+human-readable flow. For example, `remork init` asks for the host and remote
+workspace, while `remork init my-lab:/home/me/project` keeps the explicit
+scriptable path. For automation, use the command-specific stable forms:
+`remork init HOST:/path --non-interactive`, `remork sync --json`,
+`remork status --json`, `remork apply --yes --non-interactive`, and
+`remork pull --force PATH` for large files.
 
 Edit files locally, then review and apply:
 
@@ -138,12 +175,25 @@ Host and workspace helpers:
 
 ```bash
 remork host list
+remork host list --json
 remork daemon status my-lab
 remork workspace
+remork workspace list --json
 ```
 
 Longer syncs print stage and operation progress unless `--quiet` or `--json` is
-used.
+used. Plain text mode uses the same status language as the interactive UI:
+sections, `ok` / `warn` / `error` states, progress counts, and next-step hints.
+
+Useful output flags:
+
+```bash
+remork sync --quiet
+remork status --json
+remork apply --yes --non-interactive
+remork doctor --json
+remork sync --color=never
+```
 
 ## Large Files
 
@@ -168,6 +218,12 @@ Download the full content only when needed:
 remork pull checkpoints/model.tar.gz
 ```
 
+For scripts or non-interactive agent runs, confirm the large download explicitly:
+
+```bash
+remork pull --force checkpoints/model.tar.gz
+```
+
 ## Applying Changes
 
 The remote workspace is the source of truth. Local edits are never pushed
@@ -185,6 +241,11 @@ remork apply path/to/new-file
 remork apply --include-untracked
 ```
 
+`remork apply` is for reviewed source-sized edits. Files larger than `128MB`
+are rejected before upload; keep those remote and use `remork pull --force` only
+when you need a local copy. If a tracked file is replaced by a directory, rename
+or restore one side before applying.
+
 Use `.remorkignore` for files that should never be applied, such as local
 caches, secrets, virtual environments, generated outputs, and agent scratch
 files. Remork reads `.remorkignore` before `.gitignore`.
@@ -193,6 +254,9 @@ files. Remork reads `.remorkignore` before `.gitignore`.
 
 `remork shell` opens an interactive session through the daemon. Sessions are
 retained after the local client disconnects.
+
+`remork shell` requires a real terminal. Scripts and agents should use
+`remork run -- COMMAND` for non-interactive work.
 
 ```bash
 remork shell

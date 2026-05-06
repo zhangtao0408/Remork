@@ -24,7 +24,7 @@ func Decide(state WorkspaceState, opts Options) Decision {
 	if opts.RemoteOnly {
 		return Decision{
 			Allow:   true,
-			Warning: "warning: local pending changes are ignored by --remote-only",
+			Warning: "warning: sync checks skipped by --remote-only",
 		}
 	}
 	if opts.NoSyncCheck {
@@ -39,7 +39,7 @@ func Decide(state WorkspaceState, opts Options) Decision {
 	if state.LocalDirty > 0 {
 		return Decision{
 			ExitCode: exitcode.LocalDirtyBlocked,
-			Message:  "Local changes exist; run remork apply first or use --remote-only to ignore local pending changes.",
+			Message:  "Local changes exist; run remork apply first. If changes are untracked, use remork apply <path>, remork apply --include-untracked, .remorkignore, or --remote-only when you intentionally want to ignore local pending changes.",
 		}
 	}
 	return Decision{Allow: true}

@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -500,7 +502,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 	root := r.URL.Query().Get("root")
 	sessionID := r.URL.Query().Get("session")
-	op := s.startOperation(r, "shell", root, map[string]any{"shell": "sh", "rows": 24, "cols": 80, "session": sessionID})
+	shellCommand := interactiveShellCommand()
+	op := s.startOperation(r, "shell", root, map[string]any{"shell": strings.Join(shellCommand, " "), "rows": 24, "cols": 80, "session": sessionID})
 	canonicalRoot, ok := s.canonicalRoot(root)
 	if !ok {
 		http.Error(w, "root not allowed", http.StatusForbidden)
@@ -537,7 +540,7 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	if sessionID == "" {
-		session, err = s.ptyManager.Start(ptysession.StartOptions{Command: []string{"sh"}, Cwd: root, Root: root, Rows: 24, Cols: 80})
+		session, err = s.ptyManager.Start(ptysession.StartOptions{Command: shellCommand, Cwd: root, Root: root, Rows: 24, Cols: 80})
 		if err != nil {
 			_ = conn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
 			s.finishOperation(op, http.StatusInternalServerError, "error", err.Error())
@@ -632,7 +635,9 @@ func (s *Server) handleShellSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		sessions := make([]api.ShellSessionInfo, 0)
-		for _, session := range s.ptyManager.List() {
+		listed := s.ptyManager.List()
+		for i := range listed {
+			session := &listed[i]
 			if session.Root != canonicalRoot {
 				continue
 			}
@@ -679,6 +684,31 @@ func handleShellFrame(session *ptysession.Session, msg []byte) (bool, error) {
 	default:
 		return true, nil
 	}
+}
+
+func interactiveShellCommand() []string {
+	if shell := firstExecutableShell(os.Getenv("SHELL")); shell != "" {
+		return []string{shell, "-i"}
+	}
+	for _, candidate := range []string{"/bin/bash", "/usr/bin/bash", "/bin/zsh", "/usr/bin/zsh", "/bin/sh", "/usr/bin/sh"} {
+		if shell := firstExecutableShell(candidate); shell != "" {
+			return []string{shell, "-i"}
+		}
+	}
+	return []string{"sh"}
+}
+
+func firstExecutableShell(shell string) string {
+	if shell == "" || !filepath.IsAbs(shell) {
+		return ""
+	}
+	if info, err := os.Stat(shell); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+		return shell
+	}
+	if resolved, err := exec.LookPath(shell); err == nil {
+		return resolved
+	}
+	return ""
 }
 
 func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {

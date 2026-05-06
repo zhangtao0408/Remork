@@ -38,6 +38,29 @@ func TestRemorkProductLargeFilePullPolicies(t *testing.T) {
 	if code != 7 {
 		t.Fatalf("exit code = %d", code)
 	}
+	out, code = h.runInLocalExpectCode(7, "pull", "--non-interactive", "model.tar.gz")
+	mustContain(t, out, "confirmation required")
+	if code != 7 {
+		t.Fatalf("non-interactive exit code = %d", code)
+	}
+	jsonOut, _, err := h.runInLocalExpectError("pull", "--json", "model.tar.gz")
+	if err == nil {
+		t.Fatal("pull --json succeeded, want prompt required")
+	}
+	code = 1
+	if coded, ok := err.(interface{ ExitCode() int }); ok {
+		code = coded.ExitCode()
+	}
+	var jsonErr struct {
+		Error string `json:"error"`
+		Code  int    `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &jsonErr); err != nil {
+		t.Fatalf("pull --json prompt error is not JSON: %q: %v", jsonOut, err)
+	}
+	if code != 7 || jsonErr.Code != 7 || !strings.Contains(jsonErr.Error, "confirmation required") {
+		t.Fatalf("pull --json error = %#v", jsonErr)
+	}
 
 	h.runInLocal("pull", "--force", fullRefTarget)
 	got, err := os.ReadFile(filepath.Join(h.local, "model.tar.gz"))

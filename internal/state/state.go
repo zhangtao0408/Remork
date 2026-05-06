@@ -156,6 +156,9 @@ func DetectDirtyWithOptions(localRoot string, snap Snapshot, opts DirtyOptions) 
 			return nil, err
 		}
 		if info.IsDir() {
+			if tracked.Type != api.FileTypeDir {
+				changes = append(changes, DirtyChange{Path: path, Kind: ChangeModify})
+			}
 			continue
 		}
 		hash, err := HashFile(full)
