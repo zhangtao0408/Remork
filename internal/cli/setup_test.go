@@ -27,3 +27,45 @@ func TestSetupScopeItemsForBoundWorkspacePreferUpdate(t *testing.T) {
 		t.Fatalf("bound setup should prefer update/repair, got %#v", items)
 	}
 }
+
+func TestSetupPrepareServerBuildsDaemonAndHostSpecs(t *testing.T) {
+	values := map[string]string{
+		"host":       "lab",
+		"ssh":        "lab.example",
+		"roots":      "/data",
+		"url":        "http://lab.example:17731",
+		"addr":       "127.0.0.1:17731",
+		"local_bin":  "/tmp/remorkd",
+		"remote_bin": ".local/bin/remorkd",
+		"token_env":  "REMORK_TOKEN",
+		"no_proxy":   "yes",
+		"verify":     "yes",
+	}
+	spec, host, err := setupPrepareServerSpecs(values)
+	if err != nil {
+		t.Fatalf("setupPrepareServerSpecs: %v", err)
+	}
+	if spec.Action != "install" || spec.HostName != "lab" || spec.SSHTarget != "lab.example" {
+		t.Fatalf("daemon spec = %#v", spec)
+	}
+	if host.Name != "lab" || host.URL != "http://lab.example:17731" || !host.NoProxy {
+		t.Fatalf("host spec = %#v", host)
+	}
+}
+
+func TestSetupPrepareServerFieldsAreMinimal(t *testing.T) {
+	fields := setupPrepareServerFields(nil)
+	keys := make([]string, 0, len(fields))
+	for _, field := range fields {
+		keys = append(keys, field.Key)
+	}
+	got := strings.Join(keys, ",")
+	for _, want := range []string{"host", "ssh", "roots", "url", "addr", "token_env", "verify"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("fields missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "allow_unauthenticated_network_bind") || strings.Contains(got, "dry_run") || strings.Contains(got, "yes") {
+		t.Fatalf("default prepare fields should not expose advanced flags: %s", got)
+	}
+}
