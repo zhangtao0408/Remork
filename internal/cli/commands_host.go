@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -27,7 +26,7 @@ func addHostCommand(root *cobra.Command, opts Options) {
 	add := &cobra.Command{
 		Use:   "add NAME --url URL",
 		Short: "Add a daemon endpoint",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactArgsJSON(1, &addJSON),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			url, err := cmd.Flags().GetString("url")
 			if err != nil {
@@ -117,7 +116,10 @@ func addHostCommand(root *cobra.Command, opts Options) {
 			if err := store.Save(cfg); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "removed host %s\n", name)
+			r := plainRenderer(cmd, false)
+			r.Section("Host removed")
+			r.KeyValue("name", name)
+			r.Success("removed host " + name)
 			return nil
 		},
 	}
@@ -156,7 +158,7 @@ func listHosts(cmd *cobra.Command, opts Options, jsonOut bool) error {
 		}{Hosts: cfg.Hosts})
 	}
 	if len(cfg.Hosts) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "no hosts configured")
+		plainRenderer(cmd, false).Empty("no hosts configured", "run remork daemon install HOST --root /absolute/root")
 		return nil
 	}
 	names := make([]string, 0, len(cfg.Hosts))
@@ -164,15 +166,18 @@ func listHosts(cmd *cobra.Command, opts Options, jsonOut bool) error {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "name\turl\ttoken_env\tflags")
+	rows := make([][]string, 0, len(names))
 	for _, name := range names {
 		host := cfg.Hosts[name]
 		flags := ""
 		if host.NoProxy {
 			flags = "no_proxy"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", name, host.URL, host.TokenEnv, flags)
+		rows = append(rows, []string{name, host.URL, host.TokenEnv, flags})
 	}
-	return tw.Flush()
+	r := plainRenderer(cmd, false)
+	r.Section("Hosts")
+	r.Table([]string{"name", "url", "token_env", "flags"}, rows)
+	r.Command("remork init HOST:/absolute/remote/workspace")
+	return nil
 }

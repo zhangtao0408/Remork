@@ -3,10 +3,12 @@ package syncer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"remork/internal/api"
 	"remork/internal/client"
@@ -53,6 +55,18 @@ type Result struct {
 	Deleted     int `json:"deleted"`
 	Skipped     int `json:"skipped"`
 	Conflicts   int `json:"conflicts"`
+}
+
+type MissingPullTargetError struct {
+	Target string
+	Reason string
+}
+
+func (e MissingPullTargetError) Error() string {
+	if e.Reason == "" {
+		return fmt.Sprintf("remote pull target %q was not found", e.Target)
+	}
+	return fmt.Sprintf("remote pull target %q was not found: %s", e.Target, e.Reason)
 }
 
 type Status struct {
@@ -303,6 +317,9 @@ func (r Runner) Pull(ctx context.Context, target string, opts PullOptions) (Resu
 	if err != nil {
 		return Result{}, err
 	}
+	if err := missingPullTargetError(man, target); err != nil {
+		return Result{}, err
+	}
 	plan := planner.PlanPull(filterManifestLocalOnly(man), filterSnapshotLocalOnly(snap), planner.Options{
 		WorkspaceRef: r.opts.WorkspaceRef,
 		TargetPath:   target,
@@ -355,6 +372,28 @@ func (r Runner) Pull(ctx context.Context, target string, opts PullOptions) (Resu
 		return result, err
 	}
 	return result, nil
+}
+
+func missingPullTargetError(man api.ManifestResponse, target string) error {
+	if target == "" || target == "." {
+		return nil
+	}
+	for _, entry := range man.Entries {
+		if entry.Error == "" || !pullTargetContains(entry.Path, target) {
+			continue
+		}
+		return MissingPullTargetError{Target: target, Reason: entry.Error}
+	}
+	return nil
+}
+
+func pullTargetContains(filePath, targetPath string) bool {
+	target := strings.Trim(filepath.ToSlash(filepath.Clean(targetPath)), "/")
+	if target == "" || target == "." {
+		return true
+	}
+	cleanPath := strings.Trim(filepath.ToSlash(filepath.Clean(filePath)), "/")
+	return cleanPath == target || strings.HasPrefix(cleanPath, target+"/")
 }
 
 func (r Runner) loadSnapshot() (state.Snapshot, error) {

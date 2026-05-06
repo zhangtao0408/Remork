@@ -32,11 +32,20 @@ func addInitCommand(root *cobra.Command, opts Options) {
 						fix:  "pass remork init HOST:/absolute/path, or run remork init from an interactive terminal",
 					}
 				}
-				hostName, remoteRoot, err := runInitPrompt(cmd)
-				if err != nil {
-					return err
+				initial := map[string]string{}
+				for {
+					hostName, remoteRoot, values, err := runInitPrompt(cmd, initial)
+					if err != nil {
+						return err
+					}
+					if err := initWorkspace(cmd, opts, hostName, remoteRoot); err != nil {
+						plainErrRenderer(cmd, false).Error(err.Error(), commandErrorFix(err))
+						plainErrRenderer(cmd, false).Step("update the form values and submit again")
+						initial = values
+						continue
+					}
+					return nil
 				}
-				return initWorkspace(cmd, opts, hostName, remoteRoot)
 			}
 			hostName, remoteRoot, err := config.ParseWorkspaceRef(args[0])
 			if err != nil {
@@ -47,23 +56,23 @@ func addInitCommand(root *cobra.Command, opts Options) {
 	})
 }
 
-func runInitPrompt(cmd *cobra.Command) (string, string, error) {
+func runInitPrompt(cmd *cobra.Command, initial map[string]string) (string, string, map[string]string, error) {
 	r := plainErrRenderer(cmd, false)
 	r.Section("Init workspace")
 	r.Step("choose a configured host and remote workspace root")
 	values, err := runTUIForm(cmd, "Init workspace", []tui.Field{
-		{Key: "host", Label: "Host", Placeholder: "my-lab"},
-		{Key: "root", Label: "Remote root", Placeholder: "/absolute/remote/workspace"},
+		{Key: "host", Label: "Host", Placeholder: "my-lab", Initial: initial["host"]},
+		{Key: "root", Label: "Workspace root", Placeholder: "/absolute/remote/workspace", Initial: initial["root"]},
 	})
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	hostName := strings.TrimSpace(values["host"])
 	remoteRoot := strings.TrimSpace(values["root"])
 	if hostName == "" || remoteRoot == "" {
-		return "", "", fmt.Errorf("host and remote root are required")
+		return "", "", values, fmt.Errorf("host and workspace root are required")
 	}
-	return hostName, remoteRoot, nil
+	return hostName, remoteRoot, values, nil
 }
 
 func initWorkspace(cmd *cobra.Command, opts Options, hostName, remoteRoot string) error {
@@ -129,7 +138,7 @@ func initWorkspace(cmd *cobra.Command, opts Options, hostName, remoteRoot string
 	r := plainRenderer(cmd, false)
 	r.Section("Workspace bound")
 	r.KeyValue("host", hostName)
-	r.KeyValue("remote root", remoteRoot)
+	r.KeyValue("workspace root", remoteRoot)
 	r.KeyValue("local root", localRoot)
 	return nil
 }

@@ -1,10 +1,6 @@
 package cli
 
-import (
-	"fmt"
-
-	"github.com/spf13/cobra"
-)
+import "github.com/spf13/cobra"
 
 func addConflictCommand(root *cobra.Command, opts Options) {
 	cmd := &cobra.Command{
@@ -13,12 +9,16 @@ func addConflictCommand(root *cobra.Command, opts Options) {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := args[0]
-			fmt.Fprintf(cmd.OutOrStdout(), "Conflict: %s\n", path)
-			fmt.Fprintf(cmd.OutOrStdout(), "Review local changes: %s\n", pathCommand("diff", path))
-			fmt.Fprintf(cmd.OutOrStdout(), "Discard local edits back to synced base: %s\n", pathCommand("restore", path))
-			fmt.Fprintln(cmd.OutOrStdout(), "Then: remork status")
-			fmt.Fprintln(cmd.OutOrStdout(), "If remote updates remain: remork sync")
-			fmt.Fprintln(cmd.OutOrStdout(), "Then continue or apply as appropriate: remork apply")
+			r := plainRenderer(cmd, false)
+			r.Section("Conflict")
+			r.KeyValue("Conflict", path)
+			r.List("Recovery steps", []string{
+				"Review local changes: " + pathCommand("diff", path),
+				"Discard local edits back to synced base: " + pathCommand("restore", path),
+				"Then: remork status",
+				"If remote updates remain: remork sync",
+				"Then continue or apply as appropriate: remork apply",
+			})
 			return nil
 		},
 	}

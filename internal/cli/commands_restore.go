@@ -45,6 +45,14 @@ func addRestoreCommand(root *cobra.Command, opts Options) {
 					return err
 				}
 			}
+			r := plainRenderer(cmd, false)
+			r.Section("Restore complete")
+			r.KeyValue("restored", len(changes))
+			if len(changes) == 0 {
+				r.Empty("no local changes matched", "run remork status")
+				return nil
+			}
+			r.Success(fmt.Sprintf("restored %d", len(changes)))
 			return nil
 		},
 	}

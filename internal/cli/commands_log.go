@@ -2,9 +2,7 @@ package cli
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -24,17 +22,28 @@ func addLogCommand(root *cobra.Command, opts Options) {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runCtx, err := newRunContext(opts)
 			if err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			entries, err := runCtx.client.OperationsContext(cmd.Context(), runCtx.binding.RemoteRoot, limit)
 			if err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			if jsonOut {
 				return output.WriteJSON(cmd.OutOrStdout(), entries)
 			}
-			plainRenderer(cmd, false).Section("Operations")
-			printOperationTable(cmd.OutOrStdout(), entries)
+			r := plainRenderer(cmd, false)
+			r.Section("Operations")
+			if len(entries) == 0 {
+				r.Empty("no remote operations recorded", "run remork sync or remork status")
+				return nil
+			}
+			r.Table([]string{"time", "client", "operation", "result", "summary"}, operationRows(entries))
 			return nil
 		},
 	}
@@ -43,19 +52,18 @@ func addLogCommand(root *cobra.Command, opts Options) {
 	root.AddCommand(cmd)
 }
 
-func printOperationTable(w interface{ Write([]byte) (int, error) }, entries []ops.Entry) {
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "time\tclient\toperation\tresult\tsummary")
+func operationRows(entries []ops.Entry) [][]string {
+	rows := make([][]string, 0, len(entries))
 	for _, entry := range entries {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+		rows = append(rows, []string{
 			operationTime(entry),
 			entry.ClientID,
 			displayOperation(entry.Operation),
 			entry.Result,
 			operationSummary(entry),
-		)
+		})
 	}
-	_ = tw.Flush()
+	return rows
 }
 
 func operationTime(entry ops.Entry) string {

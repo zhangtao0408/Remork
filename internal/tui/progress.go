@@ -40,15 +40,16 @@ type FailedMsg struct {
 }
 
 type ProgressModel struct {
-	Title   string
-	Step    string
-	State   StepState
-	Current int64
-	Total   int64
-	Summary string
-	Error   string
-	Next    string
-	spin    spinner.Model
+	Title    string
+	Step     string
+	State    StepState
+	Current  int64
+	Total    int64
+	Summary  string
+	Error    string
+	Next     string
+	canceled bool
+	spin     spinner.Model
 }
 
 func NewProgressModel(title string) ProgressModel {
@@ -86,10 +87,20 @@ func (m ProgressModel) Update(msg tea.Msg) (ProgressModel, tea.Cmd) {
 	case CompletedMsg:
 		m.State = StepOK
 		m.Summary = msg.Summary
+		return m, tea.Quit
 	case FailedMsg:
 		m.State = StepFailed
 		m.Error = msg.Message
 		m.Next = msg.Next
+		return m, tea.Quit
+	case tea.KeyMsg:
+		switch msg.Type {
+		case tea.KeyCtrlC, tea.KeyEsc:
+			m.canceled = true
+			m.State = StepFailed
+			m.Error = "cancelled"
+			return m, tea.Quit
+		}
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
@@ -107,11 +118,18 @@ func (m ProgressModel) View() string {
 		r.Error(m.Error, m.Next)
 	case StepOK:
 		if m.Step != "" {
+			if m.Total > 1 {
+				r.ProgressBar(m.Step, m.Current, m.Total)
+			}
 			r.Success(progressLabel(m.Step, m.Current, m.Total))
 		}
 	default:
 		if m.Step != "" {
-			r.Step(progressLabel(m.Step, m.Current, m.Total))
+			if m.Total > 1 {
+				r.ProgressBar(m.Step, m.Current, m.Total)
+			} else {
+				r.Step(progressLabel(m.Step, m.Current, m.Total))
+			}
 		}
 	}
 	if m.Summary != "" {
@@ -125,6 +143,10 @@ func progressLabel(label string, current, total int64) string {
 		return label
 	}
 	return fmt.Sprintf("%s %d/%d", label, current, total)
+}
+
+func (m ProgressModel) Canceled() bool {
+	return m.canceled
 }
 
 type teaProgressModel struct {

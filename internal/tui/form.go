@@ -19,6 +19,7 @@ type Field struct {
 	Key         string
 	Label       string
 	Placeholder string
+	Initial     string
 }
 
 type FieldValueMsg struct {
@@ -42,6 +43,9 @@ func NewFormModel(title string, fields []Field) FormModel {
 		input.Placeholder = field.Placeholder
 		input.Prompt = field.Label + ": "
 		input.Width = 60
+		if field.Initial != "" {
+			input.SetValue(field.Initial)
+		}
 		if i == 0 {
 			_ = input.Focus()
 		}

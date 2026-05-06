@@ -34,7 +34,7 @@ func (r *TextReporter) Start(label string, total int64) {
 	}
 	renderer := output.NewPlainRenderer(r.w, output.PlainOptions{Quiet: r.quiet, Color: r.color})
 	if total > 1 {
-		renderer.Step(fmt.Sprintf("%s 0/%d", label, total))
+		renderer.ProgressBar(label, 0, total)
 		return
 	}
 	renderer.Step(label)
@@ -68,5 +68,6 @@ func (r *TextReporter) print() {
 	if r.total <= 1 {
 		return
 	}
-	fmt.Fprintf(r.w, "%s %d/%d\n", r.label, r.current, r.total)
+	renderer := output.NewPlainRenderer(r.w, output.PlainOptions{Quiet: r.quiet, Color: r.color})
+	renderer.ProgressBar(r.label, r.current, r.total)
 }

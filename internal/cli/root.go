@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"remork/internal/api"
@@ -15,13 +16,16 @@ import (
 	remorkclient "remork/internal/client"
 	"remork/internal/config"
 	"remork/internal/ops"
+	"remork/internal/tui"
+	"remork/internal/workspace"
 )
 
 type Options struct {
-	Version     string
-	HomeDir     string
-	WorkingDir  string
-	DaemonProbe DaemonProbe
+	Version       string
+	HomeDir       string
+	WorkingDir    string
+	DaemonProbe   DaemonProbe
+	CommandRunner commandRunner
 }
 
 type DaemonProbe interface {
@@ -35,28 +39,31 @@ const productHelpTemplate = `{{.Short}}
 Usage:
   {{.UseLine}}
 
-Must know: init sync status apply run shell
-  init        Bind the current directory to a remote workspace
+Setup:
+  setup       Set up Remork for a server or workspace
+
+Daily:
   sync        Sync remote files into the local working copy
   status      Show local, remote, conflict, and large-file state
+  diff        Show local changes against the synced base
   apply       Write local changes to the remote after base checks
+  pull        Fetch a specific file or directory
   run         Run a command in the remote workspace
   shell       Open an interactive remote shell
 
-Learn later: pull diff restore conflict log watch
-  pull        Fetch a specific file or directory
-  diff        Show local changes against the synced base
-  restore     Discard local changes
-  conflict    Show conflict recovery steps for a path
+Observe:
   log         Show recent remote Remork operations
   watch       Keep syncing from remote events
+
+Diagnose:
+  doctor      Check local and remote readiness
+
+Advanced:
+  daemon      Install, upgrade, or inspect remorkd
   host        Manage daemon endpoints
   workspace   Inspect or remove local bindings
-
-Debug and operations: doctor debug daemon
-  doctor      Check local and remote readiness
   debug       Inspect daemon APIs and events
-  daemon      Install, upgrade, or inspect remorkd
+  init        Bind the current directory to a remote workspace
 
 Other:
   version     Print the remork version
@@ -115,6 +122,13 @@ func NewRootCommand(opts Options) *cobra.Command {
 		SilenceUsage:      true,
 		SilenceErrors:     true,
 		PersistentPreRunE: validateGlobalFlags,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mode := commandInteractionMode(cmd, interactionRequest{MissingInput: true})
+			if !mode.Wizard {
+				return cmd.Help()
+			}
+			return runRootCommandMenu(cmd, opts)
+		},
 	}
 	root.PersistentFlags().Bool("non-interactive", false, "Disable interactive prompts and TUI rendering")
 	root.PersistentFlags().String("color", "auto", "Color output: auto, always, or never")
@@ -144,6 +158,66 @@ func NewRootCommand(opts Options) *cobra.Command {
 	return root
 }
 
+func runRootCommandMenu(cmd *cobra.Command, opts Options) error {
+	model := tui.NewCommandMenu("Remork command menu", rootCommandItems(workspaceIsBound(opts)))
+	model.Color = commandColorMode(cmd)
+	menu, err := tui.RunCommandMenu(model,
+		tea.WithInput(cmd.InOrStdin()),
+		tea.WithOutput(cmd.ErrOrStderr()),
+	)
+	if err != nil {
+		return err
+	}
+	if menu.Canceled() || !menu.Submitted() {
+		return nil
+	}
+	args := menu.SelectedArgs()
+	if len(args) == 0 {
+		return nil
+	}
+	cmd.Root().SetArgs(args)
+	return cmd.Root().ExecuteContext(cmd.Context())
+}
+
+func rootCommandItems(bound bool) []tui.CommandItem {
+	setup := []tui.CommandItem{
+		{Group: "Setup", Name: "setup", Description: "Set up Remork for a server or workspace", Args: []string{"setup"}},
+	}
+	daily := []tui.CommandItem{
+		{Group: "Daily", Name: "sync", Description: "Pull remote changes into this working copy", Args: []string{"sync"}},
+		{Group: "Daily", Name: "status", Description: "Inspect local edits, remote updates, conflicts, and large files", Args: []string{"status"}},
+		{Group: "Daily", Name: "diff", Description: "Review local edits before applying", Args: []string{"diff"}},
+		{Group: "Daily", Name: "apply", Description: "Write reviewed local edits back to the remote", Args: []string{"apply"}},
+		{Group: "Daily", Name: "pull", Description: "Fetch one file or directory, including large files", Args: []string{"pull"}, HelpOnly: true},
+		{Group: "Daily", Name: "run", Description: "Run a non-interactive remote command", Args: []string{"run"}, HelpOnly: true},
+		{Group: "Daily", Name: "shell", Description: "Open an interactive remote shell", Args: []string{"shell"}},
+	}
+	observe := []tui.CommandItem{
+		{Group: "Observe", Name: "log", Description: "Show recent remote Remork operations", Args: []string{"log"}},
+		{Group: "Observe", Name: "watch", Description: "Follow remote workspace events and sync updates", Args: []string{"watch"}},
+	}
+	diagnose := []tui.CommandItem{
+		{Group: "Diagnose", Name: "doctor", Description: "Check local config, daemon reachability, and workspace APIs", Args: []string{"doctor"}},
+	}
+	advanced := []tui.CommandItem{
+		{Group: "Advanced", Name: "daemon status", Description: "Inspect remorkd version, allowed roots, auth, and threshold", Args: []string{"daemon", "status"}, HelpOnly: true},
+		{Group: "Advanced", Name: "daemon install", Description: "Install remorkd over SSH", Args: []string{"daemon", "install"}, HelpOnly: true},
+		{Group: "Advanced", Name: "daemon upgrade", Description: "Upgrade remorkd over SSH", Args: []string{"daemon", "upgrade"}, HelpOnly: true},
+		{Group: "Advanced", Name: "host list", Description: "List configured daemon endpoints", Args: []string{"host", "list"}},
+		{Group: "Advanced", Name: "workspace", Description: "Inspect this local workspace binding", Args: []string{"workspace"}},
+		{Group: "Advanced", Name: "init", Description: "Bind this directory manually", Args: []string{"init"}, HelpOnly: true},
+	}
+	if !bound {
+		return append(append(append(append(setup, daily...), observe...), diagnose...), advanced...)
+	}
+	return append(append(append(append(daily, setup...), observe...), diagnose...), advanced...)
+}
+
+func workspaceIsBound(opts Options) bool {
+	_, _, err := workspace.ResolveFrom(opts.WorkingDir)
+	return err == nil
+}
+
 type commandDoc struct {
 	long    string
 	example string
@@ -151,6 +225,25 @@ type commandDoc struct {
 
 func applyDetailedCommandDocs(root *cobra.Command) {
 	docs := map[string]commandDoc{
+		"setup": {
+			long: `Set up Remork through a guided product flow.
+
+When to use:
+  Use setup when you are connecting a project for the first time, preparing a
+  server for Remork, updating an existing daemon, or repairing local/remote
+  configuration.
+
+Interactive:
+  setup opens a scoped menu and then shows a review plan before it changes
+  host, daemon, or workspace state.
+
+Automation:
+  Use the advanced host, daemon, init, and workspace commands directly when you
+  need a scriptable non-interactive path.`,
+			example: `  remork setup
+  remork host add my-lab --url http://server:17731
+  remork init my-lab:/absolute/remote/path --non-interactive`,
+		},
 		"init": {
 			long: `Bind the current local directory to a remote workspace managed by remorkd.
 
@@ -247,7 +340,11 @@ When to use:
 
 Safety:
   By default run checks local/remote state and syncs remote updates when safe.
-  Use --remote-only only when you intentionally want to ignore local edits.`,
+  Use --remote-only only when you intentionally want to ignore local edits.
+
+Output:
+  Output is replayed after the remote command completes. For a live interactive
+  terminal, use remork shell.`,
 			example: `  remork run -- pwd
   remork run "pytest -q"
   remork run --timeout 30s "go test ./..."
@@ -328,7 +425,7 @@ When to use:
 			long: `Inspect local workspace bindings and remove the current binding marker.
 
 When to use:
-  Use workspace commands when a directory is bound to the wrong remote root or
+  Use workspace commands when a directory is bound to the wrong workspace root or
   when you need to audit local bindings.`,
 			example: `  remork workspace
   remork workspace list
@@ -338,7 +435,7 @@ When to use:
 			long: `List local workspaces registered in Remork config.
 
 When to use:
-  Use this to find existing local directories and their remote roots.`,
+  Use this to find existing local directories and their workspace roots.`,
 			example: `  remork workspace list
   remork workspace list --json`,
 		},
@@ -355,9 +452,14 @@ When to use:
 
 When to use:
   Use daemon commands to place an offline remorkd binary on a server, verify
-  version/root/auth state, or print an installation plan.`,
+  version/root/auth state, or preview an installation plan with --dry-run.
+  Without --dry-run, install and upgrade show the plan and ask for confirmation.
+  Pass -y/--yes to execute without prompting. Interactive daemon forms expose
+  all deployment parameters on one screen and reopen with previous values after
+  pre-execution validation errors.`,
 			example: `  remork daemon install my-lab --root /absolute/allowed/root
-  remork daemon install my-lab --root /absolute/allowed/root --execute --yes --verify
+  remork daemon install my-lab --root /absolute/allowed/root --dry-run
+  remork daemon install my-lab --root /absolute/allowed/root -y --verify
   remork daemon status my-lab`,
 		},
 		"daemon status": {
@@ -373,19 +475,27 @@ When to use:
 When to use:
   Use install when the server cannot build Remork itself. The command copies a
   prebuilt daemon binary over SSH and can start it under the remote user's home.
+  Without --dry-run, it asks for confirmation before executing; pass -y/--yes
+  for scripts. The interactive form includes roots, URL, auth, verify, dry-run,
+  and unauthenticated bind settings.
 
 Token-first:
   Prefer --token-file plus --token-env for shared VPNs or multi-user networks.`,
 			example: `  remork daemon install my-lab --root /absolute/allowed/root
-  remork daemon install my-lab --root /absolute/allowed/root --ssh user@server --url http://daemon-host:17731 --token-file ~/.remork/remork.token --token-env REMORK_TOKEN --execute --yes --verify`,
+  remork daemon install my-lab --root /absolute/allowed/root --dry-run
+  remork daemon install my-lab --root /absolute/allowed/root --ssh user@server --url http://daemon-host:17731 --token-file ~/.remork/remork.token --token-env REMORK_TOKEN -y --verify`,
 		},
 		"daemon upgrade": {
 			long: `Replace an existing remote remorkd binary with the current release binary.
 
 When to use:
   Use upgrade when daemon status shows an older version or install verification
-  reports a version mismatch.`,
-			example: `  remork daemon upgrade my-lab --root /absolute/allowed/root --execute --yes --verify`,
+  reports a version mismatch. Use --dry-run when you only want to preview the
+  generated SSH/SCP plan. Without --dry-run, it asks for confirmation before
+  executing; pass -y/--yes for scripts.`,
+			example: `  remork daemon upgrade my-lab --root /absolute/allowed/root
+  remork daemon upgrade my-lab --root /absolute/allowed/root --dry-run
+  remork daemon upgrade my-lab --root /absolute/allowed/root -y --verify`,
 		},
 		"debug": {
 			long: `Inspect low-level daemon APIs and event streams.

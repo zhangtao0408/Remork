@@ -294,6 +294,31 @@ func TestPullQuietLargeFileReturnsPromptRequired(t *testing.T) {
 	}
 }
 
+func TestPullMissingExplicitTargetReturnsError(t *testing.T) {
+	remote := t.TempDir()
+	local := t.TempDir()
+
+	srv := httptest.NewServer(daemon.NewServer(daemon.Config{Roots: []string{remote}}).Handler())
+	defer srv.Close()
+
+	runner := NewRunner(RunnerOptions{
+		Client:       client.New(srv.URL),
+		StateStore:   state.NewStore(filepath.Join(local, ".remork", "state")),
+		LocalRoot:    local,
+		WorkspaceRef: "lab:" + remote,
+		RemoteRoot:   remote,
+	})
+
+	_, err := runner.Pull(context.Background(), "missing.txt", PullOptions{Quiet: true})
+	var missing MissingPullTargetError
+	if !errors.As(err, &missing) {
+		t.Fatalf("err = %v, want MissingPullTargetError", err)
+	}
+	if missing.Target != "missing.txt" {
+		t.Fatalf("missing target = %q, want missing.txt", missing.Target)
+	}
+}
+
 func TestPullForceLargeFileMaterializesAndClearsMeta(t *testing.T) {
 	remote := t.TempDir()
 	local := t.TempDir()

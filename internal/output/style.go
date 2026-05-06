@@ -3,13 +3,18 @@ package output
 import (
 	"io"
 	"os"
+
+	"github.com/mattn/go-isatty"
 )
 
 const (
-	ansiGreen  = "32"
-	ansiYellow = "33"
-	ansiCyan   = "36"
-	ansiRed    = "31"
+	ansiGreen   = "32"
+	ansiYellow  = "33"
+	ansiCyan    = "36"
+	ansiRed     = "31"
+	ansiBlue    = "34"
+	ansiMagenta = "35"
+	ansiDim     = "2"
 )
 
 func Info(w io.Writer, text string) string {
@@ -43,9 +48,5 @@ func supportsColor(w io.Writer) bool {
 	if !ok {
 		return false
 	}
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return isatty.IsTerminal(f.Fd())
 }

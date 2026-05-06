@@ -17,6 +17,7 @@ type interactionRequest struct {
 	Quiet          bool
 	Yes            bool
 	NonInteractive bool
+	DumbTerminal   bool
 }
 
 type interactionMode struct {
@@ -25,7 +26,7 @@ type interactionMode struct {
 }
 
 func decideInteractionMode(req interactionRequest) interactionMode {
-	if req.NonInteractive || req.JSON || req.Quiet || req.Yes || !req.TTY {
+	if req.NonInteractive || req.JSON || req.Quiet || req.Yes || req.DumbTerminal || !req.TTY {
 		return interactionMode{}
 	}
 	return interactionMode{
@@ -35,8 +36,9 @@ func decideInteractionMode(req interactionRequest) interactionMode {
 }
 
 func commandInteractionMode(cmd *cobra.Command, req interactionRequest) interactionMode {
-	req.TTY = req.TTY || commandHasTTY(cmd)
+	req.TTY = req.TTY || commandHasPromptTTY(cmd)
 	req.NonInteractive = req.NonInteractive || boolFlag(cmd, "non-interactive")
+	req.DumbTerminal = req.DumbTerminal || isDumbTerminal()
 	return decideInteractionMode(req)
 }
 
@@ -58,7 +60,11 @@ func validateGlobalFlags(cmd *cobra.Command, args []string) error {
 		value = flag.Value.String()
 	}
 	if _, err := output.ParseColorMode(value); err != nil {
-		return codedCommandError{code: 2, err: err}
+		coded := codedCommandError{code: 2, err: err}
+		if boolFlag(cmd, "json") {
+			return writeJSONCommandError(cmd, coded)
+		}
+		return coded
 	}
 	return nil
 }
@@ -72,7 +78,15 @@ func boolFlag(cmd *cobra.Command, name string) bool {
 }
 
 func commandHasTTY(cmd *cobra.Command) bool {
-	return isTerminal(cmd.InOrStdin()) && isTerminal(cmd.OutOrStdout())
+	return !isDumbTerminal() && isTerminal(cmd.InOrStdin()) && isTerminal(cmd.OutOrStdout())
+}
+
+func commandHasPromptTTY(cmd *cobra.Command) bool {
+	return !isDumbTerminal() && isTerminal(cmd.InOrStdin()) && isTerminal(cmd.ErrOrStderr())
+}
+
+func isDumbTerminal() bool {
+	return os.Getenv("TERM") == "dumb"
 }
 
 func isTerminal(v any) bool {

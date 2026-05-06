@@ -28,6 +28,24 @@ func TestFormModelCollectsValuesAndSubmits(t *testing.T) {
 	}
 }
 
+func TestFormModelUsesInitialValues(t *testing.T) {
+	model := NewFormModel("Daemon upgrade", []Field{
+		{Key: "host", Label: "Host", Initial: "lab"},
+		{Key: "roots", Label: "Allowed roots", Initial: "/home/me"},
+	})
+
+	values := model.Values()
+	if values["host"] != "lab" || values["roots"] != "/home/me" {
+		t.Fatalf("initial values = %#v", values)
+	}
+	view := model.View()
+	for _, want := range []string{"lab", "/home/me"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view should contain initial value %q, got:\n%s", want, view)
+		}
+	}
+}
+
 func TestFormModelCancel(t *testing.T) {
 	model := NewFormModel("Install daemon", []Field{{Key: "host", Label: "Host"}})
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})

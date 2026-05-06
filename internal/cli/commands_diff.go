@@ -31,6 +31,9 @@ func addDiffCommand(root *cobra.Command, opts Options) {
 			if len(args) == 1 {
 				changes = filterChanges(changes, args[0])
 			}
+			if len(changes) == 0 {
+				return nil
+			}
 			for _, change := range changes {
 				tracked := ctx.snapshot.Entries[change.Path]
 				text, err := renderChangeDiff(ctx, change, tracked)

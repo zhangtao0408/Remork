@@ -21,6 +21,7 @@ func addStatusCommand(root *cobra.Command, opts Options) {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show local, remote, conflict, and large-file state",
+		Args:  noArgsJSON(&jsonOut),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runner, err := newBoundSyncRunner(opts)
 			if err != nil {
@@ -111,28 +112,25 @@ func nextStatusAction(status syncer.Status) string {
 }
 
 func writeStatusPaths(cmd *cobra.Command, status syncer.Status, verbose bool) {
+	r := plainRenderer(cmd, false)
 	if status.Conflicts > 0 {
 		paths, more := limitedPaths(status.ConflictPaths, verbose)
-		fmt.Fprintln(cmd.OutOrStdout(), "Conflict paths:")
-		for _, path := range paths {
-			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", path)
-		}
+		r.List("Conflict paths:", paths)
 		if more > 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "  ... %d more (use remork status --verbose)\n", more)
+			r.Warning(fmt.Sprintf("%d more conflict path(s); use remork status --verbose", more))
 		}
 		if len(status.ConflictPaths) > 0 {
 			path := status.ConflictPaths[0]
-			fmt.Fprintf(cmd.OutOrStdout(), "Review: %s\n", pathCommand("conflict", path))
-			fmt.Fprintf(cmd.OutOrStdout(), "Discard local edits back to synced base after review: %s\n", pathCommand("restore", path))
-			fmt.Fprintln(cmd.OutOrStdout(), "Then run: remork status")
-			fmt.Fprintln(cmd.OutOrStdout(), "If remote updates remain: remork sync")
+			r.List("Conflict recovery", []string{
+				"Review: " + pathCommand("conflict", path),
+				"Discard local edits back to synced base after review: " + pathCommand("restore", path),
+				"Then run: remork status",
+				"If remote updates remain: remork sync",
+			})
 		}
 	}
 	if verbose && status.LocalChanges > 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "Changed paths:")
-		for _, path := range status.ChangedPaths {
-			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", path)
-		}
+		r.List("Changed paths:", status.ChangedPaths)
 	}
 }
 

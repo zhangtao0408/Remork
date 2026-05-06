@@ -17,6 +17,9 @@ func TestTextReporterShowsProgressWhenInteractive(t *testing.T) {
 	if !strings.Contains(out, "download") || !strings.Contains(out, "100/100") {
 		t.Fatalf("unexpected output: %q", out)
 	}
+	if !strings.Contains(out, "[") {
+		t.Fatalf("progress output should contain a bar, got: %q", out)
+	}
 }
 
 func TestTextReporterUsesStructuredPlainOutput(t *testing.T) {

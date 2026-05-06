@@ -60,9 +60,11 @@ func TestRootHelpShowsProductCommandLayers(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 
-	mustContain(t, out.String(), "Must know: init sync status apply run shell")
-	mustContain(t, out.String(), "Learn later: pull diff restore conflict log watch")
-	mustContain(t, out.String(), "Debug and operations: doctor debug daemon")
+	mustContain(t, out.String(), "Setup:")
+	mustContain(t, out.String(), "Daily:")
+	mustContain(t, out.String(), "Observe:")
+	mustContain(t, out.String(), "Diagnose:")
+	mustContain(t, out.String(), "Advanced:")
 }
 
 func TestRunIsVisibleAndExecIsAlias(t *testing.T) {
@@ -119,7 +121,7 @@ func TestSubcommandHelpShowsCommandFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute help: %v", err)
 	}
-	for _, want := range []string{"Flags:", "--root", "--ssh", "--url", "--platform", "--addr", "--execute", "--verify"} {
+	for _, want := range []string{"Flags:", "--root", "--ssh", "--url", "--platform", "--addr", "--dry-run", "--execute", "--verify"} {
 		mustContain(t, out.String(), want)
 	}
 }
@@ -162,10 +164,87 @@ func TestVisibleCommandsHaveDetailedHelp(t *testing.T) {
 	check(root)
 }
 
+func TestRootMenuRequiredInputItemsOpenHelp(t *testing.T) {
+	items := rootCommandItems(true)
+	required := map[string]bool{
+		"run":            true,
+		"pull":           true,
+		"daemon status":  true,
+		"daemon install": true,
+		"daemon upgrade": true,
+		"init":           true,
+	}
+	for _, item := range items {
+		if !required[item.Name] {
+			continue
+		}
+		if !item.HelpOnly {
+			t.Fatalf("root menu item %q should open help instead of executing without required input", item.Name)
+		}
+		args := item.Args
+		if len(args) == 0 || args[len(args)-1] == "--help" {
+			t.Fatalf("root menu item %q should store base args and let menu append --help, args=%v", item.Name, args)
+		}
+	}
+	for name := range required {
+		found := false
+		for _, item := range items {
+			found = found || item.Name == name
+		}
+		if !found {
+			t.Fatalf("required input root menu item %q not found", name)
+		}
+	}
+}
+
+func TestRootMenuIncludesDaemonInstallAndUpgrade(t *testing.T) {
+	items := rootCommandItems(false)
+	want := map[string]bool{
+		"daemon install": false,
+		"daemon upgrade": false,
+	}
+	for _, item := range items {
+		if _, ok := want[item.Name]; ok {
+			want[item.Name] = true
+			if item.Group != "Advanced" {
+				t.Fatalf("daemon operation %q should be in Advanced group, got %#v", item.Name, item)
+			}
+			if len(item.Args) < 2 || item.Args[0] != "daemon" {
+				t.Fatalf("daemon operation %q should launch daemon subcommand, args=%v", item.Name, item.Args)
+			}
+		}
+	}
+	for name, found := range want {
+		if !found {
+			t.Fatalf("root menu should include %q", name)
+		}
+	}
+}
+
+func TestRootMenuPrioritizesSetupWhenDirectoryIsUnbound(t *testing.T) {
+	items := rootCommandItems(false)
+	if len(items) == 0 {
+		t.Fatal("root menu should contain commands")
+	}
+	if items[0].Group != "Setup" || items[0].Name != "setup" {
+		t.Fatalf("first unbound menu item = %#v, want setup", items[0])
+	}
+}
+
+func TestRootMenuKeepsDailyCommandsFirstWhenDirectoryIsBound(t *testing.T) {
+	items := rootCommandItems(true)
+	if len(items) == 0 {
+		t.Fatal("root menu should contain commands")
+	}
+	if items[0].Group != "Daily" || items[0].Name != "sync" {
+		t.Fatalf("first bound menu item = %#v, want daily sync", items[0])
+	}
+}
+
 func TestDaemonInstallAcceptsRepeatedRootFlags(t *testing.T) {
 	home := t.TempDir()
 	cmd := NewRootCommand(Options{Version: "test", HomeDir: home})
-	out, err := executeCommand(cmd, "daemon", "install", "lab", "--root", "/data", "--root", "/scratch", "--local-bin", "dist/remorkd-linux-arm64")
+	out, err := executeCommand(cmd, "daemon", "install", "lab", "--root", "/data", "--root", "/scratch", "--local-bin", fakeDaemonBinary(t), "--dry-run")
 	if err != nil {
 		t.Fatalf("daemon install: %v", err)
 	}
@@ -564,5 +643,18 @@ func TestRootIncludesSetupCommand(t *testing.T) {
 	}
 	if setup == nil || setup.Name() != "setup" {
 		t.Fatalf("setup command = %#v", setup)
+	}
+}
+
+func TestRootHelpPromotesSetupFirst(t *testing.T) {
+	out, err := executeCommand(NewRootCommand(Options{Version: "test"}), "--help")
+	if err != nil {
+		t.Fatalf("help: %v", err)
+	}
+	text := out.String()
+	mustContain(t, text, "Setup:")
+	mustContain(t, text, "setup")
+	if strings.Index(text, "setup") > strings.Index(text, "daemon") {
+		t.Fatalf("setup should appear before daemon in help:\n%s", text)
 	}
 }

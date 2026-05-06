@@ -29,10 +29,11 @@ func TestWorkspaceCommandShowsCurrentBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workspace: %v", err)
 	}
+	mustContain(t, out.String(), "== Workspace ==")
 	mustContain(t, out.String(), "local:")
 	mustContain(t, out.String(), local)
 	mustContain(t, out.String(), "host: lab")
-	mustContain(t, out.String(), "remote_root: /data/project")
+	mustContain(t, out.String(), "workspace root: /data/project")
 	mustContain(t, out.String(), "workspace_id: ws_test")
 	mustContain(t, out.String(), "state_scope: local-checkout")
 	mustNotContain(t, out.String(), "token")
@@ -118,6 +119,7 @@ func TestWorkspaceListShowsRegisteredWorkspaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workspace list: %v", err)
 	}
+	mustContain(t, out.String(), "== Workspaces ==")
 	for _, want := range []string{"ws-a", "lab-a", "/data/a", localA, "ws-b", "lab-b", "/data/b", localB} {
 		mustContain(t, out.String(), want)
 	}
@@ -177,6 +179,7 @@ func TestHostListAndRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("host list: %v", err)
 	}
+	mustContain(t, out.String(), "== Hosts ==")
 	mustContain(t, out.String(), "lab-a")
 	mustContain(t, out.String(), "no_proxy")
 	mustContain(t, out.String(), "lab-b")
@@ -187,6 +190,7 @@ func TestHostListAndRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("host remove: %v", err)
 	}
+	mustContain(t, out.String(), "== Host removed ==")
 	mustContain(t, out.String(), "removed host lab-a")
 	cfg, err := store.Load()
 	if err != nil {

@@ -48,9 +48,6 @@ func resolveReleaseDaemonBinary(ctx context.Context, opts releaseBinaryOptions) 
 	if version == "" {
 		version = "dev"
 	}
-	if version == "dev" {
-		return "", fmt.Errorf("cannot resolve remorkd release binary for version dev; pass --local-bin")
-	}
 
 	distPath := filepath.Join("dist", name)
 	if fileExists(distPath) {
@@ -63,6 +60,9 @@ func resolveReleaseDaemonBinary(ctx context.Context, opts releaseBinaryOptions) 
 	cachePath := filepath.Join(opts.HomeDir, ".cache", "remork", "releases", version, name)
 	if fileExists(cachePath) {
 		return cachePath, nil
+	}
+	if version == "dev" {
+		return "", fmt.Errorf("cannot resolve remorkd release binary for version dev; pass --local-bin or build %s into dist/ or the local remork cache", name)
 	}
 	downloader := opts.Downloader
 	if downloader == nil {

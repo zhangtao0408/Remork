@@ -32,21 +32,31 @@ func newDebugManifestCommand(opts Options) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runCtx, err := newRunContext(opts)
 			if err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			manifest, err := runCtx.client.ManifestContext(cmd.Context(), runCtx.binding.RemoteRoot, ".")
 			if err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
 				return err
 			}
 			if jsonOut {
 				return output.WriteJSON(cmd.OutOrStdout(), manifest)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "root: %s\n", manifest.Root)
-			fmt.Fprintf(cmd.OutOrStdout(), "revision: %s\n", manifest.Revision)
-			fmt.Fprintf(cmd.OutOrStdout(), "entries: %d\n", len(manifest.Entries))
+			r := plainRenderer(cmd, false)
+			r.Section("Debug manifest")
+			r.KeyValue("root", manifest.Root)
+			r.KeyValue("revision", manifest.Revision)
+			r.KeyValue("entries", len(manifest.Entries))
+			rows := make([][]string, 0, len(manifest.Entries))
 			for _, entry := range manifest.Entries {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\tlarge=%t\thash=%s\n", entry.Path, entry.Type, entry.Large, shortHash(entry.Hash))
+				rows = append(rows, []string{entry.Path, string(entry.Type), fmt.Sprintf("%t", entry.Large), shortHash(entry.Hash)})
 			}
+			r.Table([]string{"path", "type", "large", "hash"}, rows)
 			return nil
 		},
 	}

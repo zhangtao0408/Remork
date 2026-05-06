@@ -36,6 +36,13 @@ func newRunCommand(opts Options) *cobra.Command {
 		Short: "Run a command in the remote workspace",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("timeout") && timeout <= 0 {
+				return codedCommandError{
+					code: exitcode.InvalidUsageOrConfig,
+					err:  fmt.Errorf("--timeout must be greater than 0"),
+					fix:  "pass a positive duration such as --timeout 30s, or omit --timeout for the default",
+				}
+			}
 			ctx := cmd.Context()
 			runCtx, err := newRunContext(opts)
 			if err != nil {
@@ -52,7 +59,7 @@ func newRunCommand(opts Options) *cobra.Command {
 					Conflicts:   status.Conflicts,
 				}, preflight.Options{})
 				if !decision.Allow {
-					fmt.Fprintln(cmd.ErrOrStderr(), decision.Message)
+					plainErrRenderer(cmd, false).Warning(decision.Message)
 					return silentCommandError{err: codedCommandError{code: decision.ExitCode, err: fmt.Errorf("%s", decision.Message)}}
 				}
 				if status.RemoteUpdates > 0 {
@@ -62,7 +69,7 @@ func newRunCommand(opts Options) *cobra.Command {
 					}
 					if syncResult.Conflicts > 0 {
 						msg := "Remote updates conflict with local files; resolve conflicts before running remote commands."
-						fmt.Fprintln(cmd.ErrOrStderr(), msg)
+						plainErrRenderer(cmd, false).Error(msg, "run remork status")
 						return silentCommandError{err: codedCommandError{code: exitcode.Conflict, err: fmt.Errorf("%s", msg)}}
 					}
 				}
@@ -72,11 +79,14 @@ func newRunCommand(opts Options) *cobra.Command {
 					NoSyncCheck: noSyncCheck,
 				})
 				if decision.Warning != "" {
-					fmt.Fprintln(cmd.ErrOrStderr(), decision.Warning)
+					plainErrRenderer(cmd, false).Warning(decision.Warning)
 				}
 			}
 
 			command := runCommandArgs(args)
+			if commandInteractionMode(cmd, interactionRequest{}).RichOutput {
+				plainErrRenderer(cmd, false).Step("remote command running; output is replayed after completion...")
+			}
 			result, err := runCtx.client.ExecContext(ctx, runCtx.binding.RemoteRoot, runCtx.binding.RemoteRoot, command, timeout.Milliseconds())
 			if result.Stdout != "" {
 				fmt.Fprint(cmd.OutOrStdout(), result.Stdout)
@@ -85,10 +95,10 @@ func newRunCommand(opts Options) *cobra.Command {
 				fmt.Fprint(cmd.ErrOrStderr(), result.Stderr)
 			}
 			if result.StdoutTruncated {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: stdout truncated after %d bytes\n", limits.MaxExecOutputBytes)
+				plainErrRenderer(cmd, false).Warning(fmt.Sprintf("stdout truncated after %d bytes", limits.MaxExecOutputBytes))
 			}
 			if result.StderrTruncated {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: stderr truncated after %d bytes\n", limits.MaxExecOutputBytes)
+				plainErrRenderer(cmd, false).Warning(fmt.Sprintf("stderr truncated after %d bytes", limits.MaxExecOutputBytes))
 			}
 			if err != nil {
 				return err

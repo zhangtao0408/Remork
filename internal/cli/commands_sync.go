@@ -22,7 +22,7 @@ func addSyncCommand(root *cobra.Command, opts Options) {
 	cmd := &cobra.Command{
 		Use:   "sync [path]",
 		Short: "Sync remote files into the local working copy",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  maxArgsJSON(1, &jsonOut),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			binding, localRoot, err := workspace.ResolveFrom(opts.WorkingDir)
 			if err != nil {
@@ -69,6 +69,12 @@ func addSyncCommand(root *cobra.Command, opts Options) {
 			targetPath := ""
 			if len(args) == 1 {
 				targetPath = args[0]
+			}
+			if err := validateWorkspacePathArg(targetPath); err != nil {
+				if jsonOut {
+					return writeJSONCommandError(cmd, err)
+				}
+				return err
 			}
 			workspaceRef := binding.Host + ":" + binding.RemoteRoot
 			runner := syncer.NewRunner(syncer.RunnerOptions{
