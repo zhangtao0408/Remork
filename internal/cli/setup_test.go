@@ -69,3 +69,41 @@ func TestSetupPrepareServerFieldsAreMinimal(t *testing.T) {
 		t.Fatalf("default prepare fields should not expose advanced flags: %s", got)
 	}
 }
+
+func TestSetupConnectProjectBuildsWorkspaceBindSpec(t *testing.T) {
+	values := map[string]string{
+		"host":        "lab",
+		"remote_root": "/data/project",
+		"first_sync":  "yes",
+	}
+	bind, firstSync, err := setupConnectProjectSpec("/local/project", values)
+	if err != nil {
+		t.Fatalf("setupConnectProjectSpec: %v", err)
+	}
+	if bind.HostName != "lab" || bind.RemoteRoot != "/data/project" || bind.LocalRoot != "/local/project" {
+		t.Fatalf("bind spec = %#v", bind)
+	}
+	if !firstSync {
+		t.Fatal("firstSync should be true")
+	}
+}
+
+func TestSetupUpdateServerUsesUpgradeAction(t *testing.T) {
+	values := map[string]string{
+		"host":       "lab",
+		"ssh":        "lab.example",
+		"roots":      "/data",
+		"url":        "http://lab.example:17731",
+		"addr":       "127.0.0.1:17731",
+		"local_bin":  "/tmp/remorkd",
+		"remote_bin": ".local/bin/remorkd",
+		"verify":     "yes",
+	}
+	spec, err := setupUpdateServerSpec(values)
+	if err != nil {
+		t.Fatalf("setupUpdateServerSpec: %v", err)
+	}
+	if spec.Action != "upgrade" || !spec.Verify {
+		t.Fatalf("update spec = %#v", spec)
+	}
+}

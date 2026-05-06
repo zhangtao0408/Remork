@@ -118,3 +118,28 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
+
+func setupConnectProjectSpec(localRoot string, values map[string]string) (WorkspaceBindSpec, bool, error) {
+	firstSync, err := parseDaemonDeployBool(values["first_sync"], "first sync")
+	if err != nil {
+		return WorkspaceBindSpec{}, false, err
+	}
+	spec := WorkspaceBindSpec{
+		HostName:   strings.TrimSpace(values["host"]),
+		RemoteRoot: strings.TrimSpace(values["remote_root"]),
+		LocalRoot:  localRoot,
+	}
+	if spec.HostName == "" || spec.RemoteRoot == "" {
+		return WorkspaceBindSpec{}, false, fmt.Errorf("host and remote workspace root are required")
+	}
+	return spec, firstSync, nil
+}
+
+func setupUpdateServerSpec(values map[string]string) (DaemonDeploySpec, error) {
+	spec, _, err := setupPrepareServerSpecs(values)
+	if err != nil {
+		return DaemonDeploySpec{}, err
+	}
+	spec.Action = "upgrade"
+	return spec, nil
+}
