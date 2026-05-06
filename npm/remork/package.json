@@ -1,0 +1,21 @@
+{
+  "name": "remork",
+  "version": "0.0.0-dev",
+  "private": true,
+  "description": "Remote workspace control for private servers",
+  "bin": {
+    "remork": "bin/remork.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "files": [
+    "bin/",
+    "vendor/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}
