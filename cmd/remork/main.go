@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 
 	"remork/internal/cli"
 )
@@ -9,12 +10,20 @@ import (
 var version = "dev"
 
 func main() {
-	if err := cli.NewRootCommand(cli.Options{Version: version}).Execute(); err != nil {
+	if err := cli.NewRootCommand(cli.Options{Version: displayVersion(version)}).Execute(); err != nil {
 		if !isSilentError(err) {
 			cli.WriteCommandError(os.Stderr, err)
 		}
 		os.Exit(commandExitCode(err))
 	}
+}
+
+func displayVersion(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "v") && len(raw) > 1 && raw[1] >= '0' && raw[1] <= '9' {
+		return raw[1:]
+	}
+	return raw
 }
 
 func commandExitCode(err error) int {

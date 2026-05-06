@@ -2,6 +2,10 @@
 set -euo pipefail
 
 version="${1:-dev}"
+binary_version="$version"
+if [[ "$binary_version" == v[0-9]* ]]; then
+  binary_version="${binary_version#v}"
+fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dist_dir="$repo_root/dist"
 rm -rf "$dist_dir"
@@ -19,7 +23,7 @@ build_binary() {
   local out="$dist_dir/$name-$goos-$goarch$suffix"
   echo "building $out"
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-    go build -trimpath -ldflags "-s -w -X main.version=$version" \
+    go build -trimpath -ldflags "-s -w -X main.version=$binary_version" \
     -o "$out" "$package"
 }
 
