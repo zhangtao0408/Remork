@@ -555,3 +555,14 @@ func TestInitDefaultProbeRejectsUnadvertisedRoot(t *testing.T) {
 		t.Fatal("binding should not be written when the daemon does not advertise the root")
 	}
 }
+
+func TestRootIncludesSetupCommand(t *testing.T) {
+	cmd := NewRootCommand(Options{Version: "test"})
+	setup, _, err := cmd.Find([]string{"setup"})
+	if err != nil {
+		t.Fatalf("find setup: %v", err)
+	}
+	if setup == nil || setup.Name() != "setup" {
+		t.Fatalf("setup command = %#v", setup)
+	}
+}

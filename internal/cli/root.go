@@ -120,6 +120,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.PersistentFlags().String("color", "auto", "Color output: auto, always, or never")
 	root.SetHelpTemplate(productHelpTemplate)
 	addVersionCommand(root, opts.Version)
+	addSetupCommand(root, opts)
 	addHostCommand(root, opts)
 	addInitCommand(root, opts)
 	addSyncCommand(root, opts)
