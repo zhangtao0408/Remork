@@ -260,7 +260,7 @@ func setupCurrentServerInitialValues(opts Options) map[string]string {
 	}
 	initial["host"] = host.Name
 	initial["ssh"] = setupSSHTargetFromHostConfig(host, cfg.Hosts)
-	initial["roots"] = binding.RemoteRoot
+	initial["roots"] = setupAllowedRootFallback(binding.RemoteRoot)
 	initial["url"] = host.URL
 	initial["port"] = firstNonEmpty(portFromURL(host.URL), "17731")
 	initial["token_env"] = host.TokenEnv
@@ -274,6 +274,15 @@ func setupCurrentServerInitialValues(opts Options) map[string]string {
 		}
 	}
 	return initial
+}
+
+func setupAllowedRootFallback(remoteRoot string) string {
+	remoteRoot = strings.TrimSpace(remoteRoot)
+	parts := strings.Split(strings.Trim(remoteRoot, "/"), "/")
+	if len(parts) >= 2 && parts[0] == "home" && parts[1] != "" {
+		return "/home/" + parts[1]
+	}
+	return remoteRoot
 }
 
 func setupSSHTargetFromHost(host config.Host) string {
@@ -351,6 +360,7 @@ func runSetupPrepareServer(cmd *cobra.Command, opts Options) error {
 		if err != nil {
 			return err
 		}
+		values = setupFormValuesWithHidden(initial, values)
 		err = runSetupDaemonPlanAndExecute(cmd, opts, values, "install")
 		if err == nil {
 			return nil
@@ -444,6 +454,7 @@ func runSetupUpdateServer(cmd *cobra.Command, opts Options) error {
 		if err != nil {
 			return err
 		}
+		values = setupFormValuesWithHidden(initial, values)
 		err = runSetupDaemonPlanAndExecute(cmd, opts, values, "upgrade")
 		if err == nil {
 			return nil
@@ -452,6 +463,17 @@ func runSetupUpdateServer(cmd *cobra.Command, opts Options) error {
 		plainErrRenderer(cmd, false).Step("update the form values and submit again")
 		initial = values
 	}
+}
+
+func setupFormValuesWithHidden(initial, values map[string]string) map[string]string {
+	merged := make(map[string]string, len(initial)+len(values))
+	for key, value := range initial {
+		merged[key] = value
+	}
+	for key, value := range values {
+		merged[key] = value
+	}
+	return merged
 }
 
 func runSetupRepair(cmd *cobra.Command, opts Options) error {

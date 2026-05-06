@@ -210,6 +210,61 @@ func TestSetupUpdatePreservesUnauthenticatedPrivateNetworkHost(t *testing.T) {
 	}
 }
 
+func TestSetupCurrentServerInitialValuesFallbackToHomeAllowedRoot(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	store := config.NewStore(filepath.Join(home, ".remork"))
+	if err := store.Save(config.Config{Hosts: map[string]config.Host{
+		"lab": {Name: "lab", URL: "http://10.0.0.5:17731", NoProxy: true},
+	}}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := workspace.WriteBinding(local, workspace.Binding{
+		Version:     1,
+		Host:        "lab",
+		RemoteRoot:  "/home/alice/project",
+		WorkspaceID: "ws-setup",
+		StateDir:    filepath.Join(home, ".remork", "state", "ws-setup"),
+	}); err != nil {
+		t.Fatalf("write binding: %v", err)
+	}
+
+	values := setupCurrentServerInitialValues(Options{HomeDir: home, WorkingDir: local})
+
+	if values["roots"] != "/home/alice" {
+		t.Fatalf("roots = %q, want home allowed root fallback; all=%#v", values["roots"], values)
+	}
+}
+
+func TestSetupUpdatePreservesHiddenUnauthenticatedApprovalAfterFormSubmit(t *testing.T) {
+	initial := map[string]string{
+		"host":                               "lab",
+		"ssh":                                "lab",
+		"roots":                              "/data",
+		"port":                               "17731",
+		"allow_unauthenticated_network_bind": "yes",
+		"no_proxy":                           "yes",
+		"verify":                             "yes",
+	}
+	formValues := map[string]string{
+		"host":      "lab",
+		"ssh":       "lab",
+		"roots":     "/data",
+		"port":      "17731",
+		"token_env": "",
+		"no_proxy":  "yes",
+		"verify":    "yes",
+	}
+
+	spec, err := setupUpdateServerSpec(setupFormValuesWithHidden(initial, formValues))
+	if err != nil {
+		t.Fatalf("setupUpdateServerSpec: %v", err)
+	}
+	if !spec.AllowUnauthenticatedNetworkBind {
+		t.Fatalf("hidden unauthenticated approval should survive form submit: %#v", spec)
+	}
+}
+
 func TestSetupDaemonDeployOptionsCarryUnauthenticatedBind(t *testing.T) {
 	spec := DaemonDeploySpec{
 		Action:                          "upgrade",
