@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Run tests
+        run: go test -count=1 ./...
+
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Build release binaries
+        run: bash scripts/build-release.sh "${GITHUB_REF_NAME}"
+
+      - name: Build npm package
+        run: bash scripts/build-npm-package.sh "${GITHUB_REF_NAME}"
+
+      - name: Smoke npm package
+        run: bash scripts/smoke-npm-package.sh
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/remork-* \
+            dist/remorkd-* \
+            dist/checksums.txt \
+            --title "Remork ${GITHUB_REF_NAME}" \
+            --notes-file dist/RELEASE_BODY.md \
+            --verify-tag
+
+      - name: Publish npm package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: bash scripts/publish-npm.sh npm/remork
