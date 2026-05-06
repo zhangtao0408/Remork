@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -9,10 +12,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"remork/internal/config"
 	"remork/internal/exitcode"
 	"remork/internal/output"
 	"remork/internal/prompt"
 	"remork/internal/tui"
+	"remork/internal/workspace"
 )
 
 type setupScope string
@@ -96,22 +101,45 @@ func setupPrepareServerSpecs(values map[string]string) (DaemonDeploySpec, HostCo
 		return DaemonDeploySpec{}, HostConfigSpec{}, err
 	}
 	host := strings.TrimSpace(values["host"])
-	url := strings.TrimSpace(values["url"])
-	spec := DaemonDeploySpec{
-		Action:    "install",
-		HostName:  host,
-		SSHTarget: strings.TrimSpace(values["ssh"]),
-		Roots:     splitDaemonDeployRoots(values["roots"]),
-		Addr:      strings.TrimSpace(values["addr"]),
-		LocalBin:  strings.TrimSpace(values["local_bin"]),
-		RemoteBin: strings.TrimSpace(values["remote_bin"]),
-		URL:       url,
-		TokenEnv:  strings.TrimSpace(values["token_env"]),
-		NoProxy:   noProxy,
-		Verify:    verify,
-		Execute:   true,
+	sshTarget := strings.TrimSpace(values["ssh"])
+	port := setupDaemonPort(values)
+	daemonURL := strings.TrimSpace(values["url"])
+	if daemonURL == "" {
+		daemonURL = setupDaemonURL(sshTarget, host, port)
 	}
-	return spec, HostConfigSpec{Name: host, URL: url, TokenEnv: spec.TokenEnv, NoProxy: noProxy}, nil
+	addr := strings.TrimSpace(values["addr"])
+	if addr == "" {
+		addr = "0.0.0.0:" + port
+	}
+	tokenEnv := strings.TrimSpace(values["token_env"])
+	tokenFile := strings.TrimSpace(values["token_file"])
+	if tokenFile == "" && tokenEnv != "" && insecureNoTokenNonLoopbackAddr(addr, false) {
+		tokenFile = ".remork/remork.token"
+	}
+	allowUnauthenticated := false
+	if raw := strings.TrimSpace(values["allow_unauthenticated_network_bind"]); raw != "" {
+		allowUnauthenticated, err = parseDaemonDeployBool(raw, "allow unauthenticated network bind")
+		if err != nil {
+			return DaemonDeploySpec{}, HostConfigSpec{}, err
+		}
+	}
+	spec := DaemonDeploySpec{
+		Action:                          "install",
+		HostName:                        host,
+		SSHTarget:                       sshTarget,
+		Roots:                           splitDaemonDeployRoots(values["roots"]),
+		Addr:                            addr,
+		LocalBin:                        strings.TrimSpace(values["local_bin"]),
+		RemoteBin:                       strings.TrimSpace(values["remote_bin"]),
+		TokenFile:                       tokenFile,
+		URL:                             daemonURL,
+		TokenEnv:                        tokenEnv,
+		NoProxy:                         noProxy,
+		Verify:                          verify,
+		Execute:                         true,
+		AllowUnauthenticatedNetworkBind: allowUnauthenticated,
+	}
+	return spec, HostConfigSpec{Name: host, URL: daemonURL, TokenEnv: spec.TokenEnv, NoProxy: noProxy}, nil
 }
 
 func setupPrepareServerFields(initial map[string]string) []tui.Field {
@@ -119,16 +147,60 @@ func setupPrepareServerFields(initial map[string]string) []tui.Field {
 		initial = map[string]string{}
 	}
 	return []tui.Field{
-		{Key: "host", Label: "Host", Placeholder: "my-lab", Initial: initial["host"]},
-		{Key: "ssh", Label: "SSH target", Placeholder: "user@server", Initial: initial["ssh"]},
-		{Key: "roots", Label: "Allowed roots", Placeholder: "/absolute/allowed/root", Initial: initial["roots"]},
-		{Key: "url", Label: "Daemon URL", Placeholder: "http://server:17731", Initial: initial["url"]},
-		{Key: "addr", Label: "Listen addr", Placeholder: "0.0.0.0:17731", Initial: firstNonEmpty(initial["addr"], "0.0.0.0:17731")},
-		{Key: "local_bin", Label: "Local binary", Placeholder: "auto", Initial: initial["local_bin"]},
-		{Key: "remote_bin", Label: "Remote binary", Placeholder: ".local/bin/remorkd", Initial: firstNonEmpty(initial["remote_bin"], ".local/bin/remorkd")},
-		{Key: "token_env", Label: "Token env", Placeholder: "REMORK_TOKEN", Initial: initial["token_env"]},
-		{Key: "no_proxy", Label: "Bypass proxy y/N", Placeholder: "no", Initial: firstNonEmpty(initial["no_proxy"], "no")},
-		{Key: "verify", Label: "Verify y/N", Placeholder: "yes", Initial: firstNonEmpty(initial["verify"], "yes")},
+		{Section: "Server", Key: "host", Label: "Host", Placeholder: "my-lab", Initial: initial["host"], Help: "Saved Remork host name. Setup reuses the current workspace host when available."},
+		{Section: "Server", Key: "ssh", Label: "SSH target", Placeholder: "user@server", Initial: initial["ssh"], Help: "How this Mac reaches the server over SSH for install or upgrade."},
+		{Section: "Server", Key: "roots", Label: "Allowed roots", Placeholder: "/absolute/allowed/root", Initial: initial["roots"], Help: "Remote base directories remorkd is allowed to serve."},
+		{Section: "Network", Key: "port", Label: "Port", Placeholder: "17731", Initial: firstNonEmpty(initial["port"], "17731"), Help: "Remork derives the daemon URL and listen address from this port."},
+		{Section: "Auth", Key: "token_env", Label: "Token env", Placeholder: "REMORK_TOKEN", Initial: initial["token_env"], Help: "Local environment variable used by the client. If set, setup uses the default remote token file."},
+		{Section: "Options", Key: "no_proxy", Label: "Bypass proxy y/N", Placeholder: "no", Initial: firstNonEmpty(initial["no_proxy"], "no"), Help: "Use yes for VPN or private IPs that should bypass local proxy variables."},
+		{Section: "Options", Key: "verify", Label: "Verify y/N", Placeholder: "yes", Initial: firstNonEmpty(initial["verify"], "yes"), Help: "Run daemon status after setup to confirm the server is reachable."},
+	}
+}
+
+func setupDaemonPort(values map[string]string) string {
+	if port := strings.TrimSpace(values["port"]); port != "" {
+		return strings.TrimPrefix(port, ":")
+	}
+	if port := portFromAddr(values["addr"]); port != "" {
+		return port
+	}
+	if port := portFromURL(values["url"]); port != "" {
+		return port
+	}
+	return "17731"
+}
+
+func setupDaemonURL(sshTarget, host, port string) string {
+	target := firstNonEmpty(sshTarget, host, "localhost")
+	if strings.Contains(target, "@") {
+		target = target[strings.LastIndex(target, "@")+1:]
+	}
+	return "http://" + target + ":" + port
+}
+
+func portFromAddr(addr string) string {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return ""
+	}
+	return port
+}
+
+func portFromURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch u.Scheme {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	default:
+		return ""
 	}
 }
 
@@ -166,6 +238,72 @@ func setupUpdateServerSpec(values map[string]string) (DaemonDeploySpec, error) {
 	return spec, nil
 }
 
+func setupCurrentServerInitialValues(opts Options) map[string]string {
+	initial := map[string]string{"verify": "yes"}
+	binding, _, err := workspace.ResolveFrom(opts.WorkingDir)
+	if err != nil {
+		return initial
+	}
+	store, err := configStore(opts)
+	if err != nil {
+		return initial
+	}
+	cfg, err := store.LoadOrDefault()
+	if err != nil {
+		return initial
+	}
+	host, ok := cfg.Hosts[binding.Host]
+	if !ok {
+		initial["host"] = binding.Host
+		initial["roots"] = binding.RemoteRoot
+		return initial
+	}
+	initial["host"] = host.Name
+	initial["ssh"] = setupSSHTargetFromHostConfig(host, cfg.Hosts)
+	initial["roots"] = binding.RemoteRoot
+	initial["url"] = host.URL
+	initial["port"] = firstNonEmpty(portFromURL(host.URL), "17731")
+	initial["token_env"] = host.TokenEnv
+	initial["no_proxy"] = yesNo(host.NoProxy)
+	if opts.DaemonProbe != nil {
+		if status, err := opts.DaemonProbe.Status(context.Background(), host, cfg.ClientID); err == nil && len(status.Roots) > 0 {
+			initial["roots"] = strings.Join(status.Roots, ", ")
+		}
+	}
+	return initial
+}
+
+func setupSSHTargetFromHost(host config.Host) string {
+	parsed, err := url.Parse(host.URL)
+	if err != nil {
+		return host.Name
+	}
+	hostname := parsed.Hostname()
+	if hostname == "" {
+		return host.Name
+	}
+	if net.ParseIP(hostname) != nil && host.Name != "" {
+		return host.Name
+	}
+	return hostname
+}
+
+func setupSSHTargetFromHostConfig(host config.Host, hosts map[string]config.Host) string {
+	best := ""
+	for name, candidate := range hosts {
+		if name == host.Name || candidate.URL != host.URL {
+			continue
+		}
+		if best == "" || len(name) < len(best) {
+			best = name
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return setupSSHTargetFromHost(host)
+}
+
 func renderSetupPlan(w interface{ Write([]byte) (int, error) }, color output.ColorMode, plan OperationPlan) {
 	r := output.NewPlainRenderer(w, output.PlainOptions{Color: color})
 	r.ProductTitle(plan.Title, "Review what Remork will do before it changes anything.")
@@ -194,6 +332,7 @@ func executeSetupPrepareServerPlan(w interface{ Write([]byte) (int, error) }, co
 		return err
 	}
 	spec.Confirmed = true
+	spec.Execute = false
 	plan, err := BuildDaemonDeployPlan(spec)
 	if err != nil {
 		return err
@@ -203,16 +342,32 @@ func executeSetupPrepareServerPlan(w interface{ Write([]byte) (int, error) }, co
 }
 
 func runSetupPrepareServer(cmd *cobra.Command, opts Options) error {
-	values, err := runTUIForm(cmd, "Prepare server", setupPrepareServerFields(nil))
-	if err != nil {
-		return err
+	initial := map[string]string{}
+	for {
+		values, err := runTUIForm(cmd, "Prepare server", setupPrepareServerFields(initial))
+		if err != nil {
+			return err
+		}
+		err = runSetupDaemonPlanAndExecute(cmd, opts, values, "install")
+		if err == nil {
+			return nil
+		}
+		plainErrRenderer(cmd, false).Error(err.Error(), setupErrorFix(err))
+		plainErrRenderer(cmd, false).Step("update the form values and submit again")
+		initial = values
 	}
+}
+
+func runSetupDaemonPlanAndExecute(cmd *cobra.Command, opts Options, values map[string]string, action string) error {
 	spec, _, err := setupPrepareServerSpecs(values)
 	if err != nil {
 		return err
 	}
+	spec.Action = action
 	spec.Confirmed = false
-	plan, err := BuildDaemonDeployPlan(spec)
+	planSpec := spec
+	planSpec.Execute = false
+	plan, err := BuildDaemonDeployPlan(planSpec)
 	if err != nil {
 		return err
 	}
@@ -221,34 +376,29 @@ func runSetupPrepareServer(cmd *cobra.Command, opts Options) error {
 	if err != nil || !ok {
 		return err
 	}
-	store, err := configStore(opts)
-	if err != nil {
-		return err
+	deploy := daemonDeployOptions{
+		action:    spec.Action,
+		hostName:  spec.HostName,
+		sshTarget: spec.SSHTarget,
+		roots:     spec.Roots,
+		addr:      spec.Addr,
+		localBin:  spec.LocalBin,
+		remoteBin: spec.RemoteBin,
+		tokenFile: spec.TokenFile,
+		url:       spec.URL,
+		tokenEnv:  spec.TokenEnv,
+		noProxy:   spec.NoProxy,
+		verify:    spec.Verify,
+		execute:   true,
+		yes:       true,
+		probe:     opts.DaemonProbe,
+		version:   opts.Version,
+		ctx:       cmd.Context(),
+		color:     commandColorMode(cmd),
+		canPrompt: true,
+		runner:    opts.CommandRunner,
 	}
-	return runDaemonDeploy(cmd.OutOrStdout(), daemonDeployOptions{
-		action:     spec.Action,
-		hostName:   spec.HostName,
-		sshTarget:  spec.SSHTarget,
-		roots:      spec.Roots,
-		addr:       spec.Addr,
-		localBin:   spec.LocalBin,
-		remoteBin:  spec.RemoteBin,
-		tokenFile:  spec.TokenFile,
-		url:        spec.URL,
-		tokenEnv:   spec.TokenEnv,
-		noProxy:    spec.NoProxy,
-		verify:     spec.Verify,
-		execute:    true,
-		yes:        true,
-		probe:      opts.DaemonProbe,
-		version:    opts.Version,
-		ctx:        cmd.Context(),
-		color:      commandColorMode(cmd),
-		canPrompt:  true,
-		runner:     opts.CommandRunner,
-		store:      store,
-		storeReady: true,
-	})
+	return prepareAndRunDaemonDeploy(cmd, opts, deploy, false)
 }
 
 func runSetupConnectProject(cmd *cobra.Command, opts Options) error {
@@ -257,9 +407,9 @@ func runSetupConnectProject(cmd *cobra.Command, opts Options) error {
 		return err
 	}
 	values, err := runTUIForm(cmd, "Connect this project", []tui.Field{
-		{Key: "host", Label: "Host", Placeholder: "my-lab"},
-		{Key: "remote_root", Label: "Remote workspace root", Placeholder: "/absolute/remote/workspace"},
-		{Key: "first_sync", Label: "Run first sync y/N", Placeholder: "yes", Initial: "yes"},
+		{Section: "Workspace", Key: "host", Label: "Host", Placeholder: "my-lab", Help: "Saved Remork host profile for the daemon serving this workspace."},
+		{Section: "Workspace", Key: "remote_root", Label: "Remote workspace root", Placeholder: "/absolute/remote/workspace", Help: "Remote project directory to bind to this local folder."},
+		{Section: "First run", Key: "first_sync", Label: "Run first sync y/N", Placeholder: "yes", Initial: "yes", Help: "Download current remote files after binding."},
 	})
 	if err != nil {
 		return err
@@ -280,22 +430,20 @@ func runSetupConnectProject(cmd *cobra.Command, opts Options) error {
 }
 
 func runSetupUpdateServer(cmd *cobra.Command, opts Options) error {
-	_ = opts
-	values, err := runTUIForm(cmd, "Update server", setupPrepareServerFields(nil))
-	if err != nil {
-		return err
+	initial := setupCurrentServerInitialValues(opts)
+	for {
+		values, err := runTUIForm(cmd, "Update server", setupPrepareServerFields(initial))
+		if err != nil {
+			return err
+		}
+		err = runSetupDaemonPlanAndExecute(cmd, opts, values, "upgrade")
+		if err == nil {
+			return nil
+		}
+		plainErrRenderer(cmd, false).Error(err.Error(), setupErrorFix(err))
+		plainErrRenderer(cmd, false).Step("update the form values and submit again")
+		initial = values
 	}
-	spec, err := setupUpdateServerSpec(values)
-	if err != nil {
-		return err
-	}
-	spec.Confirmed = false
-	plan, err := BuildDaemonDeployPlan(spec)
-	if err != nil {
-		return err
-	}
-	renderSetupPlan(cmd.OutOrStdout(), commandColorMode(cmd), plan)
-	return nil
 }
 
 func runSetupRepair(cmd *cobra.Command, opts Options) error {
@@ -303,4 +451,14 @@ func runSetupRepair(cmd *cobra.Command, opts Options) error {
 	plainRenderer(cmd, false).ProductTitle("Repair setup", "Run remork doctor to inspect host, daemon, auth, roots, and workspace binding.")
 	plainRenderer(cmd, false).Next([]string{"remork doctor"})
 	return nil
+}
+
+func setupErrorFix(err error) string {
+	if strings.Contains(err.Error(), "without authentication") {
+		return "fill Token env with REMORK_TOKEN so setup uses the default remote token file, or press esc and use the advanced daemon command for unauthenticated private-network bind"
+	}
+	if fix := commandErrorFix(err); fix != "" {
+		return fix
+	}
+	return "edit the highlighted setup fields, or press esc and use remork daemon --help for advanced options"
 }

@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"remork/internal/config"
 	"remork/internal/output"
+	"remork/internal/workspace"
 )
 
 func TestSetupScopeDoesNotAssumeCurrentProject(t *testing.T) {
@@ -63,13 +66,107 @@ func TestSetupPrepareServerFieldsAreMinimal(t *testing.T) {
 		keys = append(keys, field.Key)
 	}
 	got := strings.Join(keys, ",")
-	for _, want := range []string{"host", "ssh", "roots", "url", "addr", "token_env", "verify"} {
+	for _, want := range []string{"host", "ssh", "roots", "port", "token_env", "verify"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("fields missing %q: %s", want, got)
 		}
 	}
-	if strings.Contains(got, "allow_unauthenticated_network_bind") || strings.Contains(got, "dry_run") || strings.Contains(got, "yes") {
+	if strings.Contains(got, "local_bin") || strings.Contains(got, "remote_bin") || strings.Contains(got, "url") || strings.Contains(got, "addr") || strings.Contains(got, "allow_unauthenticated_network_bind") || strings.Contains(got, "dry_run") || strings.Contains(got, "yes") {
 		t.Fatalf("default prepare fields should not expose advanced flags: %s", got)
+	}
+}
+
+func TestSetupPrepareServerSpecDerivesURLAddrAndTokenFile(t *testing.T) {
+	values := map[string]string{
+		"host":      "lab",
+		"ssh":       "lab.example",
+		"roots":     "/data",
+		"port":      "17731",
+		"token_env": "REMORK_TOKEN",
+		"verify":    "yes",
+	}
+	spec, _, err := setupPrepareServerSpecs(values)
+	if err != nil {
+		t.Fatalf("setupPrepareServerSpecs: %v", err)
+	}
+	if spec.URL != "http://lab.example:17731" || spec.Addr != "0.0.0.0:17731" {
+		t.Fatalf("derived network values url=%q addr=%q", spec.URL, spec.Addr)
+	}
+	if spec.TokenFile != ".remork/remork.token" {
+		t.Fatalf("token file = %q, want default", spec.TokenFile)
+	}
+	if spec.LocalBin != "" || spec.RemoteBin != "" {
+		t.Fatalf("binary paths should be hidden defaults, got local=%q remote=%q", spec.LocalBin, spec.RemoteBin)
+	}
+}
+
+func TestSetupCurrentServerInitialValuesFromBoundWorkspace(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	store := config.NewStore(filepath.Join(home, ".remork"))
+	if err := store.Save(config.Config{Hosts: map[string]config.Host{
+		"lab": {Name: "lab", URL: "http://lab.example:17731", TokenEnv: "REMORK_TOKEN", NoProxy: true},
+	}}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := workspace.WriteBinding(local, workspace.Binding{
+		Version:     1,
+		Host:        "lab",
+		RemoteRoot:  "/data/project",
+		WorkspaceID: "ws-setup",
+		StateDir:    filepath.Join(home, ".remork", "state", "ws-setup"),
+	}); err != nil {
+		t.Fatalf("write binding: %v", err)
+	}
+
+	values := setupCurrentServerInitialValues(Options{
+		HomeDir:     home,
+		WorkingDir:  local,
+		DaemonProbe: fakeDaemonProbe{Roots: []string{"/data"}},
+	})
+
+	for key, want := range map[string]string{
+		"host":      "lab",
+		"ssh":       "lab.example",
+		"roots":     "/data",
+		"port":      "17731",
+		"token_env": "REMORK_TOKEN",
+		"no_proxy":  "yes",
+		"verify":    "yes",
+	} {
+		if got := values[key]; got != want {
+			t.Fatalf("initial[%s] = %q, want %q; all=%#v", key, got, want, values)
+		}
+	}
+}
+
+func TestSetupCurrentServerInitialValuesPreferSharedURLSSHHost(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	store := config.NewStore(filepath.Join(home, ".remork"))
+	if err := store.Save(config.Config{Hosts: map[string]config.Host{
+		"z00879328_docker":     {Name: "z00879328_docker", URL: "http://175.100.2.7:17731", NoProxy: true},
+		"z00879328_docker_2.7": {Name: "z00879328_docker_2.7", URL: "http://175.100.2.7:17731", NoProxy: true},
+	}}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := workspace.WriteBinding(local, workspace.Binding{
+		Version:     1,
+		Host:        "z00879328_docker_2.7",
+		RemoteRoot:  "/home/z00879328/project",
+		WorkspaceID: "ws-setup",
+		StateDir:    filepath.Join(home, ".remork", "state", "ws-setup"),
+	}); err != nil {
+		t.Fatalf("write binding: %v", err)
+	}
+
+	values := setupCurrentServerInitialValues(Options{HomeDir: home, WorkingDir: local})
+
+	if values["host"] != "z00879328_docker_2.7" {
+		t.Fatalf("host = %q", values["host"])
+	}
+	if values["ssh"] != "z00879328_docker" {
+		t.Fatalf("ssh = %q, want shared URL alias z00879328_docker; all=%#v", values["ssh"], values)
 	}
 }
 

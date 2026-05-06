@@ -46,6 +46,35 @@ func TestFormModelUsesInitialValues(t *testing.T) {
 	}
 }
 
+func TestFormModelMovesBackwardWithArrowKeys(t *testing.T) {
+	model := NewFormModel("Setup", []Field{
+		{Key: "host", Label: "Host"},
+		{Key: "root", Label: "Root"},
+	})
+
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	model, _ = model.Update(FieldValueMsg{Key: "host", Value: "lab"})
+
+	if got := model.Values()["host"]; got != "lab" {
+		t.Fatalf("up key should return focus to first field, host = %q", got)
+	}
+}
+
+func TestFormModelViewShowsSectionsAndHelp(t *testing.T) {
+	model := NewFormModel("Update server", []Field{
+		{Section: "Connection", Key: "host", Label: "Host", Help: "Saved Remork host profile."},
+		{Section: "Daemon", Key: "port", Label: "Port", Help: "Port remorkd listens on."},
+	})
+
+	view := model.View()
+	for _, want := range []string{"Connection", "Saved Remork host profile.", "Daemon", "Port remorkd listens on."} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view should contain %q, got:\n%s", want, view)
+		}
+	}
+}
+
 func TestFormModelCancel(t *testing.T) {
 	model := NewFormModel("Install daemon", []Field{{Key: "host", Label: "Host"}})
 	model, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
