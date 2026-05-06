@@ -122,6 +122,8 @@ func setupPrepareServerSpecs(values map[string]string) (DaemonDeploySpec, HostCo
 		if err != nil {
 			return DaemonDeploySpec{}, HostConfigSpec{}, err
 		}
+	} else if tokenFile == "" && tokenEnv == "" && insecureNoTokenNonLoopbackAddr(addr, false) {
+		allowUnauthenticated = true
 	}
 	spec := DaemonDeploySpec{
 		Action:                          "install",

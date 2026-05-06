@@ -366,6 +366,102 @@ func TestRunDaemonDeployValidatesLocalBinBeforeRemoteMutation(t *testing.T) {
 	}
 }
 
+func TestRunDaemonDeployAllowsReadableLocalBinWithoutExecBit(t *testing.T) {
+	var out bytes.Buffer
+	fake := &fakeCommandRunner{}
+	localBin := filepath.Join(t.TempDir(), "remorkd-linux-arm64")
+	if err := os.WriteFile(localBin, []byte("daemon"), 0o644); err != nil {
+		t.Fatalf("write local bin: %v", err)
+	}
+
+	err := runDaemonDeploy(&out, daemonDeployOptions{
+		action:    "install",
+		hostName:  "lab",
+		sshTarget: "lab.example",
+		root:      "/data/project",
+		addr:      "127.0.0.1:17731",
+		remoteBin: ".local/bin/remorkd",
+		localBin:  localBin,
+		execute:   true,
+		yes:       true,
+		runner:    fake,
+	})
+	if err != nil {
+		t.Fatalf("runDaemonDeploy should not require local executable bit: %v", err)
+	}
+	if len(fake.commands) == 0 {
+		t.Fatalf("deploy should run remote commands")
+	}
+}
+
+func TestRunDaemonDeploySkipsCopyWhenRemoteVersionMatches(t *testing.T) {
+	var out bytes.Buffer
+	fake := &fakeCommandRunner{outputs: [][]byte{[]byte("installed\tremorkd v1.2.3\n")}}
+
+	err := runDaemonDeploy(&out, daemonDeployOptions{
+		action:            "upgrade",
+		hostName:          "lab",
+		sshTarget:         "lab.example",
+		root:              "/data/project",
+		addr:              "127.0.0.1:17731",
+		remoteBin:         ".local/bin/remorkd",
+		execute:           true,
+		yes:               true,
+		version:           "v1.2.3",
+		skipBinaryInstall: true,
+		runner:            fake,
+	})
+	if err != nil {
+		t.Fatalf("runDaemonDeploy returned error: %v", err)
+	}
+	for _, cmd := range fake.commands {
+		if cmd.name == "scp" {
+			t.Fatalf("compatible remote remorkd should skip scp, commands=%#v", fake.commands)
+		}
+		if cmd.name == "ssh" && len(cmd.args) > 1 && strings.Contains(cmd.args[1], "chmod 0755") {
+			t.Fatalf("compatible remote remorkd should skip chmod for copied binary, commands=%#v", fake.commands)
+		}
+	}
+	if !strings.Contains(out.String(), "using existing compatible remorkd") {
+		t.Fatalf("output should explain skipped binary install, got:\n%s", out.String())
+	}
+}
+
+func TestRunDaemonDeploySkipsCopyWhenRemoteDevVersionMatches(t *testing.T) {
+	var out bytes.Buffer
+	fake := &fakeCommandRunner{outputs: [][]byte{[]byte("installed\tremorkd dev\n")}}
+
+	err := runDaemonDeploy(&out, daemonDeployOptions{
+		action:            "upgrade",
+		hostName:          "lab",
+		sshTarget:         "lab.example",
+		root:              "/data/project",
+		addr:              "127.0.0.1:17731",
+		remoteBin:         ".local/bin/remorkd",
+		execute:           true,
+		yes:               true,
+		version:           "dev",
+		skipBinaryInstall: true,
+		runner:            fake,
+	})
+	if err != nil {
+		t.Fatalf("runDaemonDeploy returned error: %v", err)
+	}
+	for _, cmd := range fake.commands {
+		if cmd.name == "scp" {
+			t.Fatalf("matching dev remote remorkd should skip scp, commands=%#v", fake.commands)
+		}
+	}
+}
+
+func TestRemoteBinaryAlreadyCompatibleTreatsDevAsComparable(t *testing.T) {
+	fake := &fakeCommandRunner{outputs: [][]byte{[]byte("installed\tremorkd dev\n")}}
+	ok := remoteBinaryAlreadyCompatible(fake, "lab.example", daemonDeployOptions{remoteBin: ".local/bin/remorkd"}, "dev")
+	if !ok {
+		t.Fatal("remote dev remorkd should be compatible with local dev client")
+	}
+}
+
 func TestDaemonInstallRejectsRelativeAllowedRoot(t *testing.T) {
 	out, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: t.TempDir()}), "daemon", "install", "lab", "--root", "relative/path", "--local-bin", "dist/remorkd-linux-arm64")
 	if err == nil {
@@ -459,6 +555,35 @@ func TestDaemonInstallAutoDetectsRemotePlatformForReleaseBinary(t *testing.T) {
 	}
 	if len(fake.outputCommands) != 1 || fake.outputCommands[0].name != "ssh" || fake.outputCommands[0].args[0] != "lab" {
 		t.Fatalf("platform detection should probe host with ssh, got %#v", fake.outputCommands)
+	}
+}
+
+func TestDaemonInstallSkipsReleaseResolveWhenRemoteVersionMatches(t *testing.T) {
+	fake := &fakeCommandRunner{outputs: [][]byte{
+		[]byte("installed\tremorkd v1.2.3\n"),
+		[]byte("installed\tremorkd v1.2.3\n"),
+	}}
+
+	stdout, stderr, err := executeCommandSplit(NewRootCommand(Options{
+		Version:       "v1.2.3",
+		HomeDir:       t.TempDir(),
+		CommandRunner: fake,
+	}), "daemon", "install", "lab", "--root", "/data", "--addr", "127.0.0.1:17731", "-y", "--non-interactive")
+	if err != nil {
+		t.Fatalf("daemon install should reuse compatible remote remorkd: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	for _, cmd := range fake.outputCommands {
+		if cmd.name == "ssh" && len(cmd.args) > 1 && strings.Contains(cmd.args[1], "uname") {
+			t.Fatalf("compatible remote remorkd should skip platform detection and release resolve, output commands=%#v", fake.outputCommands)
+		}
+	}
+	for _, cmd := range fake.commands {
+		if cmd.name == "scp" {
+			t.Fatalf("compatible remote remorkd should skip copying release binary, commands=%#v", fake.commands)
+		}
+	}
+	if !strings.Contains(stdout.String(), "using existing compatible remorkd") {
+		t.Fatalf("stdout should explain reused binary, got:\n%s", stdout.String())
 	}
 }
 

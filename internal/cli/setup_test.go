@@ -107,6 +107,50 @@ func TestSetupPrepareServerSpecDerivesURLAddrAndTokenFile(t *testing.T) {
 	}
 }
 
+func TestSetupPrepareServerAllowsTrustedPrivateNetworkWhenTokenEnvEmpty(t *testing.T) {
+	advancedAuthRefusal := "refusing to execute remorkd on 0.0.0.0:17732 without authentication"
+	values := map[string]string{
+		"host":      "lab",
+		"ssh":       "lab.example",
+		"roots":     "/data",
+		"port":      "17732",
+		"token_env": "",
+		"verify":    "yes",
+	}
+
+	spec, _, err := setupPrepareServerSpecs(values)
+	if err != nil {
+		t.Fatalf("setupPrepareServerSpecs: %v", err)
+	}
+	if spec.TokenFile != "" || spec.TokenEnv != "" {
+		t.Fatalf("empty token env should keep setup unauthenticated, got token_file=%q token_env=%q", spec.TokenFile, spec.TokenEnv)
+	}
+	if !spec.AllowUnauthenticatedNetworkBind {
+		t.Fatalf("empty token env should approve trusted private-network bind in setup: %#v", spec)
+	}
+	if _, err := BuildDaemonDeployPlan(DaemonDeploySpec{
+		Action:                          spec.Action,
+		HostName:                        spec.HostName,
+		SSHTarget:                       spec.SSHTarget,
+		Roots:                           spec.Roots,
+		Addr:                            spec.Addr,
+		URL:                             spec.URL,
+		LocalBin:                        fakeDaemonBinary(t),
+		TokenFile:                       spec.TokenFile,
+		TokenEnv:                        spec.TokenEnv,
+		NoProxy:                         spec.NoProxy,
+		Verify:                          spec.Verify,
+		Execute:                         true,
+		Confirmed:                       true,
+		AllowUnauthenticatedNetworkBind: spec.AllowUnauthenticatedNetworkBind,
+	}); err != nil {
+		if strings.Contains(err.Error(), advancedAuthRefusal) {
+			t.Fatalf("setup should not surface advanced daemon auth refusal for trusted private-network flow: %v", err)
+		}
+		t.Fatalf("setup execution plan should allow trusted private-network bind: %v", err)
+	}
+}
+
 func TestSetupCurrentServerInitialValuesFromBoundWorkspace(t *testing.T) {
 	home := t.TempDir()
 	local := t.TempDir()
