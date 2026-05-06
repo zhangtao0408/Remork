@@ -28,3 +28,9 @@ jobs:
 
       - name: Build release binaries
         run: bash scripts/build-release.sh ci
+
+      - name: Build npm package
+        run: bash scripts/build-npm-package.sh ci
+
+      - name: Smoke npm package
+        run: bash scripts/smoke-npm-package.sh

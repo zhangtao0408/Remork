@@ -18,6 +18,7 @@ import (
 	"remork/internal/client"
 	"remork/internal/config"
 	"remork/internal/ops"
+	"remork/internal/output"
 	"remork/internal/tui"
 )
 
@@ -175,6 +176,74 @@ func TestDaemonDeployCommandWithoutDryRunRequiresConfirmationInPlainMode(t *test
 	}
 	if strings.Contains(out.String(), "dry run preview") || strings.Contains(out.String(), "No remote commands were executed") {
 		t.Fatalf("plain command without --dry-run should not render dry-run output, got:\n%s", out.String())
+	}
+}
+
+func TestDaemonDeployCommandWithoutYesDoesNotProbeSSH(t *testing.T) {
+	wd := t.TempDir()
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.MkdirAll("dist", 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join("dist", "remorkd-linux-arm64"), []byte("daemon"), 0o755); err != nil {
+		t.Fatalf("write dist binary: %v", err)
+	}
+	fake := &fakeCommandRunner{outputs: [][]byte{
+		[]byte("missing remorkd\n"),
+		[]byte("Linux\naarch64\n"),
+	}}
+
+	out, err := executeCommand(NewRootCommand(Options{
+		Version:       "v1.2.3",
+		HomeDir:       t.TempDir(),
+		CommandRunner: fake,
+	}), "daemon", "install", "lab", "--root", "/data", "--addr", "127.0.0.1:17731", "--non-interactive")
+	if err == nil || !strings.Contains(err.Error(), "requires confirmation") {
+		t.Fatalf("daemon install without -y error = %v, output=%q; want confirmation requirement", err, out.String())
+	}
+	if len(fake.commands) != 0 || len(fake.outputCommands) != 0 {
+		t.Fatalf("SSH probes ran before confirmation: run=%#v output=%#v", fake.commands, fake.outputCommands)
+	}
+}
+
+func TestDaemonDeployCommandRejectsUnsafeBindBeforeSSHProbe(t *testing.T) {
+	wd := t.TempDir()
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.MkdirAll("dist", 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join("dist", "remorkd-linux-arm64"), []byte("daemon"), 0o755); err != nil {
+		t.Fatalf("write dist binary: %v", err)
+	}
+	fake := &fakeCommandRunner{outputs: [][]byte{
+		[]byte("missing remorkd\n"),
+		[]byte("Linux\naarch64\n"),
+	}}
+
+	out, err := executeCommand(NewRootCommand(Options{
+		Version:       "v1.2.3",
+		HomeDir:       t.TempDir(),
+		CommandRunner: fake,
+	}), "daemon", "install", "lab", "--root", "/data", "--addr", "0.0.0.0:17731", "-y", "--non-interactive")
+	if err == nil || !strings.Contains(err.Error(), "--allow-unauthenticated-network-bind") {
+		t.Fatalf("daemon install unsafe bind error = %v, output=%q; want unsafe bind rejection", err, out.String())
+	}
+	if len(fake.commands) != 0 || len(fake.outputCommands) != 0 {
+		t.Fatalf("SSH probes ran before unsafe bind rejection: run=%#v output=%#v", fake.commands, fake.outputCommands)
 	}
 }
 
@@ -510,6 +579,39 @@ func TestDetectRemoteDaemonPlatformMapsLinuxArchitectures(t *testing.T) {
 				t.Fatalf("platform detection should use ssh target, got %#v", fake.outputCommands)
 			}
 		})
+	}
+}
+
+func TestDaemonVendorPlatformItemsIncludesPackagedBinaries(t *testing.T) {
+	vendorDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(vendorDir, "remorkd-linux-arm64"), []byte("daemon"), 0o755); err != nil {
+		t.Fatalf("write arm vendor binary: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(vendorDir, "remorkd-linux-amd64"), []byte("daemon"), 0o755); err != nil {
+		t.Fatalf("write amd vendor binary: %v", err)
+	}
+
+	items := daemonVendorPlatformItems(vendorDir)
+	if len(items) != 2 {
+		t.Fatalf("items = %#v, want two packaged daemon platforms", items)
+	}
+	if items[0].Name != "linux-arm64" || strings.Join(items[0].Args, " ") != "linux-arm64" {
+		t.Fatalf("first item = %#v, want linux-arm64", items[0])
+	}
+	if items[1].Name != "linux-amd64" || strings.Join(items[1].Args, " ") != "linux-amd64" {
+		t.Fatalf("second item = %#v, want linux-amd64", items[1])
+	}
+}
+
+func TestChooseDaemonVendorPlatformRejectsMissingVendorBinaries(t *testing.T) {
+	var in bytes.Buffer
+	var out bytes.Buffer
+	_, err := chooseDaemonVendorPlatform(&in, &out, output.ColorNever, t.TempDir())
+	if err == nil {
+		t.Fatal("chooseDaemonVendorPlatform returned nil error, want missing vendor binary error")
+	}
+	if !strings.Contains(err.Error(), "vendor remorkd binaries are not available") {
+		t.Fatalf("error = %q, want missing vendor guidance", err.Error())
 	}
 }
 

@@ -14,45 +14,22 @@ Remork 会把远端服务器上的目录同步成一份本地 working copy。你
 
 ## 安装
 
-安装 macOS 客户端：
+使用 npm 安装 Remork client：
 
 ```bash
-VERSION=v0.1.1.beta03
-case "$(uname -m)" in
-  arm64) CLIENT_PLATFORM=darwin-arm64 ;;
-  x86_64) CLIENT_PLATFORM=darwin-amd64 ;;
-  *) echo "unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-
-mkdir -p "$HOME/.local/bin"
-curl -L -o "$HOME/.local/bin/remork" \
-  "https://github.com/zhangtao0408/Remork/releases/download/${VERSION}/remork-${CLIENT_PLATFORM}"
-chmod 0755 "$HOME/.local/bin/remork"
-export PATH="$HOME/.local/bin:$PATH"
-
+npm install -g remork
 remork version
 ```
 
-如果新开的终端找不到 `remork`，把下面这行加入 shell 配置：
+然后进入产品化设置流程：
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
+remork setup
 ```
 
-使用 PowerShell 安装 Windows 客户端：
+npm 包内已经包含 macOS 和 Windows client binary，也包含 setup 安装远端服务时需要的 Linux `remorkd` binary。正常 setup 不需要再二次下载 daemon。
 
-```powershell
-$Version = "v0.1.1.beta03"
-$Arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq "Arm64") { "arm64" } else { "amd64" }
-$InstallDir = Join-Path $HOME ".local\bin"
-New-Item -ItemType Directory -Force $InstallDir | Out-Null
-Invoke-WebRequest -Uri "https://github.com/zhangtao0408/Remork/releases/download/$Version/remork-windows-$Arch.exe" -OutFile (Join-Path $InstallDir "remork.exe")
-$env:Path = "$InstallDir;$env:Path"
-
-remork version
-```
-
-如果新开的 PowerShell 找不到 `remork`，把 `%USERPROFILE%\.local\bin` 加入用户 `Path`。
+如果环境里没有 npm，也可以继续从 GitHub Releases 手动下载 binary。
 
 ## 设置
 
@@ -201,7 +178,7 @@ remork daemon install -h
 ```bash
 go test ./...
 go vet ./...
-scripts/build-release.sh v0.1.1.beta03
+scripts/build-release.sh v0.1.1-beta.4
 ```
 
 ## 更多文档

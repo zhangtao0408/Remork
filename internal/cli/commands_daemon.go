@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"remork/internal/auth"
@@ -337,6 +338,7 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 		runner = osCommandRunner{}
 	}
 	deploy.runner = runner
+	mode := commandInteractionMode(cmd, interactionRequest{})
 	if len(deployAllowedRoots(deploy)) == 0 && (deploy.action == "install" || (deploy.action == "upgrade" && !dryRun)) {
 		if deploy.action == "install" {
 			return fmt.Errorf("--root is required for daemon install")
@@ -355,6 +357,23 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 			fix:  "pass --url URL or run remork host add first",
 		}
 	}
+	deploy.ctx = cmd.Context()
+	deploy.color = commandColorMode(cmd)
+	deploy.canPrompt = mode.RichOutput
+	deploy.confirmIn = cmd.InOrStdin()
+	deploy.confirmOut = cmd.ErrOrStderr()
+	configureDaemonDeployExecution(&deploy, dryRun)
+	if !dryRun {
+		if err := validateDaemonDeployPlan(deploy); err != nil {
+			return err
+		}
+		if err := validateDaemonDeployExecutionSafety(deploy); err != nil {
+			return err
+		}
+		if deploy.execute && !deploy.yes && !deploy.canPrompt {
+			return daemonDeployRequiresConfirmationError(deploy.action)
+		}
+	}
 	if deploy.localBin == "" && !dryRun {
 		deploy.skipBinaryInstall = remoteBinaryAlreadyCompatible(runner, deploySSHTarget(deploy), deploy, opts.Version)
 	}
@@ -365,7 +384,14 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 			platform, err := detectRemoteDaemonPlatform(cmd.Context(), runner, deploySSHTarget(deploy))
 			if err != nil {
 				reporter.FailMessage("remote platform detection failed")
-				return err
+				if !mode.RichOutput {
+					return err
+				}
+				chosen, chooseErr := chooseDaemonVendorPlatform(cmd.InOrStdin(), cmd.ErrOrStderr(), commandColorMode(cmd), os.Getenv(daemonVendorDirEnv))
+				if chooseErr != nil {
+					return fmt.Errorf("%w; %v", err, chooseErr)
+				}
+				platform = chosen
 			}
 			deploy.platform = platform
 			reporter.DoneMessage("detected remote platform: " + deploy.platform)
@@ -388,14 +414,7 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 	if err != nil {
 		return err
 	}
-	mode := commandInteractionMode(cmd, interactionRequest{})
 	deploy.storeReady = true
-	deploy.ctx = cmd.Context()
-	deploy.color = commandColorMode(cmd)
-	deploy.canPrompt = mode.RichOutput
-	deploy.confirmIn = cmd.InOrStdin()
-	deploy.confirmOut = cmd.ErrOrStderr()
-	configureDaemonDeployExecution(&deploy, dryRun)
 	return runDaemonDeploy(cmd.OutOrStdout(), deploy)
 }
 
@@ -407,6 +426,38 @@ func remoteBinaryAlreadyCompatible(runner commandRunner, remote string, deploy d
 	deploy.version = version
 	state, err := remoteBinaryState(runner, remote, deploy)
 	return err == nil && state.Installed && state.Version == want
+}
+
+func chooseDaemonVendorPlatform(in io.Reader, out io.Writer, color output.ColorMode, vendorDir string) (string, error) {
+	items := daemonVendorPlatformItems(vendorDir)
+	if len(items) == 0 {
+		return "", fmt.Errorf("vendor remorkd binaries are not available; pass --platform linux-arm64 or linux-amd64")
+	}
+	model := tui.NewCommandMenu("Select server daemon platform", items)
+	model.Color = color
+	menu, err := tui.RunCommandMenu(model, tea.WithInput(in), tea.WithOutput(out))
+	if err != nil {
+		return "", err
+	}
+	if menu.Canceled() || !menu.Submitted() || len(menu.SelectedArgs()) == 0 {
+		return "", fmt.Errorf("daemon platform selection cancelled")
+	}
+	return menu.SelectedArgs()[0], nil
+}
+
+func daemonVendorPlatformItems(vendorDir string) []tui.CommandItem {
+	items := []tui.CommandItem{}
+	for _, platform := range []string{"linux-arm64", "linux-amd64"} {
+		name := "remorkd-" + platform
+		if vendorDaemonBinaryPath(vendorDir, name) != "" {
+			items = append(items, tui.CommandItem{
+				Name:        platform,
+				Description: "Use " + name + " from the packaged npm vendor directory",
+				Args:        []string{platform},
+			})
+		}
+	}
+	return items
 }
 
 func configureDaemonDeployExecution(deploy *daemonDeployOptions, dryRun bool) {
@@ -699,16 +750,23 @@ func validateDaemonDeployPlan(deploy daemonDeployOptions) error {
 }
 
 func validateDaemonDeployExecution(deploy daemonDeployOptions) error {
+	if err := validateDaemonDeployExecutionSafety(deploy); err != nil {
+		return err
+	}
+	if !deploy.skipBinaryInstall {
+		if err := validateLocalDaemonBinary(deploy.localBin); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateDaemonDeployExecutionSafety(deploy daemonDeployOptions) error {
 	if insecureNoTokenNonLoopbackAddr(deploy.addr, deploy.tokenFile != "") && !deploy.allowUnauthenticatedNetworkBind {
 		return codedCommandError{
 			code: exitcode.InvalidUsageOrConfig,
 			err:  fmt.Errorf("refusing to execute remorkd on %s without authentication; pass --token-file, bind to 127.0.0.1, or add --allow-unauthenticated-network-bind for a trusted private network", deploy.addr),
 			fix:  "pass --token-file with --token-env, bind to 127.0.0.1, or explicitly pass --allow-unauthenticated-network-bind",
-		}
-	}
-	if !deploy.skipBinaryInstall {
-		if err := validateLocalDaemonBinary(deploy.localBin); err != nil {
-			return err
 		}
 	}
 	return nil

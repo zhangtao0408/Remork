@@ -1,5 +1,7 @@
 dist/
 /remork
 /remorkd
+npm/remork/vendor/
+npm/remork/*.tgz
 *.remork-tmp
 *.remork-apply

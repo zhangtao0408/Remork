@@ -1087,7 +1087,7 @@ Do not publish automatically during implementation. After the user approves the 
 ```bash
 npm login
 cd npm/remork
-npm publish
+npm publish --tag beta
 ```
 
 Before publishing, run:
@@ -1098,3 +1098,5 @@ npm pack --dry-run
 ```
 
 Expected: `npm whoami` prints the user's npm account, and the dry-run output contains only intended package files.
+
+For prereleases, `scripts/publish-npm.sh npm/remork` applies `--tag beta` by default.

@@ -17,3 +17,17 @@ func TestCommandExitCodeUsesCodedError(t *testing.T) {
 		t.Fatalf("exit code = %d, want 5", got)
 	}
 }
+
+func TestDisplayVersionTrimsLeadingV(t *testing.T) {
+	got := displayVersion("v0.1.1-beta.4")
+	if got != "0.1.1-beta.4" {
+		t.Fatalf("displayVersion = %q, want 0.1.1-beta.4", got)
+	}
+}
+
+func TestDisplayVersionLeavesDevUnchanged(t *testing.T) {
+	got := displayVersion("dev")
+	if got != "dev" {
+		t.Fatalf("displayVersion = %q, want dev", got)
+	}
+}
