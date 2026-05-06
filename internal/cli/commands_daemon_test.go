@@ -18,6 +18,7 @@ import (
 	"remork/internal/client"
 	"remork/internal/config"
 	"remork/internal/ops"
+	"remork/internal/output"
 	"remork/internal/tui"
 )
 
@@ -510,6 +511,39 @@ func TestDetectRemoteDaemonPlatformMapsLinuxArchitectures(t *testing.T) {
 				t.Fatalf("platform detection should use ssh target, got %#v", fake.outputCommands)
 			}
 		})
+	}
+}
+
+func TestDaemonVendorPlatformItemsIncludesPackagedBinaries(t *testing.T) {
+	vendorDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(vendorDir, "remorkd-linux-arm64"), []byte("daemon"), 0o755); err != nil {
+		t.Fatalf("write arm vendor binary: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(vendorDir, "remorkd-linux-amd64"), []byte("daemon"), 0o755); err != nil {
+		t.Fatalf("write amd vendor binary: %v", err)
+	}
+
+	items := daemonVendorPlatformItems(vendorDir)
+	if len(items) != 2 {
+		t.Fatalf("items = %#v, want two packaged daemon platforms", items)
+	}
+	if items[0].Name != "linux-arm64" || strings.Join(items[0].Args, " ") != "linux-arm64" {
+		t.Fatalf("first item = %#v, want linux-arm64", items[0])
+	}
+	if items[1].Name != "linux-amd64" || strings.Join(items[1].Args, " ") != "linux-amd64" {
+		t.Fatalf("second item = %#v, want linux-amd64", items[1])
+	}
+}
+
+func TestChooseDaemonVendorPlatformRejectsMissingVendorBinaries(t *testing.T) {
+	var in bytes.Buffer
+	var out bytes.Buffer
+	_, err := chooseDaemonVendorPlatform(&in, &out, output.ColorNever, t.TempDir())
+	if err == nil {
+		t.Fatal("chooseDaemonVendorPlatform returned nil error, want missing vendor binary error")
+	}
+	if !strings.Contains(err.Error(), "vendor remorkd binaries are not available") {
+		t.Fatalf("error = %q, want missing vendor guidance", err.Error())
 	}
 }
 

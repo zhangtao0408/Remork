@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"remork/internal/auth"
@@ -337,6 +338,7 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 		runner = osCommandRunner{}
 	}
 	deploy.runner = runner
+	mode := commandInteractionMode(cmd, interactionRequest{})
 	if len(deployAllowedRoots(deploy)) == 0 && (deploy.action == "install" || (deploy.action == "upgrade" && !dryRun)) {
 		if deploy.action == "install" {
 			return fmt.Errorf("--root is required for daemon install")
@@ -365,7 +367,14 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 			platform, err := detectRemoteDaemonPlatform(cmd.Context(), runner, deploySSHTarget(deploy))
 			if err != nil {
 				reporter.FailMessage("remote platform detection failed")
-				return err
+				if !mode.RichOutput {
+					return err
+				}
+				chosen, chooseErr := chooseDaemonVendorPlatform(cmd.InOrStdin(), cmd.ErrOrStderr(), commandColorMode(cmd), os.Getenv(daemonVendorDirEnv))
+				if chooseErr != nil {
+					return fmt.Errorf("%w; %v", err, chooseErr)
+				}
+				platform = chosen
 			}
 			deploy.platform = platform
 			reporter.DoneMessage("detected remote platform: " + deploy.platform)
@@ -388,7 +397,6 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 	if err != nil {
 		return err
 	}
-	mode := commandInteractionMode(cmd, interactionRequest{})
 	deploy.storeReady = true
 	deploy.ctx = cmd.Context()
 	deploy.color = commandColorMode(cmd)
@@ -407,6 +415,38 @@ func remoteBinaryAlreadyCompatible(runner commandRunner, remote string, deploy d
 	deploy.version = version
 	state, err := remoteBinaryState(runner, remote, deploy)
 	return err == nil && state.Installed && state.Version == want
+}
+
+func chooseDaemonVendorPlatform(in io.Reader, out io.Writer, color output.ColorMode, vendorDir string) (string, error) {
+	items := daemonVendorPlatformItems(vendorDir)
+	if len(items) == 0 {
+		return "", fmt.Errorf("vendor remorkd binaries are not available; pass --platform linux-arm64 or linux-amd64")
+	}
+	model := tui.NewCommandMenu("Select server daemon platform", items)
+	model.Color = color
+	menu, err := tui.RunCommandMenu(model, tea.WithInput(in), tea.WithOutput(out))
+	if err != nil {
+		return "", err
+	}
+	if menu.Canceled() || !menu.Submitted() || len(menu.SelectedArgs()) == 0 {
+		return "", fmt.Errorf("daemon platform selection cancelled")
+	}
+	return menu.SelectedArgs()[0], nil
+}
+
+func daemonVendorPlatformItems(vendorDir string) []tui.CommandItem {
+	items := []tui.CommandItem{}
+	for _, platform := range []string{"linux-arm64", "linux-amd64"} {
+		name := "remorkd-" + platform
+		if vendorDaemonBinaryPath(vendorDir, name) != "" {
+			items = append(items, tui.CommandItem{
+				Name:        platform,
+				Description: "Use " + name + " from the packaged npm vendor directory",
+				Args:        []string{platform},
+			})
+		}
+	}
+	return items
 }
 
 func configureDaemonDeployExecution(deploy *daemonDeployOptions, dryRun bool) {
