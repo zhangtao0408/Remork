@@ -222,6 +222,28 @@ func TestResolveReleaseDaemonBinaryDownloadsMissingRelease(t *testing.T) {
 	}
 }
 
+func TestResolveReleaseDaemonBinaryDownloadsSemverFromVPrefixedTag(t *testing.T) {
+	home := t.TempDir()
+	downloader := &fakeAssetDownloader{}
+
+	got, err := resolveReleaseDaemonBinary(context.Background(), releaseBinaryOptions{
+		Version:    "0.1.1-beta.4",
+		HomeDir:    home,
+		Platform:   "linux-arm64",
+		Downloader: downloader,
+	})
+	if err != nil {
+		t.Fatalf("resolveReleaseDaemonBinary returned error: %v", err)
+	}
+	wantPath := filepath.Join(home, ".cache", "remork", "releases", "0.1.1-beta.4", "remorkd-linux-arm64")
+	if got != wantPath {
+		t.Fatalf("path = %q, want %q", got, wantPath)
+	}
+	if len(downloader.urls) != 1 || downloader.urls[0] != releaseBaseURL+"/v0.1.1-beta.4/remorkd-linux-arm64" {
+		t.Fatalf("download urls = %v", downloader.urls)
+	}
+}
+
 func TestResolveReleaseDaemonBinaryRejectsDevWithoutLocalBin(t *testing.T) {
 	_, err := resolveReleaseDaemonBinary(context.Background(), releaseBinaryOptions{
 		Version:  "dev",

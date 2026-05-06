@@ -179,6 +179,74 @@ func TestDaemonDeployCommandWithoutDryRunRequiresConfirmationInPlainMode(t *test
 	}
 }
 
+func TestDaemonDeployCommandWithoutYesDoesNotProbeSSH(t *testing.T) {
+	wd := t.TempDir()
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.MkdirAll("dist", 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join("dist", "remorkd-linux-arm64"), []byte("daemon"), 0o755); err != nil {
+		t.Fatalf("write dist binary: %v", err)
+	}
+	fake := &fakeCommandRunner{outputs: [][]byte{
+		[]byte("missing remorkd\n"),
+		[]byte("Linux\naarch64\n"),
+	}}
+
+	out, err := executeCommand(NewRootCommand(Options{
+		Version:       "v1.2.3",
+		HomeDir:       t.TempDir(),
+		CommandRunner: fake,
+	}), "daemon", "install", "lab", "--root", "/data", "--addr", "127.0.0.1:17731", "--non-interactive")
+	if err == nil || !strings.Contains(err.Error(), "requires confirmation") {
+		t.Fatalf("daemon install without -y error = %v, output=%q; want confirmation requirement", err, out.String())
+	}
+	if len(fake.commands) != 0 || len(fake.outputCommands) != 0 {
+		t.Fatalf("SSH probes ran before confirmation: run=%#v output=%#v", fake.commands, fake.outputCommands)
+	}
+}
+
+func TestDaemonDeployCommandRejectsUnsafeBindBeforeSSHProbe(t *testing.T) {
+	wd := t.TempDir()
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.MkdirAll("dist", 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join("dist", "remorkd-linux-arm64"), []byte("daemon"), 0o755); err != nil {
+		t.Fatalf("write dist binary: %v", err)
+	}
+	fake := &fakeCommandRunner{outputs: [][]byte{
+		[]byte("missing remorkd\n"),
+		[]byte("Linux\naarch64\n"),
+	}}
+
+	out, err := executeCommand(NewRootCommand(Options{
+		Version:       "v1.2.3",
+		HomeDir:       t.TempDir(),
+		CommandRunner: fake,
+	}), "daemon", "install", "lab", "--root", "/data", "--addr", "0.0.0.0:17731", "-y", "--non-interactive")
+	if err == nil || !strings.Contains(err.Error(), "--allow-unauthenticated-network-bind") {
+		t.Fatalf("daemon install unsafe bind error = %v, output=%q; want unsafe bind rejection", err, out.String())
+	}
+	if len(fake.commands) != 0 || len(fake.outputCommands) != 0 {
+		t.Fatalf("SSH probes ran before unsafe bind rejection: run=%#v output=%#v", fake.commands, fake.outputCommands)
+	}
+}
+
 func TestDaemonDeployCommandYesAliasExecutes(t *testing.T) {
 	fake := &fakeCommandRunner{}
 	out, err := executeCommand(NewRootCommand(Options{HomeDir: t.TempDir(), CommandRunner: fake}), "daemon", "install", "lab", "--root", "/data", "--addr", "127.0.0.1:17731", "--local-bin", fakeDaemonBinary(t), "-y")

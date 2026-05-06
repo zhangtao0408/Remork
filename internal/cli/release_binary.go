@@ -7,12 +7,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
 
 const releaseBaseURL = "https://github.com/zhangtao0408/Remork/releases/download"
 const daemonVendorDirEnv = "REMORK_DAEMON_VENDOR_DIR"
+
+var semverReleasePattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
 
 type assetDownloader interface {
 	Download(ctx context.Context, url, dst string) error
@@ -77,7 +80,7 @@ func resolveReleaseDaemonBinary(ctx context.Context, opts releaseBinaryOptions) 
 	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
 		return "", err
 	}
-	url := releaseBaseURL + "/" + version + "/" + name
+	url := releaseBaseURL + "/" + githubReleaseTag(version) + "/" + name
 	if err := downloader.Download(ctx, url, cachePath); err != nil {
 		return "", err
 	}
@@ -85,6 +88,16 @@ func resolveReleaseDaemonBinary(ctx context.Context, opts releaseBinaryOptions) 
 		return "", err
 	}
 	return cachePath, nil
+}
+
+func githubReleaseTag(version string) string {
+	if version == "dev" || strings.HasPrefix(version, "v") {
+		return version
+	}
+	if semverReleasePattern.MatchString(version) {
+		return "v" + version
+	}
+	return version
 }
 
 func (d defaultReleaseDownloader) Download(ctx context.Context, url, dst string) error {

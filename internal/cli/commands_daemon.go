@@ -357,6 +357,23 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 			fix:  "pass --url URL or run remork host add first",
 		}
 	}
+	deploy.ctx = cmd.Context()
+	deploy.color = commandColorMode(cmd)
+	deploy.canPrompt = mode.RichOutput
+	deploy.confirmIn = cmd.InOrStdin()
+	deploy.confirmOut = cmd.ErrOrStderr()
+	configureDaemonDeployExecution(&deploy, dryRun)
+	if !dryRun {
+		if err := validateDaemonDeployPlan(deploy); err != nil {
+			return err
+		}
+		if err := validateDaemonDeployExecutionSafety(deploy); err != nil {
+			return err
+		}
+		if deploy.execute && !deploy.yes && !deploy.canPrompt {
+			return daemonDeployRequiresConfirmationError(deploy.action)
+		}
+	}
 	if deploy.localBin == "" && !dryRun {
 		deploy.skipBinaryInstall = remoteBinaryAlreadyCompatible(runner, deploySSHTarget(deploy), deploy, opts.Version)
 	}
@@ -398,12 +415,6 @@ func prepareAndRunDaemonDeploy(cmd *cobra.Command, opts Options, deploy daemonDe
 		return err
 	}
 	deploy.storeReady = true
-	deploy.ctx = cmd.Context()
-	deploy.color = commandColorMode(cmd)
-	deploy.canPrompt = mode.RichOutput
-	deploy.confirmIn = cmd.InOrStdin()
-	deploy.confirmOut = cmd.ErrOrStderr()
-	configureDaemonDeployExecution(&deploy, dryRun)
 	return runDaemonDeploy(cmd.OutOrStdout(), deploy)
 }
 
@@ -739,16 +750,23 @@ func validateDaemonDeployPlan(deploy daemonDeployOptions) error {
 }
 
 func validateDaemonDeployExecution(deploy daemonDeployOptions) error {
+	if err := validateDaemonDeployExecutionSafety(deploy); err != nil {
+		return err
+	}
+	if !deploy.skipBinaryInstall {
+		if err := validateLocalDaemonBinary(deploy.localBin); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateDaemonDeployExecutionSafety(deploy daemonDeployOptions) error {
 	if insecureNoTokenNonLoopbackAddr(deploy.addr, deploy.tokenFile != "") && !deploy.allowUnauthenticatedNetworkBind {
 		return codedCommandError{
 			code: exitcode.InvalidUsageOrConfig,
 			err:  fmt.Errorf("refusing to execute remorkd on %s without authentication; pass --token-file, bind to 127.0.0.1, or add --allow-unauthenticated-network-bind for a trusted private network", deploy.addr),
 			fix:  "pass --token-file with --token-env, bind to 127.0.0.1, or explicitly pass --allow-unauthenticated-network-bind",
-		}
-	}
-	if !deploy.skipBinaryInstall {
-		if err := validateLocalDaemonBinary(deploy.localBin); err != nil {
-			return err
 		}
 	}
 	return nil
