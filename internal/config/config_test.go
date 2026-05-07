@@ -54,6 +54,35 @@ func TestHostConfigStoresTokenReferenceAndNoProxy(t *testing.T) {
 	}
 }
 
+func TestHostConfigStoresTokenFile(t *testing.T) {
+	store := NewStore(t.TempDir())
+	cfg := Config{
+		Hosts: map[string]Host{
+			"lab": {
+				Name:      "lab",
+				URL:       "http://127.0.0.1:17731",
+				TokenFile: "/Users/me/.remork/tokens/lab.token",
+				NoProxy:   true,
+			},
+		},
+		Workspaces: map[string]Workspace{},
+	}
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	host := loaded.Hosts["lab"]
+	if host.TokenFile != "/Users/me/.remork/tokens/lab.token" {
+		t.Fatalf("token_file = %q, want saved path", host.TokenFile)
+	}
+	if !host.NoProxy {
+		t.Fatal("no_proxy should be preserved")
+	}
+}
+
 func TestDefaultConfigWhenMissing(t *testing.T) {
 	got, err := NewStore(t.TempDir()).LoadOrDefault()
 	if err != nil {
