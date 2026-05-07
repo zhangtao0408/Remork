@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"remork/internal/daemon"
@@ -31,6 +33,21 @@ func main() {
 			return
 		case "setup":
 			if err := runSetupCommand(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "start":
+			if err := runStartCommand(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "stop":
+			if err := runStopCommand(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "status":
+			if err := runStatusCommand(os.Args[2:]); err != nil {
 				log.Fatal(err)
 			}
 			return
@@ -213,6 +230,96 @@ func daemonPort(addr string) string {
 		return addr[idx+1:]
 	}
 	return "17731"
+}
+
+func loadConfigForProcessCommand(args []string) (remorkdconfig.Config, string, error) {
+	fs := flag.NewFlagSet("process", flag.ContinueOnError)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return remorkdconfig.Config{}, "", err
+	}
+	configPath := fs.String("config", remorkdconfig.DefaultPath(home), "remorkd config file")
+	if err := fs.Parse(args); err != nil {
+		return remorkdconfig.Config{}, "", err
+	}
+	cfg, err := remorkdconfig.Load(*configPath, home)
+	return cfg, *configPath, err
+}
+
+func runStartCommand(args []string) error {
+	cfg, configPath, err := loadConfigForProcessCommand(args)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.PIDFile), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o755); err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	cmd := exec.Command(os.Args[0], "serve", "--config", configPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	if err := os.WriteFile(cfg.PIDFile, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("remorkd started pid %d\n", cmd.Process.Pid)
+	return nil
+}
+
+func runStopCommand(args []string) error {
+	cfg, _, err := loadConfigForProcessCommand(args)
+	if err != nil {
+		return err
+	}
+	pid, err := readPIDFile(cfg.PIDFile)
+	if err != nil {
+		return err
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	if err := process.Signal(os.Interrupt); err != nil {
+		return err
+	}
+	_ = os.Remove(cfg.PIDFile)
+	fmt.Printf("remorkd stopped pid %d\n", pid)
+	return nil
+}
+
+func runStatusCommand(args []string) error {
+	cfg, _, err := loadConfigForProcessCommand(args)
+	if err != nil {
+		return err
+	}
+	pid, err := readPIDFile(cfg.PIDFile)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("remorkd pid %d\n", pid)
+	fmt.Printf("listen %s\n", cfg.ListenAddr)
+	return nil
+}
+
+func readPIDFile(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0, err
+	}
+	return pid, nil
 }
 
 type rootFlags []string

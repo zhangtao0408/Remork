@@ -120,6 +120,20 @@ func TestSetupValuesBuildConfigAndToken(t *testing.T) {
 	}
 }
 
+func TestStopCommandReadsPIDFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "remorkd.pid")
+	if err := os.WriteFile(path, []byte("999999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pid, err := readPIDFile(path)
+	if err != nil {
+		t.Fatalf("readPIDFile: %v", err)
+	}
+	if pid != 999999 {
+		t.Fatalf("pid = %d, want 999999", pid)
+	}
+}
+
 func TestRootFlagsAcceptRepeatedRoots(t *testing.T) {
 	var roots rootFlags
 	if err := roots.Set("/data"); err != nil {
