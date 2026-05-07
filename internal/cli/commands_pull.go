@@ -49,20 +49,38 @@ func addPullCommand(root *cobra.Command, opts Options) {
 				}
 				return err
 			}
-			runner, err := newBoundSyncRunner(opts)
+			runCtx, err := newRunContext(opts)
 			if err != nil {
 				if jsonOut {
 					return writeJSONCommandError(cmd, err)
 				}
 				return err
 			}
-			result, err := runner.Pull(cmd.Context(), target, syncer.PullOptions{
+			result, err := runCtx.runner.Pull(cmd.Context(), target, syncer.PullOptions{
 				Force:        force,
 				Quiet:        quiet || jsonOut || boolFlag(cmd, "non-interactive"),
 				IncludeLarge: includeLarge,
 				In:           cmd.InOrStdin(),
 				Out:          cmd.ErrOrStderr(),
 			})
+			if err != nil {
+				retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+					var retryErr error
+					result, retryErr = active.runner.Pull(cmd.Context(), target, syncer.PullOptions{
+						Force:        force,
+						Quiet:        quiet || jsonOut || boolFlag(cmd, "non-interactive"),
+						IncludeLarge: includeLarge,
+						In:           cmd.InOrStdin(),
+						Out:          cmd.ErrOrStderr(),
+					})
+					return retryErr
+				})
+				if retryErr != nil {
+					err = retryErr
+				} else {
+					err = nil
+				}
+			}
 			if err != nil {
 				var missing syncer.MissingPullTargetError
 				if errors.As(err, &missing) {

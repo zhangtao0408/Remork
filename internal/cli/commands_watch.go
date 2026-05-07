@@ -32,7 +32,13 @@ func addWatchCommand(root *cobra.Command, opts Options) {
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			return watchEvents(ctx, cmd, runCtx, watchOpts)
+			err = watchEvents(ctx, cmd, runCtx, watchOpts)
+			if err != nil {
+				return retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+					return watchEvents(ctx, cmd, active, watchOpts)
+				})
+			}
+			return nil
 		},
 	}
 	cmd.Flags().DurationVar(&watchOpts.ReconcileInterval, "reconcile-interval", watchOpts.ReconcileInterval, "Periodically run a full reconcile while connected")

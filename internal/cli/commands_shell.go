@@ -48,11 +48,19 @@ func addShellCommand(root *cobra.Command, opts Options) {
 				return err
 			}
 			if list {
-				return listShellSessions(ctx, cmd, runCtx)
+				err := listShellSessions(ctx, cmd, runCtx)
+				if err != nil {
+					return retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+						return listShellSessions(ctx, cmd, active)
+					})
+				}
+				return nil
 			}
 			if killID != "" {
 				if err := runCtx.client.KillShellSession(ctx, runCtx.binding.RemoteRoot, killID); err != nil {
-					return err
+					return retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+						return active.client.KillShellSession(ctx, active.binding.RemoteRoot, killID)
+					})
 				}
 				r := plainRenderer(cmd, false)
 				r.Section("Shell session")
@@ -65,7 +73,19 @@ func addShellCommand(root *cobra.Command, opts Options) {
 			if !remoteOnly && !noSyncCheck {
 				status, err := runCtx.runner.Status(ctx)
 				if err != nil {
-					return err
+					retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+						var retryStatus syncer.Status
+						var retryErr error
+						retryStatus, retryErr = active.runner.Status(ctx)
+						if retryErr == nil {
+							runCtx = active
+							status = retryStatus
+						}
+						return retryErr
+					})
+					if retryErr != nil {
+						return retryErr
+					}
 				}
 				decision := preflight.Decide(preflight.WorkspaceState{
 					LocalDirty:  status.LocalChanges,
@@ -79,7 +99,19 @@ func addShellCommand(root *cobra.Command, opts Options) {
 				if status.RemoteUpdates > 0 {
 					syncResult, err := runCtx.runner.Sync(ctx, syncer.SyncOptions{})
 					if err != nil {
-						return err
+						retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+							var retryResult syncer.Result
+							var retryErr error
+							retryResult, retryErr = active.runner.Sync(ctx, syncer.SyncOptions{})
+							if retryErr == nil {
+								runCtx = active
+								syncResult = retryResult
+							}
+							return retryErr
+						})
+						if retryErr != nil {
+							return retryErr
+						}
 					}
 					if syncResult.Conflicts > 0 {
 						msg := "Remote updates conflict with local files; resolve conflicts before running remote commands."
@@ -99,7 +131,17 @@ func addShellCommand(root *cobra.Command, opts Options) {
 
 			before, err := runCtx.client.ManifestContext(ctx, runCtx.binding.RemoteRoot, ".")
 			if err != nil {
-				return err
+				retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+					retryBefore, retryErr := active.client.ManifestContext(ctx, active.binding.RemoteRoot, ".")
+					if retryErr == nil {
+						runCtx = active
+						before = retryBefore
+					}
+					return retryErr
+				})
+				if retryErr != nil {
+					return retryErr
+				}
 			}
 			err = shellclient.Run(ctx, shellclient.Options{
 				BaseURL:   runCtx.baseURL,
@@ -121,7 +163,14 @@ func addShellCommand(root *cobra.Command, opts Options) {
 			}
 			after, err := runCtx.client.ManifestContext(ctx, runCtx.binding.RemoteRoot, ".")
 			if err != nil {
-				return err
+				retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+					var retryErr error
+					after, retryErr = active.client.ManifestContext(ctx, active.binding.RemoteRoot, ".")
+					return retryErr
+				})
+				if retryErr != nil {
+					return retryErr
+				}
 			}
 			if before.Revision != after.Revision {
 				plainErrRenderer(cmd, false).Warning("Remote workspace changed during shell session. Run remork sync to update local files.")

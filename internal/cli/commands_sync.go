@@ -5,13 +5,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"remork/internal/auth"
 	"remork/internal/exitcode"
 	"remork/internal/output"
 	"remork/internal/progress"
-	"remork/internal/state"
 	"remork/internal/syncer"
-	"remork/internal/workspace"
 )
 
 func addSyncCommand(root *cobra.Command, opts Options) {
@@ -24,43 +21,8 @@ func addSyncCommand(root *cobra.Command, opts Options) {
 		Short: "Sync remote files into the local working copy",
 		Args:  maxArgsJSON(1, &jsonOut),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			binding, localRoot, err := workspace.ResolveFrom(opts.WorkingDir)
+			runCtx, err := newRunContext(opts)
 			if err != nil {
-				err = unboundWorkspaceError(err)
-				if jsonOut {
-					return writeJSONCommandError(cmd, err)
-				}
-				return err
-			}
-			store, err := configStore(opts)
-			if err != nil {
-				if jsonOut {
-					return writeJSONCommandError(cmd, err)
-				}
-				return err
-			}
-			cfg, err := store.Load()
-			if err != nil {
-				if jsonOut {
-					return writeJSONCommandError(cmd, err)
-				}
-				return err
-			}
-			host, ok := cfg.Hosts[binding.Host]
-			if !ok {
-				err := codedCommandError{
-					code: exitcode.InvalidUsageOrConfig,
-					err:  fmt.Errorf("host %q is not configured", binding.Host),
-					fix:  fmt.Sprintf("run remork host add %s --url URL", binding.Host),
-				}
-				if jsonOut {
-					return writeJSONCommandError(cmd, err)
-				}
-				return err
-			}
-			token, err := auth.TokenFromEnv(host.TokenEnv)
-			if err != nil {
-				err = tokenEnvCommandError(host, err)
 				if jsonOut {
 					return writeJSONCommandError(cmd, err)
 				}
@@ -76,22 +38,34 @@ func addSyncCommand(root *cobra.Command, opts Options) {
 				}
 				return err
 			}
-			workspaceRef := binding.Host + ":" + binding.RemoteRoot
-			runner := syncer.NewRunner(syncer.RunnerOptions{
-				Client:       clientForHost(host, cfg, token),
-				StateStore:   state.NewStore(binding.StateDir),
-				LocalRoot:    localRoot,
-				WorkspaceRef: workspaceRef,
-				RemoteRoot:   binding.RemoteRoot,
-				Progress:     progress.NewTextReporter(cmd.OutOrStdout(), progress.Options{Quiet: quiet || jsonOut, Color: commandColorMode(cmd)}),
-			})
+			runner := runCtx.runnerWithProgress(progress.NewTextReporter(cmd.OutOrStdout(), progress.Options{Quiet: quiet || jsonOut, Color: commandColorMode(cmd)}))
 			result, err := runner.Sync(cmd.Context(), syncer.SyncOptions{
 				TargetPath: targetPath,
 				Force:      force,
 				Quiet:      quiet,
 			})
 			if err != nil {
-				err = daemonReachabilityCommandError(err, "start remorkd, check VPN/firewall reachability, then rerun remork sync")
+				retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+					runner := active.runnerWithProgress(progress.NewTextReporter(cmd.OutOrStdout(), progress.Options{Quiet: quiet || jsonOut, Color: commandColorMode(cmd)}))
+					var retryErr error
+					result, retryErr = runner.Sync(cmd.Context(), syncer.SyncOptions{
+						TargetPath: targetPath,
+						Force:      force,
+						Quiet:      quiet,
+					})
+					return retryErr
+				})
+				if retryErr != nil {
+					if isAuthHTTPError(err) {
+						err = retryErr
+					} else {
+						err = daemonReachabilityCommandError(retryErr, "start remorkd, check VPN/firewall reachability, then rerun remork sync")
+					}
+				} else {
+					err = nil
+				}
+			}
+			if err != nil {
 				if jsonOut {
 					return writeJSONCommandError(cmd, err)
 				}

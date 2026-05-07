@@ -62,6 +62,25 @@ You usually only need to know:
 If your daemon URL is a private IP and your shell has proxy variables set, say
 yes to **Bypass proxy** during setup.
 
+### Connect to an existing daemon
+
+If a server already runs `remorkd` and exposes an HTTP port, connect without SSH:
+
+```bash
+remork connect --url http://server:17731
+```
+
+The connect flow probes `/status`, asks for a token if the daemon requires one,
+lets you choose or enter a workspace path inside the advertised allowed roots,
+then writes the local host and workspace binding. After that, use the normal
+commands:
+
+```bash
+remork sync
+remork run -- pwd
+remork shell
+```
+
 ## Daily Use
 
 From the local working copy:

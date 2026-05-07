@@ -82,6 +82,54 @@ func ResolveAllowed(allowed []Root, candidate string) (string, bool, error) {
 	return canonical, ok, err
 }
 
+func ResolveWorkspacePath(allowed []Root, selectedRoot string, input string) (string, error) {
+	input = strings.TrimSpace(input)
+	if strings.HasPrefix(input, "~") {
+		return "", fmt.Errorf("workspace path %q is not expanded by remork connect; use an absolute remote path such as /home/me/project", input)
+	}
+	if input == "" {
+		base, err := Normalize(selectedRoot)
+		if err != nil {
+			return "", err
+		}
+		ok, err := containsClean(allowed, base.Clean)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("workspace path %q is outside advertised allowed roots", base.Clean)
+		}
+		return base.Clean, nil
+	}
+	if isRemoteAbs(input) {
+		candidate, err := Normalize(input)
+		if err != nil {
+			return "", err
+		}
+		ok, err := containsClean(allowed, candidate.Clean)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("workspace path %q is outside advertised allowed roots", candidate.Clean)
+		}
+		return candidate.Clean, nil
+	}
+	base, err := Normalize(selectedRoot)
+	if err != nil {
+		return "", err
+	}
+	candidate := cleanRemote(path.Join(base.Clean, input))
+	ok, err := containsClean(allowed, candidate)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("workspace path %q is outside advertised allowed roots", candidate)
+	}
+	return candidate, nil
+}
+
 func containsClean(allowed []Root, requestedClean string) (bool, error) {
 	for _, base := range allowed {
 		if err := validateAllowedRoot(base); err != nil {

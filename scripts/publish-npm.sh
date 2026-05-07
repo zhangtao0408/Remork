@@ -15,15 +15,30 @@ version="$(node -p 'require(require("node:path").resolve(process.argv[1], "packa
 tag="${NPM_TAG:-}"
 publish_args=()
 
+infer_prerelease_tag() {
+  local version="$1"
+  local prerelease="${version#*-}"
+  prerelease="${prerelease%%.*}"
+
+  case "$prerelease" in
+    alpha | beta | rc | next | canary)
+      printf '%s' "$prerelease"
+      ;;
+    *)
+      printf 'next'
+      ;;
+  esac
+}
+
 if [[ "$package_name" == @*/* ]]; then
   publish_args+=(--access public)
 fi
 
 if [[ "$version" == *-* ]]; then
-  tag="${tag:-beta}"
+  tag="${tag:-$(infer_prerelease_tag "$version")}"
   if [[ "$tag" == "latest" ]]; then
     echo "refusing to publish prerelease $version with npm dist-tag 'latest'" >&2
-    echo "set NPM_TAG=beta or another prerelease dist-tag" >&2
+    echo "set NPM_TAG=alpha, beta, rc, or another prerelease dist-tag" >&2
     exit 1
   fi
   publish_args+=(--tag "$tag")

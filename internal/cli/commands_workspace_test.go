@@ -233,6 +233,23 @@ func TestHostAddAndListPrintJSON(t *testing.T) {
 	}
 }
 
+func TestHostAddAcceptsTokenFile(t *testing.T) {
+	home := t.TempDir()
+	cmd := NewRootCommand(Options{Version: "test", HomeDir: home})
+	_, err := executeCommand(cmd, "host", "add", "lab", "--url", "http://127.0.0.1:17731", "--token-file", "/tmp/lab.token", "--no-proxy")
+	if err != nil {
+		t.Fatalf("host add: %v", err)
+	}
+	cfg, err := config.NewStore(filepath.Join(home, ".remork")).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := cfg.Hosts["lab"]
+	if host.TokenFile != "/tmp/lab.token" || host.TokenEnv != "" || !host.NoProxy {
+		t.Fatalf("host = %#v, want token file and no proxy", host)
+	}
+}
+
 func TestHostAddPrintsConfirmationAndRejectsInvalidURL(t *testing.T) {
 	home := t.TempDir()
 	cmd := NewRootCommand(Options{Version: "test", HomeDir: home})

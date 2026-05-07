@@ -1058,6 +1058,34 @@ func TestBuildChangesetIncludesExplicitUntrackedPath(t *testing.T) {
 	}
 }
 
+func TestBuildChangesetExplicitRootIncludesUntrackedDescendants(t *testing.T) {
+	local := t.TempDir()
+	mustWriteFile(t, filepath.Join(local, "tracked.txt"), []byte("tracked new\n"))
+	mustWriteFile(t, filepath.Join(local, "src", "new.txt"), []byte("intentional\n"))
+	snap := state.Snapshot{
+		WorkspaceRef: "lab:/remote",
+		Entries: map[string]state.TrackedFile{
+			"tracked.txt": {Path: "tracked.txt", BaseHash: state.HashBytes([]byte("tracked old\n")), Revision: "r1"},
+		},
+	}
+
+	changes, skipped, err := BuildChangesetWithOptions(local, snap, BuildChangesetOptions{
+		UseIgnoreFiles: true,
+		ExplicitPaths:  []string{"./"},
+	})
+	if err != nil {
+		t.Fatalf("BuildChangesetWithOptions: %v", err)
+	}
+	for _, want := range []string{"tracked.txt", "src/new.txt"} {
+		if !containsChange(changes.Changes, want) {
+			t.Fatalf("explicit root should include %q, changes=%#v", want, changes.Changes)
+		}
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("explicit root should not skip selected descendants: %#v", skipped)
+	}
+}
+
 func TestBuildChangesetExplicitTrackedModifyOnlyIncludesSelectedPath(t *testing.T) {
 	local := t.TempDir()
 	mustWriteFile(t, filepath.Join(local, "selected.txt"), []byte("selected new\n"))

@@ -37,7 +37,18 @@ build_binary ./cmd/remorkd remorkd linux amd64
 cat > "$dist_dir/RELEASE_BODY.md" <<EOF
 # Remork $version
 
-This is a Product V1 beta release of Remork.
+This is a Product V1 prerelease of Remork.
+
+## Highlights
+
+- \`remork connect --url http://server:17731\` can bind a local directory to an
+  already running HTTP \`remorkd\` without SSH deployment.
+- Token auth can be stored in local token files and interactive commands can
+  prompt once to refresh an expired or mismatched daemon token.
+- \`remorkd setup\`, \`remorkd serve --config\`, \`remorkd start\`,
+  \`remorkd stop\`, and \`remorkd status\` provide a server-local setup path.
+- \`@zhangtao0408/remorkd\` packages the Linux daemon for direct npm install on
+  servers.
 
 ## Download the right asset
 
@@ -137,6 +148,19 @@ On a trusted VPN/private network, you can skip the token setup and add
 executed non-loopback install unless that flag is passed explicitly.
 
 ## Use Remork
+
+If the server already runs \`remorkd\` and exposes a reachable HTTP port, connect
+directly:
+
+\`\`\`bash
+LOCAL_WORKING_COPY=~/remork/project
+mkdir -p "\$LOCAL_WORKING_COPY"
+cd "\$LOCAL_WORKING_COPY"
+remork connect --url http://server:17731
+remork sync
+\`\`\`
+
+Otherwise, install or update the daemon over SSH:
 
 \`\`\`bash
 HOST_ALIAS=my-server

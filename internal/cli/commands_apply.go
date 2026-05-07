@@ -59,13 +59,16 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 				}
 				return err
 			}
-			runner, binding, localRoot, workspaceRef, err := boundApplyContext(opts)
+			runCtx, err := newRunContext(opts)
 			if err != nil {
 				if jsonOut {
 					return writeJSONCommandError(cmd, err)
 				}
 				return err
 			}
+			binding := runCtx.binding
+			localRoot := runCtx.localRoot
+			workspaceRef := runCtx.workspaceRef
 			snap, err := state.NewStore(binding.StateDir).Load(workspaceRef)
 			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
@@ -139,7 +142,25 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 				}
 			}
 			ctx := cmd.Context()
-			result, err := runner.ApplyChangesetContext(ctx, changeset)
+			result, err := runCtx.runner.ApplyChangesetContext(ctx, changeset)
+			if err != nil {
+				retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+					var retryErr error
+					result, retryErr = active.runner.ApplyChangesetContext(ctx, changeset)
+					if retryErr == nil {
+						runCtx = active
+						binding = active.binding
+						localRoot = active.localRoot
+						workspaceRef = active.workspaceRef
+					}
+					return retryErr
+				})
+				if retryErr == nil {
+					err = nil
+				} else if isAuthHTTPError(err) {
+					err = retryErr
+				}
+			}
 			if err != nil {
 				if isApplyConflict(err, result) {
 					writeApplyConflict(cmd, result.Conflicts, jsonOut)
@@ -159,8 +180,13 @@ func addApplyCommand(root *cobra.Command, opts Options) {
 				writeApplyConflict(cmd, result.Conflicts, jsonOut)
 				return silentCommandError{err: applyConflictError(result.Conflicts)}
 			}
-			if err := refreshAppliedChanges(ctx, runner, binding, localRoot, workspaceRef, changeset.Changes); err != nil {
-				return err
+			if err := refreshAppliedChanges(ctx, runCtx.runner, binding, localRoot, workspaceRef, changeset.Changes); err != nil {
+				retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+					return refreshAppliedChanges(ctx, active.runner, active.binding, active.localRoot, active.workspaceRef, changeset.Changes)
+				})
+				if retryErr != nil {
+					return retryErr
+				}
 			}
 			if jsonOut {
 				return output.WriteJSON(cmd.OutOrStdout(), applyJSONResult{

@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,6 +26,12 @@ type fakeDaemonProbe struct {
 	OperationRoots *[]string
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 func (p fakeDaemonProbe) Status(ctx context.Context, host config.Host, clientID string) (api.StatusResponse, error) {
 	return api.StatusResponse{Roots: p.Roots}, nil
 }
@@ -40,6 +48,18 @@ func (p fakeDaemonProbe) Operations(ctx context.Context, host config.Host, cfg c
 		*p.OperationRoots = append(*p.OperationRoots, root)
 	}
 	return nil, nil
+}
+
+func writeTestTokenFile(t *testing.T, home, value string) string {
+	t.Helper()
+	path := filepath.Join(home, ".remork", "tokens", "lab.token")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestVersionCommandPrintsVersion(t *testing.T) {
@@ -112,6 +132,30 @@ func TestDaemonCommandsAreRegistered(t *testing.T) {
 		if found.Name() != args[len(args)-1] {
 			t.Fatalf("command %v resolved to %q, want %q", args, found.Name(), args[len(args)-1])
 		}
+	}
+}
+
+func TestHTTPDaemonProbeStatusUsesTokenFile(t *testing.T) {
+	home := t.TempDir()
+	tokenFile := writeTestTokenFile(t, home, "abc123\n")
+	probe := httpDaemonProbe{client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.Header.Get("Authorization"); got != "Bearer abc123" {
+			t.Fatalf("Authorization = %q, want Bearer abc123", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"roots":["/data"]}`)),
+			Request:    r,
+		}, nil
+	})}}
+
+	status, err := probe.Status(context.Background(), config.Host{Name: "lab", URL: "http://remork.test", TokenFile: tokenFile}, "test-client")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if got := status.Roots; len(got) != 1 || got[0] != "/data" {
+		t.Fatalf("roots = %v, want /data", got)
 	}
 }
 
@@ -228,6 +272,19 @@ func TestRootMenuPrioritizesSetupWhenDirectoryIsUnbound(t *testing.T) {
 	}
 	if items[0].Group != "Setup" || items[0].Name != "setup" {
 		t.Fatalf("first unbound menu item = %#v, want setup", items[0])
+	}
+}
+
+func TestSetupMenuIncludesExistingDaemonConnect(t *testing.T) {
+	items := setupScopeItems(false)
+	found := false
+	for _, item := range items {
+		if item.Name == "Connect to existing daemon" && len(item.Args) == 1 && item.Args[0] == "connect-existing" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("setup menu items = %#v, want Connect to existing daemon", items)
 	}
 }
 

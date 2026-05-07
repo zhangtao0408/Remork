@@ -13,17 +13,24 @@ import (
 
 func TestSetupScopeDoesNotAssumeCurrentProject(t *testing.T) {
 	items := setupScopeItems(false)
-	if len(items) == 0 || items[0].Name != "Connect this project" {
+	if len(items) == 0 || items[0].Name != "Connect to existing daemon" {
 		t.Fatalf("first setup scope = %#v", items)
 	}
 	foundPrepare := false
+	foundConnectProject := false
 	for _, item := range items {
 		if item.Name == "Only prepare a server" {
 			foundPrepare = true
 		}
+		if item.Name == "Connect this project" {
+			foundConnectProject = true
+		}
 	}
 	if !foundPrepare {
 		t.Fatalf("setup scopes should include server-only option: %#v", items)
+	}
+	if !foundConnectProject {
+		t.Fatalf("setup scopes should preserve project setup option: %#v", items)
 	}
 }
 

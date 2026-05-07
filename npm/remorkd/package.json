@@ -1,13 +1,12 @@
 {
-  "name": "@zhangtao0408/remork",
+  "name": "@zhangtao0408/remorkd",
   "version": "0.1.2-alpha.0",
-  "description": "Remote workspace control for private servers",
+  "description": "Remork server daemon for private Linux servers",
   "bin": {
-    "remork": "bin/remork.js"
+    "remorkd": "bin/remorkd.js"
   },
   "os": [
-    "darwin",
-    "win32"
+    "linux"
   ],
   "cpu": [
     "arm64",

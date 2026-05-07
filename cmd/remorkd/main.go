@@ -1,21 +1,62 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"remork/internal/daemon"
 	"remork/internal/limits"
+	"remork/internal/remorkdconfig"
 	"remork/internal/safety"
+	"remork/internal/tui"
 )
 
 var version = "dev"
 
 func main() {
+	if len(os.Args) == 1 || isTopLevelHelp(os.Args[1]) {
+		fmt.Fprint(os.Stdout, topLevelUsage())
+		return
+	}
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "serve":
+			if err := runServeCommand(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "setup":
+			if err := runSetupCommand(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "start":
+			if err := runStartCommand(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "stop":
+			if err := runStopCommand(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "status":
+			if err := runStatusCommand(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
+	}
 	addr := flag.String("addr", "127.0.0.1:7731", "listen address")
 	var roots rootFlags
 	flag.Var(&roots, "root", "allowed base root; repeat to serve multiple base roots")
@@ -34,17 +75,339 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if insecureNoTokenNonLoopbackListenAddr(*addr, resolvedToken != "") {
-		log.Printf("WARNING: remorkd is listening on a non-loopback or wildcard address without authentication; clients that can reach it can use apply/file access and writes, remote command execution, and shell endpoints. Use --token-file and configure clients with remork host add --token-env.")
+	log.Fatal(runServer(serverOptions{Addr: *addr, Roots: []string(roots), Token: resolvedToken, Version: version}))
+}
+
+func isTopLevelHelp(arg string) bool {
+	return arg == "help" || arg == "-h" || arg == "--help"
+}
+
+func topLevelUsage() string {
+	return `Remork daemon for private remote workspaces.
+
+Usage:
+  remorkd setup [--config PATH]
+      Open the setup TUI and write ~/.remork/remorkd.toml.
+
+  remorkd start [--config PATH]
+      Start the daemon from the saved config.
+
+  remorkd stop [--config PATH]
+      Stop the daemon started from the saved config.
+
+  remorkd status [--config PATH]
+      Show the saved daemon process state.
+
+  remorkd serve [--config PATH]
+      Run the daemon in the foreground from the saved config.
+
+  remorkd --root /home/me --addr 0.0.0.0:17731 [--token TOKEN | --token-file PATH]
+      Run the daemon directly without a saved config.
+
+Start here:
+  remorkd setup
+`
+}
+
+type serverOptions struct {
+	Addr    string
+	Roots   []string
+	Token   string
+	Version string
+}
+
+func serverOptionsFromConfig(cfg remorkdconfig.Config, version string) (serverOptions, error) {
+	token, err := resolveToken("", cfg.TokenFile)
+	if err != nil {
+		return serverOptions{}, err
 	}
-	srv := daemon.NewServer(daemon.Config{Version: version, Roots: []string(roots), LargeThreshold: 128 << 20, Token: resolvedToken})
+	return serverOptions{Addr: cfg.ListenAddr, Roots: cfg.AllowedRoots, Token: token, Version: version}, nil
+}
+
+func runServer(opts serverOptions) error {
+	if len(opts.Roots) == 0 {
+		return fmt.Errorf("--root is required")
+	}
+	if insecureNoTokenNonLoopbackListenAddr(opts.Addr, opts.Token != "") {
+		log.Printf("WARNING: remorkd is listening on a non-loopback or wildcard address without authentication; clients that can reach it can use apply/file access and writes, remote command execution, and shell endpoints. Use --token-file and configure clients with remork connect.")
+	}
+	srv := daemon.NewServer(daemon.Config{Version: opts.Version, Roots: opts.Roots, LargeThreshold: 128 << 20, Token: opts.Token})
 	httpServer := &http.Server{
-		Addr:              *addr,
+		Addr:              opts.Addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: limits.DaemonReadHeaderTimeout,
 		IdleTimeout:       limits.DaemonIdleTimeout,
 	}
-	log.Fatal(httpServer.ListenAndServe())
+	return httpServer.ListenAndServe()
+}
+
+func runServeCommand(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	configPath := fs.String("config", remorkdconfig.DefaultPath(home), "remorkd config file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := remorkdconfig.Load(*configPath, home)
+	if err != nil {
+		return err
+	}
+	opts, err := serverOptionsFromConfig(cfg, version)
+	if err != nil {
+		return err
+	}
+	return runServer(opts)
+}
+
+func configFromSetupValues(home string, values map[string]string) (remorkdconfig.Config, string, error) {
+	roots := splitComma(values["allowed_roots"])
+	cfg := remorkdconfig.Config{
+		ListenAddr:         firstValue(values["listen_addr"], "0.0.0.0:17731"),
+		AllowedRoots:       roots,
+		LargeFileThreshold: firstValue(values["large_file_threshold"], "128MB"),
+		TokenFile:          remorkdconfig.ExpandHome(firstValue(values["token_file"], "$HOME/.remork/remork.token"), home),
+		PIDFile:            remorkdconfig.ExpandHome(firstValue(values["pid_file"], "$HOME/.remork/run/remorkd.pid"), home),
+		LogFile:            remorkdconfig.ExpandHome(firstValue(values["log_file"], "$HOME/.remork/log/remorkd.log"), home),
+	}
+	token := ""
+	switch strings.TrimSpace(values["token_mode"]) {
+	case "", "generate":
+		token = randomToken()
+	case "paste", "update":
+		token = strings.TrimSpace(values["token"])
+	case "none":
+		cfg.TokenFile = ""
+	default:
+		return remorkdconfig.Config{}, "", fmt.Errorf("unknown token mode %q", values["token_mode"])
+	}
+	return cfg, token, remorkdconfig.Validate(cfg)
+}
+
+func splitComma(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func firstValue(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(value)
+}
+
+func randomToken() string {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(buf)
+}
+
+func runSetupCommand(args []string) error {
+	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	configPath := fs.String("config", remorkdconfig.DefaultPath(home), "remorkd config file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	values, err := tui.RunForm(tui.NewFormModel("remorkd setup", []tui.Field{
+		{Section: "Network", Key: "listen_addr", Label: "Listen address", Initial: "0.0.0.0:17731"},
+		{Section: "Workspace", Key: "allowed_roots", Label: "Allowed roots", Placeholder: "/home/me, /scratch/me"},
+		{Section: "Auth", Key: "token_mode", Label: "Token mode", Initial: "generate", Help: "generate, paste, update, or none"},
+		{Section: "Auth", Key: "token", Label: "Token", Help: "Used only for paste or update mode."},
+		{Section: "Auth", Key: "token_file", Label: "Token file", Initial: "$HOME/.remork/remork.token"},
+		{Section: "Files", Key: "large_file_threshold", Label: "Large file threshold", Initial: "128MB"},
+		{Section: "Files", Key: "pid_file", Label: "PID file", Initial: "$HOME/.remork/run/remorkd.pid"},
+		{Section: "Files", Key: "log_file", Label: "Log file", Initial: "$HOME/.remork/log/remorkd.log"},
+	}))
+	if err != nil {
+		return err
+	}
+	cfg, token, err := configFromSetupValues(home, values)
+	if err != nil {
+		return err
+	}
+	if token != "" && cfg.TokenFile != "" {
+		if err := os.MkdirAll(filepath.Dir(cfg.TokenFile), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(cfg.TokenFile, []byte(token+"\n"), 0o600); err != nil {
+			return err
+		}
+	}
+	if err := remorkdconfig.Save(*configPath, cfg); err != nil {
+		return err
+	}
+	fmt.Print(setupCompletionMessage(*configPath, cfg, token))
+	return nil
+}
+
+func setupCompletionMessage(configPath string, cfg remorkdconfig.Config, token string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Config written: %s\n", configPath)
+	fmt.Fprintf(&b, "Start daemon: remorkd start --config %s\n", configPath)
+	fmt.Fprintln(&b, "Client connect:")
+	fmt.Fprintf(&b, "  %s\n", clientConnectCommand(cfg.ListenAddr, token))
+	return b.String()
+}
+
+func clientConnectCommand(listenAddr, token string) string {
+	cmd := "remork connect --url " + daemonConnectURL(listenAddr)
+	if strings.TrimSpace(token) != "" {
+		cmd += " --token " + shellArg(strings.TrimSpace(token))
+	}
+	return cmd
+}
+
+func daemonConnectURL(listenAddr string) string {
+	return "http://" + daemonConnectHost(listenAddr) + ":" + daemonPort(listenAddr)
+}
+
+func daemonConnectHost(listenAddr string) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+	if err != nil {
+		host = strings.TrimSpace(listenAddr)
+		if idx := strings.LastIndex(host, ":"); idx >= 0 {
+			host = host[:idx]
+		}
+		host = strings.Trim(host, "[]")
+	}
+	switch strings.TrimSpace(host) {
+	case "", "0.0.0.0", "::", "0:0:0:0:0:0:0:0":
+		return "HOST"
+	}
+	if strings.Contains(host, ":") {
+		return "[" + strings.Trim(host, "[]") + "]"
+	}
+	return host
+}
+
+func shellArg(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if strings.IndexFunc(value, func(r rune) bool {
+		return !(r == '-' || r == '_' || r == '.' || r == '/' || r == ':' ||
+			r >= '0' && r <= '9' ||
+			r >= 'A' && r <= 'Z' ||
+			r >= 'a' && r <= 'z')
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func daemonPort(addr string) string {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err == nil && port != "" {
+		return port
+	}
+	if idx := strings.LastIndex(addr, ":"); idx >= 0 && idx+1 < len(addr) {
+		return addr[idx+1:]
+	}
+	return "17731"
+}
+
+func loadConfigForProcessCommand(args []string) (remorkdconfig.Config, string, error) {
+	fs := flag.NewFlagSet("process", flag.ContinueOnError)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return remorkdconfig.Config{}, "", err
+	}
+	configPath := fs.String("config", remorkdconfig.DefaultPath(home), "remorkd config file")
+	if err := fs.Parse(args); err != nil {
+		return remorkdconfig.Config{}, "", err
+	}
+	cfg, err := remorkdconfig.Load(*configPath, home)
+	return cfg, *configPath, err
+}
+
+func runStartCommand(args []string) error {
+	cfg, configPath, err := loadConfigForProcessCommand(args)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.PIDFile), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.LogFile), 0o755); err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	cmd := exec.Command(os.Args[0], "serve", "--config", configPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	if err := os.WriteFile(cfg.PIDFile, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("remorkd started pid %d\n", cmd.Process.Pid)
+	return nil
+}
+
+func runStopCommand(args []string) error {
+	cfg, _, err := loadConfigForProcessCommand(args)
+	if err != nil {
+		return err
+	}
+	pid, err := readPIDFile(cfg.PIDFile)
+	if err != nil {
+		return err
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	if err := process.Signal(os.Interrupt); err != nil {
+		return err
+	}
+	_ = os.Remove(cfg.PIDFile)
+	fmt.Printf("remorkd stopped pid %d\n", pid)
+	return nil
+}
+
+func runStatusCommand(args []string) error {
+	cfg, _, err := loadConfigForProcessCommand(args)
+	if err != nil {
+		return err
+	}
+	pid, err := readPIDFile(cfg.PIDFile)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("remorkd pid %d\n", pid)
+	fmt.Printf("listen %s\n", cfg.ListenAddr)
+	return nil
+}
+
+func readPIDFile(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0, err
+	}
+	return pid, nil
 }
 
 type rootFlags []string

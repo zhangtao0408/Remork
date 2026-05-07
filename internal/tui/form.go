@@ -45,6 +45,7 @@ func NewFormModel(title string, fields []Field) FormModel {
 		input.Placeholder = field.Placeholder
 		input.Prompt = field.Label + ": "
 		input.Width = 60
+		_ = input.SetCursorMode(textinput.CursorStatic)
 		if field.Initial != "" {
 			input.SetValue(field.Initial)
 		}

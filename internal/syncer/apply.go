@@ -137,6 +137,10 @@ func normalizeExplicitPaths(localRoot string, values []string) (explicitPathSet,
 	normalized := make(explicitPathSet, 0, len(values))
 	for _, value := range values {
 		value = filepath.ToSlash(value)
+		if strings.TrimSpace(value) == "." || strings.TrimSpace(value) == "./" {
+			normalized = append(normalized, ".")
+			continue
+		}
 		clean, err := paths.NormalizeRemotePath(value)
 		if err != nil {
 			return nil, err
@@ -151,6 +155,9 @@ func normalizeExplicitPaths(localRoot string, values []string) (explicitPathSet,
 
 func (paths explicitPathSet) selects(path string) bool {
 	for _, explicit := range paths {
+		if explicit == "." {
+			return true
+		}
 		if path == explicit || strings.HasPrefix(path, explicit+"/") {
 			return true
 		}

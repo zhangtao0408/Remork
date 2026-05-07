@@ -3,6 +3,7 @@ package remoteroot
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -99,6 +100,76 @@ func TestContainsAllowsMultipleRoots(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("Contains() = true, want false")
+	}
+}
+
+func TestResolveWorkspacePathUsesSelectedRootForEmptyInput(t *testing.T) {
+	allowed, err := NormalizeMany([]string{"/home/me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveWorkspacePath(allowed, "/home/me", "")
+	if err != nil {
+		t.Fatalf("ResolveWorkspacePath: %v", err)
+	}
+	if got != "/home/me" {
+		t.Fatalf("workspace = %q, want /home/me", got)
+	}
+}
+
+func TestResolveWorkspacePathJoinsRelativeInput(t *testing.T) {
+	allowed, err := NormalizeMany([]string{"/home/me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveWorkspacePath(allowed, "/home/me", "project-a")
+	if err != nil {
+		t.Fatalf("ResolveWorkspacePath: %v", err)
+	}
+	if got != "/home/me/project-a" {
+		t.Fatalf("workspace = %q, want /home/me/project-a", got)
+	}
+}
+
+func TestResolveWorkspacePathAllowsAbsoluteInputInsideAnyAllowedRoot(t *testing.T) {
+	allowed, err := NormalizeMany([]string{"/home/me", "/scratch/me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveWorkspacePath(allowed, "/home/me", "/scratch/me/project-a")
+	if err != nil {
+		t.Fatalf("ResolveWorkspacePath: %v", err)
+	}
+	if got != "/scratch/me/project-a" {
+		t.Fatalf("workspace = %q, want /scratch/me/project-a", got)
+	}
+}
+
+func TestResolveWorkspacePathRejectsAbsoluteInputOutsideAllowedRoots(t *testing.T) {
+	allowed, err := NormalizeMany([]string{"/home/me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ResolveWorkspacePath(allowed, "/home/me", "/var/tmp/project")
+	if err == nil {
+		t.Fatal("ResolveWorkspacePath error = nil, want outside-root error")
+	}
+	if !strings.Contains(err.Error(), "outside advertised allowed roots") {
+		t.Fatalf("error = %q, want outside-root guidance", err.Error())
+	}
+}
+
+func TestResolveWorkspacePathRejectsTildeInput(t *testing.T) {
+	allowed, err := NormalizeMany([]string{"/home/me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ResolveWorkspacePath(allowed, "/home/me", "~/project")
+	if err == nil {
+		t.Fatal("ResolveWorkspacePath error = nil, want tilde error")
+	}
+	if !strings.Contains(err.Error(), "use an absolute remote path") {
+		t.Fatalf("error = %q, want tilde guidance", err.Error())
 	}
 }
 

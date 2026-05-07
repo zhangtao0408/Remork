@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -43,6 +44,19 @@ func TestFormModelUsesInitialValues(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view should contain initial value %q, got:\n%s", want, view)
 		}
+	}
+}
+
+func TestFormModelUsesStaticCursorToAvoidIdleBlinkRerenders(t *testing.T) {
+	model := NewFormModel("Update daemon token", []Field{
+		{Key: "token", Label: "Token"},
+	})
+
+	if got := model.inputs[0].CursorMode(); got != textinput.CursorStatic {
+		t.Fatalf("cursor mode = %v, want %v", got, textinput.CursorStatic)
+	}
+	if cmd := model.Init(); cmd != nil {
+		t.Fatal("static cursor form init should not schedule blink commands")
 	}
 }
 

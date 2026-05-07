@@ -3,8 +3,58 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"remork/internal/remorkdconfig"
 )
+
+func TestTopLevelUsageShowsSetupAndProcessCommands(t *testing.T) {
+	usage := topLevelUsage()
+	for _, want := range []string{
+		"remorkd setup",
+		"remorkd start",
+		"remorkd serve",
+		"remorkd --root /home/me --addr 0.0.0.0:17731",
+	} {
+		if !strings.Contains(usage, want) {
+			t.Fatalf("top-level usage should contain %q, got:\n%s", want, usage)
+		}
+	}
+}
+
+func TestSetupCompletionMessageIncludesClientConnectToken(t *testing.T) {
+	cfg := remorkdconfig.Config{
+		ListenAddr: "0.0.0.0:17731",
+		TokenFile:  "/home/me/.remork/remork.token",
+	}
+
+	msg := setupCompletionMessage("/home/me/.remork/remorkd.toml", cfg, "secret-token")
+
+	for _, want := range []string{
+		"Config written: /home/me/.remork/remorkd.toml",
+		"Start daemon: remorkd start --config /home/me/.remork/remorkd.toml",
+		"Client connect:",
+		"remork connect --url http://HOST:17731 --token secret-token",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("setup message should contain %q, got:\n%s", want, msg)
+		}
+	}
+}
+
+func TestSetupCompletionMessageOmitsTokenWhenAuthDisabled(t *testing.T) {
+	cfg := remorkdconfig.Config{ListenAddr: "127.0.0.1:17731"}
+
+	msg := setupCompletionMessage("/home/me/.remork/remorkd.toml", cfg, "")
+
+	if !strings.Contains(msg, "remork connect --url http://127.0.0.1:17731") {
+		t.Fatalf("setup message should contain URL-only connect command, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "--token") {
+		t.Fatalf("setup message should omit token flag when auth is disabled, got:\n%s", msg)
+	}
+}
 
 func TestResolveTokenRejectsEmptyTokenFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token")
@@ -66,6 +116,69 @@ func TestInsecureNoTokenNonLoopbackListenAddrCases(t *testing.T) {
 				t.Fatalf("insecureNoTokenNonLoopbackListenAddr(%q, %t) = %t, want %t", tt.addr, tt.hasToken, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestServerConfigBuildsDaemonOptions(t *testing.T) {
+	cfg := remorkdconfig.Config{
+		ListenAddr:         "127.0.0.1:17731",
+		AllowedRoots:       []string{"/data"},
+		LargeFileThreshold: "128MB",
+	}
+	opts, err := serverOptionsFromConfig(cfg, "test")
+	if err != nil {
+		t.Fatalf("serverOptionsFromConfig: %v", err)
+	}
+	if opts.Addr != "127.0.0.1:17731" {
+		t.Fatalf("addr = %q", opts.Addr)
+	}
+	if len(opts.Roots) != 1 || opts.Roots[0] != "/data" {
+		t.Fatalf("roots = %#v", opts.Roots)
+	}
+	if opts.Version != "test" {
+		t.Fatalf("version = %q", opts.Version)
+	}
+}
+
+func TestSetupValuesBuildConfigAndToken(t *testing.T) {
+	home := t.TempDir()
+	cfg, token, err := configFromSetupValues(home, map[string]string{
+		"listen_addr":          "0.0.0.0:17731",
+		"allowed_roots":        "/home/me, /scratch/me",
+		"token_mode":           "generate",
+		"token_file":           "$HOME/.remork/remork.token",
+		"large_file_threshold": "128MB",
+		"pid_file":             "$HOME/.remork/run/remorkd.pid",
+		"log_file":             "$HOME/.remork/log/remorkd.log",
+	})
+	if err != nil {
+		t.Fatalf("configFromSetupValues: %v", err)
+	}
+	if cfg.ListenAddr != "0.0.0.0:17731" {
+		t.Fatalf("listen = %q", cfg.ListenAddr)
+	}
+	if len(cfg.AllowedRoots) != 2 || cfg.AllowedRoots[1] != "/scratch/me" {
+		t.Fatalf("roots = %#v", cfg.AllowedRoots)
+	}
+	if cfg.TokenFile != filepath.Join(home, ".remork", "remork.token") {
+		t.Fatalf("token file = %q", cfg.TokenFile)
+	}
+	if token == "" {
+		t.Fatal("generated token should not be empty")
+	}
+}
+
+func TestStopCommandReadsPIDFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "remorkd.pid")
+	if err := os.WriteFile(path, []byte("999999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pid, err := readPIDFile(path)
+	if err != nil {
+		t.Fatalf("readPIDFile: %v", err)
+	}
+	if pid != 999999 {
+		t.Fatalf("pid = %d, want 999999", pid)
 	}
 }
 

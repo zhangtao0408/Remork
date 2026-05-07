@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"remork/internal/auth"
 	"remork/internal/exitcode"
 	"remork/internal/output"
 	"remork/internal/state"
@@ -23,16 +22,35 @@ func addStatusCommand(root *cobra.Command, opts Options) {
 		Short: "Show local, remote, conflict, and large-file state",
 		Args:  noArgsJSON(&jsonOut),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			runner, err := newBoundSyncRunner(opts)
+			runCtx, err := newRunContext(opts)
 			if err != nil {
 				if jsonOut {
 					return writeJSONCommandError(cmd, err)
 				}
 				return err
 			}
-			status, err := runner.Status(cmd.Context())
+			status, err := runCtx.runner.Status(cmd.Context())
 			if err != nil {
-				err = daemonReachabilityCommandError(err, "start remorkd, check VPN/firewall reachability, then run remork doctor")
+				retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+					var retryStatus syncer.Status
+					var retryErr error
+					retryStatus, retryErr = active.runner.Status(cmd.Context())
+					if retryErr == nil {
+						status = retryStatus
+					}
+					return retryErr
+				})
+				if retryErr != nil {
+					if isAuthHTTPError(err) {
+						err = retryErr
+					} else {
+						err = daemonReachabilityCommandError(retryErr, "start remorkd, check VPN/firewall reachability, then run remork doctor")
+					}
+				} else {
+					err = nil
+				}
+			}
+			if err != nil {
 				if jsonOut {
 					return writeJSONCommandError(cmd, err)
 				}
@@ -81,9 +99,9 @@ func newBoundSyncRunner(opts Options) (syncer.Runner, error) {
 			fix:  fmt.Sprintf("run remork host add %s --url URL", binding.Host),
 		}
 	}
-	token, err := auth.TokenFromEnv(host.TokenEnv)
+	token, err := tokenFromHost(host)
 	if err != nil {
-		return syncer.Runner{}, tokenEnvCommandError(host, err)
+		return syncer.Runner{}, tokenSourceCommandError(host, err)
 	}
 	workspaceRef := binding.Host + ":" + binding.RemoteRoot
 	return syncer.NewRunner(syncer.RunnerOptions{

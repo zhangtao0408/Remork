@@ -72,7 +72,12 @@ jobs:
               "${release_args[@]}"
           fi
 
-      - name: Publish npm package
+      - name: Publish client npm package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: bash scripts/publish-npm.sh npm/remork
+
+      - name: Publish daemon npm package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: bash scripts/publish-npm.sh npm/remorkd

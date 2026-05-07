@@ -10,10 +10,11 @@ import (
 )
 
 type Host struct {
-	Name     string `json:"name"`
-	URL      string `json:"url"`
-	TokenEnv string `json:"token_env,omitempty"`
-	NoProxy  bool   `json:"no_proxy,omitempty"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	TokenEnv  string `json:"token_env,omitempty"`
+	TokenFile string `json:"token_file,omitempty"`
+	NoProxy   bool   `json:"no_proxy,omitempty"`
 }
 
 type Workspace struct {
