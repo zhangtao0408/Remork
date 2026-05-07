@@ -3,5 +3,7 @@ dist/
 /remorkd
 npm/remork/vendor/
 npm/remork/*.tgz
+npm/remorkd/vendor/
+npm/remorkd/*.tgz
 *.remork-tmp
 *.remork-apply

@@ -1,6 +1,6 @@
 {
   "name": "@zhangtao0408/remorkd",
-  "version": "0.0.0-dev",
+  "version": "0.1.2-alpha.0",
   "description": "Remork server daemon for private Linux servers",
   "bin": {
     "remorkd": "bin/remorkd.js"
