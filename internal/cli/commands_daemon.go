@@ -17,7 +17,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
-	"remork/internal/auth"
 	"remork/internal/client"
 	"remork/internal/config"
 	"remork/internal/exitcode"
@@ -83,9 +82,9 @@ func newDaemonStatusCommand(opts Options) *cobra.Command {
 				}
 				return err
 			}
-			token, err := auth.TokenFromEnv(host.TokenEnv)
+			token, err := tokenFromHost(host)
 			if err != nil {
-				err = tokenEnvCommandError(host, err)
+				err = tokenSourceCommandError(host, err)
 				if jsonOut {
 					return writeJSONCommandError(cmd, err)
 				}
@@ -1226,10 +1225,7 @@ func daemonStatusErrorFix(host config.Host, err error) string {
 	if errors.As(err, &httpErr) {
 		switch httpErr.StatusCode {
 		case 401, 403:
-			if host.TokenEnv != "" {
-				return "export " + host.TokenEnv + "=<token>, or update the host with remork host add " + host.Name + " --url " + host.URL + " --token-env TOKEN_ENV"
-			}
-			return "configure a token with remork host add " + host.Name + " --url " + host.URL + " --token-env TOKEN_ENV, or restart remorkd without auth only on trusted private networks"
+			return tokenSourceFix(host) + ", or restart remorkd without auth only on trusted private networks"
 		case 404:
 			return "check the daemon URL path and port with remork host add " + host.Name + " --url URL"
 		}
@@ -1243,13 +1239,22 @@ func daemonStatusErrorFix(host config.Host, err error) string {
 	}
 }
 
-func tokenEnvCommandError(host config.Host, err error) error {
-	fix := "export " + host.TokenEnv + "=<token>, or update the host with remork host add " + host.Name + " --url " + host.URL + " --token-env TOKEN_ENV"
+func tokenSourceCommandError(host config.Host, err error) error {
 	return codedCommandError{
 		code: exitcode.PermissionDenied,
 		err:  err,
-		fix:  fix,
+		fix:  tokenSourceFix(host),
 	}
+}
+
+func tokenSourceFix(host config.Host) string {
+	if host.TokenEnv != "" {
+		return "export " + host.TokenEnv + "=<token>, or update the host with remork host add " + host.Name + " --url " + host.URL + " --token-env TOKEN_ENV"
+	}
+	if host.TokenFile != "" {
+		return "write the daemon token to " + host.TokenFile + ", or update the host with remork host add " + host.Name + " --url " + host.URL + " --token-file TOKEN_FILE"
+	}
+	return "configure a token with remork host add " + host.Name + " --url " + host.URL + " --token-file TOKEN_FILE, or use --token-env TOKEN_ENV"
 }
 
 func deployAllowedRoots(deploy daemonDeployOptions) []string {

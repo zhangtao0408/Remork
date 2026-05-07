@@ -100,16 +100,16 @@ func runDoctor(ctx context.Context, opts Options) ([]string, *doctorFailure) {
 			code:   exitcode.InvalidUsageOrConfig,
 		}
 	}
-	_, err = auth.TokenFromEnv(host.TokenEnv)
+	_, err = auth.TokenFromSource(tokenSourceFromHost(host))
 	if err != nil {
 		return nil, &doctorFailure{
 			reason: err.Error(),
-			fix:    fmt.Sprintf("export %s=<token>", host.TokenEnv),
+			fix:    tokenSourceFix(host),
 			code:   exitcode.InvalidUsageOrConfig,
 		}
 	}
 	var warnings []string
-	if host.TokenEnv == "" {
+	if host.TokenEnv == "" && host.TokenFile == "" {
 		warnings = append(warnings, "host has no token configured; use only on trusted VPN/private networks")
 	}
 	status, err := opts.DaemonProbe.Status(ctx, host, cfg.ClientID)

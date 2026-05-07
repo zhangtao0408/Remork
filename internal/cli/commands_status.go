@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"remork/internal/auth"
 	"remork/internal/exitcode"
 	"remork/internal/output"
 	"remork/internal/state"
@@ -81,9 +80,9 @@ func newBoundSyncRunner(opts Options) (syncer.Runner, error) {
 			fix:  fmt.Sprintf("run remork host add %s --url URL", binding.Host),
 		}
 	}
-	token, err := auth.TokenFromEnv(host.TokenEnv)
+	token, err := tokenFromHost(host)
 	if err != nil {
-		return syncer.Runner{}, tokenEnvCommandError(host, err)
+		return syncer.Runner{}, tokenSourceCommandError(host, err)
 	}
 	workspaceRef := binding.Host + ":" + binding.RemoteRoot
 	return syncer.NewRunner(syncer.RunnerOptions{

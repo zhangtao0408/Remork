@@ -5,7 +5,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"remork/internal/auth"
 	"remork/internal/exitcode"
 	"remork/internal/output"
 	"remork/internal/progress"
@@ -58,9 +57,9 @@ func addSyncCommand(root *cobra.Command, opts Options) {
 				}
 				return err
 			}
-			token, err := auth.TokenFromEnv(host.TokenEnv)
+			token, err := tokenFromHost(host)
 			if err != nil {
-				err = tokenEnvCommandError(host, err)
+				err = tokenSourceCommandError(host, err)
 				if jsonOut {
 					return writeJSONCommandError(cmd, err)
 				}

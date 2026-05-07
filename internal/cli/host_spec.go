@@ -7,10 +7,11 @@ import (
 )
 
 type HostConfigSpec struct {
-	Name     string
-	URL      string
-	TokenEnv string
-	NoProxy  bool
+	Name      string
+	URL       string
+	TokenEnv  string
+	TokenFile string
+	NoProxy   bool
 }
 
 func PlanHostConfig(spec HostConfigSpec) (OperationPlan, error) {
@@ -46,6 +47,6 @@ func ExecuteHostConfigSpec(opts Options, spec HostConfigSpec) error {
 	if err != nil {
 		return err
 	}
-	cfg.Hosts[spec.Name] = config.Host{Name: spec.Name, URL: spec.URL, TokenEnv: spec.TokenEnv, NoProxy: spec.NoProxy}
+	cfg.Hosts[spec.Name] = config.Host{Name: spec.Name, URL: spec.URL, TokenEnv: spec.TokenEnv, TokenFile: spec.TokenFile, NoProxy: spec.NoProxy}
 	return store.Save(cfg)
 }

@@ -5,10 +5,11 @@ import "testing"
 func TestHostConfigSpecSavesHost(t *testing.T) {
 	home := t.TempDir()
 	spec := HostConfigSpec{
-		Name:     "lab",
-		URL:      "http://127.0.0.1:17731",
-		TokenEnv: "REMORK_TOKEN",
-		NoProxy:  true,
+		Name:      "lab",
+		URL:       "http://127.0.0.1:17731",
+		TokenEnv:  "REMORK_TOKEN",
+		TokenFile: "/tmp/lab.token",
+		NoProxy:   true,
 	}
 	if _, err := PlanHostConfig(spec); err != nil {
 		t.Fatalf("PlanHostConfig: %v", err)
@@ -20,7 +21,7 @@ func TestHostConfigSpecSavesHost(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("loadConfiguredHost ok=%v err=%v", ok, err)
 	}
-	if host.URL != spec.URL || host.TokenEnv != spec.TokenEnv || !host.NoProxy {
+	if host.URL != spec.URL || host.TokenEnv != spec.TokenEnv || host.TokenFile != spec.TokenFile || !host.NoProxy {
 		t.Fatalf("host = %#v, want spec %#v", host, spec)
 	}
 }

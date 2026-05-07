@@ -578,7 +578,7 @@ func (p httpDaemonProbe) Status(ctx context.Context, host config.Host, clientID 
 	if clientID == "" {
 		clientID = "remork-cli"
 	}
-	token, err := auth.TokenFromEnv(host.TokenEnv)
+	token, err := tokenFromHost(host)
 	if err != nil {
 		return api.StatusResponse{}, err
 	}
@@ -587,7 +587,7 @@ func (p httpDaemonProbe) Status(ctx context.Context, host config.Host, clientID 
 }
 
 func (p httpDaemonProbe) Manifest(ctx context.Context, host config.Host, cfg config.Config, root string) (api.ManifestResponse, error) {
-	token, err := auth.TokenFromEnv(host.TokenEnv)
+	token, err := tokenFromHost(host)
 	if err != nil {
 		return api.ManifestResponse{}, err
 	}
@@ -596,7 +596,7 @@ func (p httpDaemonProbe) Manifest(ctx context.Context, host config.Host, cfg con
 }
 
 func (p httpDaemonProbe) Operations(ctx context.Context, host config.Host, cfg config.Config, root string, limit int) ([]ops.Entry, error) {
-	token, err := auth.TokenFromEnv(host.TokenEnv)
+	token, err := tokenFromHost(host)
 	if err != nil {
 		return nil, err
 	}
@@ -621,6 +621,14 @@ func clientForHost(host config.Host, cfg config.Config, token string) remorkclie
 		Token:    token,
 		NoProxy:  host.NoProxy,
 	})
+}
+
+func tokenSourceFromHost(host config.Host) auth.TokenSource {
+	return auth.TokenSource{Env: host.TokenEnv, File: host.TokenFile}
+}
+
+func tokenFromHost(host config.Host) (string, error) {
+	return auth.TokenFromSource(tokenSourceFromHost(host))
 }
 
 func addVersionCommand(root *cobra.Command, version string) {

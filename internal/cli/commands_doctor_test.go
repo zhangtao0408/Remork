@@ -108,6 +108,38 @@ func TestDoctorJSONReportsReady(t *testing.T) {
 	}
 }
 
+func TestDoctorAcceptsTokenFileWithoutMissingTokenWarning(t *testing.T) {
+	home := t.TempDir()
+	local := t.TempDir()
+	tokenFile := writeTestTokenFile(t, home, "abc123\n")
+	probe := fakeDaemonProbe{Roots: []string{"/data"}}
+	store := config.NewStore(filepath.Join(home, ".remork"))
+	if err := store.Save(config.Config{
+		Hosts: map[string]config.Host{
+			"lab": {Name: "lab", URL: "http://127.0.0.1:17731", TokenFile: tokenFile},
+		},
+		Workspaces: map[string]config.Workspace{},
+	}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := workspace.WriteBinding(local, workspace.Binding{
+		Version:     1,
+		Host:        "lab",
+		RemoteRoot:  "/data/project",
+		WorkspaceID: "ws-test",
+		StateDir:    filepath.Join(t.TempDir(), "state"),
+	}); err != nil {
+		t.Fatalf("write binding: %v", err)
+	}
+
+	out, err := executeCommand(NewRootCommand(Options{Version: "test", HomeDir: home, WorkingDir: local, DaemonProbe: probe}), "doctor")
+	if err != nil {
+		t.Fatalf("doctor: %v\n%s", err, out.String())
+	}
+	mustContain(t, out.String(), "OK: workspace is ready")
+	mustNotContain(t, out.String(), "host has no token configured")
+}
+
 func TestDoctorFirstRunExplainsMissingConfig(t *testing.T) {
 	home := t.TempDir()
 	local := t.TempDir()

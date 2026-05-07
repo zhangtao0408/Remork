@@ -53,6 +53,10 @@ func addHostCommand(root *cobra.Command, opts Options) {
 			if err != nil {
 				return err
 			}
+			tokenFile, err := cmd.Flags().GetString("token-file")
+			if err != nil {
+				return err
+			}
 			noProxy, err := cmd.Flags().GetBool("no-proxy")
 			if err != nil {
 				return err
@@ -66,7 +70,7 @@ func addHostCommand(root *cobra.Command, opts Options) {
 				return err
 			}
 			name := args[0]
-			cfg.Hosts[name] = config.Host{Name: name, URL: url, TokenEnv: tokenEnv, NoProxy: noProxy}
+			cfg.Hosts[name] = config.Host{Name: name, URL: url, TokenEnv: tokenEnv, TokenFile: tokenFile, NoProxy: noProxy}
 			if err := store.Save(cfg); err != nil {
 				return err
 			}
@@ -84,6 +88,7 @@ func addHostCommand(root *cobra.Command, opts Options) {
 	}
 	add.Flags().String("url", "", "Daemon URL")
 	add.Flags().String("token-env", "", "Environment variable containing the daemon token")
+	add.Flags().String("token-file", "", "File containing the daemon token")
 	add.Flags().Bool("no-proxy", false, "Bypass proxies for this host")
 	add.Flags().BoolVar(&addJSON, "json", false, "Print JSON output")
 	list := &cobra.Command{
@@ -173,11 +178,15 @@ func listHosts(cmd *cobra.Command, opts Options, jsonOut bool) error {
 		if host.NoProxy {
 			flags = "no_proxy"
 		}
-		rows = append(rows, []string{name, host.URL, host.TokenEnv, flags})
+		tokenSource := host.TokenEnv
+		if tokenSource == "" {
+			tokenSource = host.TokenFile
+		}
+		rows = append(rows, []string{name, host.URL, tokenSource, flags})
 	}
 	r := plainRenderer(cmd, false)
 	r.Section("Hosts")
-	r.Table([]string{"name", "url", "token_env", "flags"}, rows)
+	r.Table([]string{"name", "url", "token", "flags"}, rows)
 	r.Command("remork init HOST:/absolute/remote/workspace")
 	return nil
 }

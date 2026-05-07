@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"remork/internal/auth"
 	"remork/internal/client"
 	"remork/internal/exitcode"
 	"remork/internal/limits"
@@ -202,7 +201,7 @@ func newRunContext(opts Options) (runContext, error) {
 	if !ok {
 		return runContext{}, fmt.Errorf("host %q is not configured", binding.Host)
 	}
-	token, err := auth.TokenFromEnv(host.TokenEnv)
+	token, err := tokenFromHost(host)
 	if err != nil {
 		return runContext{}, err
 	}
