@@ -92,6 +92,34 @@ func TestServerConfigBuildsDaemonOptions(t *testing.T) {
 	}
 }
 
+func TestSetupValuesBuildConfigAndToken(t *testing.T) {
+	home := t.TempDir()
+	cfg, token, err := configFromSetupValues(home, map[string]string{
+		"listen_addr":          "0.0.0.0:17731",
+		"allowed_roots":        "/home/me, /scratch/me",
+		"token_mode":           "generate",
+		"token_file":           "$HOME/.remork/remork.token",
+		"large_file_threshold": "128MB",
+		"pid_file":             "$HOME/.remork/run/remorkd.pid",
+		"log_file":             "$HOME/.remork/log/remorkd.log",
+	})
+	if err != nil {
+		t.Fatalf("configFromSetupValues: %v", err)
+	}
+	if cfg.ListenAddr != "0.0.0.0:17731" {
+		t.Fatalf("listen = %q", cfg.ListenAddr)
+	}
+	if len(cfg.AllowedRoots) != 2 || cfg.AllowedRoots[1] != "/scratch/me" {
+		t.Fatalf("roots = %#v", cfg.AllowedRoots)
+	}
+	if cfg.TokenFile != filepath.Join(home, ".remork", "remork.token") {
+		t.Fatalf("token file = %q", cfg.TokenFile)
+	}
+	if token == "" {
+		t.Fatal("generated token should not be empty")
+	}
+}
+
 func TestRootFlagsAcceptRepeatedRoots(t *testing.T) {
 	var roots rootFlags
 	if err := roots.Set("/data"); err != nil {
