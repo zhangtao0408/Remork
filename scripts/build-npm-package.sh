@@ -6,6 +6,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dist_dir="$repo_root/dist"
 pkg_dir="$repo_root/npm/remork"
 vendor_dir="$pkg_dir/vendor"
+server_pkg_dir="$repo_root/npm/remorkd"
+server_vendor_dir="$server_pkg_dir/vendor"
 
 npm_version="$tag"
 if [[ "$npm_version" == v[0-9]* ]]; then
@@ -116,4 +118,49 @@ Supported server daemon platforms:
 For full documentation, see https://github.com/zhangtao0408/Remork.
 EOF
 
-(cd "$pkg_dir" && npm pack --dry-run)
+rm -rf "$server_vendor_dir"
+mkdir -p "$server_vendor_dir" "$server_pkg_dir/bin" "$server_pkg_dir/test"
+cp "$dist_dir/remorkd-linux-arm64" "$server_vendor_dir/remorkd-linux-arm64"
+cp "$dist_dir/remorkd-linux-amd64" "$server_vendor_dir/remorkd-linux-amd64"
+chmod 0755 "$server_vendor_dir"/remorkd-*
+
+cat > "$server_pkg_dir/package.json" <<EOF
+{
+  "name": "@zhangtao0408/remorkd",
+  "version": "$npm_version",
+  "description": "Remork server daemon for private Linux servers",
+  "bin": {
+    "remorkd": "bin/remorkd.js"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64",
+    "x64"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "files": [
+    "bin/",
+    "vendor/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhangtao0408/Remork.git"
+  },
+  "homepage": "https://github.com/zhangtao0408/Remork#readme",
+  "bugs": {
+    "url": "https://github.com/zhangtao0408/Remork/issues"
+  },
+  "license": "UNLICENSED"
+}
+EOF
+
+(cd "$pkg_dir" && npm test && npm pack --dry-run)
+(cd "$server_pkg_dir" && npm test && npm pack --dry-run)
