@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"remork/internal/client"
+	"remork/internal/config"
 	"remork/internal/exitcode"
 	"remork/internal/limits"
 	"remork/internal/output"
@@ -54,7 +55,19 @@ func newRunCommand(opts Options) *cobra.Command {
 			if !remoteOnly && !noSyncCheck {
 				status, err := runCtx.runner.Status(ctx)
 				if err != nil {
-					return err
+					retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+						var retryStatus syncer.Status
+						var retryErr error
+						retryStatus, retryErr = active.runner.Status(ctx)
+						if retryErr == nil {
+							runCtx = active
+							status = retryStatus
+						}
+						return retryErr
+					})
+					if retryErr != nil {
+						return retryErr
+					}
 				}
 				decision := preflight.Decide(preflight.WorkspaceState{
 					LocalDirty:  status.LocalChanges,
@@ -68,7 +81,19 @@ func newRunCommand(opts Options) *cobra.Command {
 				if status.RemoteUpdates > 0 {
 					syncResult, err := runCtx.runner.Sync(ctx, syncer.SyncOptions{})
 					if err != nil {
-						return err
+						retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+							var retryResult syncer.Result
+							var retryErr error
+							retryResult, retryErr = active.runner.Sync(ctx, syncer.SyncOptions{})
+							if retryErr == nil {
+								runCtx = active
+								syncResult = retryResult
+							}
+							return retryErr
+						})
+						if retryErr != nil {
+							return retryErr
+						}
 					}
 					if syncResult.Conflicts > 0 {
 						msg := "Remote updates conflict with local files; resolve conflicts before running remote commands."
@@ -92,6 +117,18 @@ func newRunCommand(opts Options) *cobra.Command {
 				runProgress = newRunProgress(cmd.ErrOrStderr(), commandColorMode(cmd))
 			}
 			result, err := runCtx.client.ExecContext(ctx, runCtx.binding.RemoteRoot, runCtx.binding.RemoteRoot, command, timeout.Milliseconds())
+			if err != nil {
+				retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+					var retryErr error
+					result, retryErr = active.client.ExecContext(ctx, active.binding.RemoteRoot, active.binding.RemoteRoot, command, timeout.Milliseconds())
+					return retryErr
+				})
+				if retryErr != nil {
+					err = retryErr
+				} else {
+					err = nil
+				}
+			}
 			if runProgress != nil {
 				if err != nil {
 					runProgress.FailMessage("remote command failed")
@@ -175,13 +212,17 @@ func cleanRunStderr(stderr string) string {
 }
 
 type runContext struct {
-	binding  workspace.Binding
-	client   client.Client
-	runner   syncer.Runner
-	baseURL  string
-	clientID string
-	token    string
-	noProxy  bool
+	binding      workspace.Binding
+	client       client.Client
+	runner       syncer.Runner
+	cfg          config.Config
+	host         config.Host
+	localRoot    string
+	workspaceRef string
+	baseURL      string
+	clientID     string
+	token        string
+	noProxy      bool
 }
 
 func newRunContext(opts Options) (runContext, error) {
@@ -199,11 +240,15 @@ func newRunContext(opts Options) (runContext, error) {
 	}
 	host, ok := cfg.Hosts[binding.Host]
 	if !ok {
-		return runContext{}, fmt.Errorf("host %q is not configured", binding.Host)
+		return runContext{}, codedCommandError{
+			code: exitcode.InvalidUsageOrConfig,
+			err:  fmt.Errorf("host %q is not configured", binding.Host),
+			fix:  fmt.Sprintf("run remork host add %s --url URL", binding.Host),
+		}
 	}
 	token, err := tokenFromHost(host)
 	if err != nil {
-		return runContext{}, err
+		return runContext{}, tokenSourceCommandError(host, err)
 	}
 	c := clientForHost(host, cfg, token)
 	workspaceRef := binding.Host + ":" + binding.RemoteRoot
@@ -214,5 +259,37 @@ func newRunContext(opts Options) (runContext, error) {
 		WorkspaceRef: workspaceRef,
 		RemoteRoot:   binding.RemoteRoot,
 	})
-	return runContext{binding: binding, client: c, runner: runner, baseURL: host.URL, clientID: cfg.ClientID, token: token, noProxy: host.NoProxy}, nil
+	return runContext{binding: binding, client: c, runner: runner, cfg: cfg, host: host, localRoot: localRoot, workspaceRef: workspaceRef, baseURL: host.URL, clientID: cfg.ClientID, token: token, noProxy: host.NoProxy}, nil
+}
+
+func (ctx runContext) withUpdatedHost(host config.Host) runContext {
+	ctx.host = host
+	if ctx.cfg.Hosts == nil {
+		ctx.cfg.Hosts = map[string]config.Host{}
+	}
+	ctx.cfg.Hosts[host.Name] = host
+	token, _ := tokenFromHost(host)
+	ctx.token = token
+	ctx.client = clientForHost(host, ctx.cfg, token)
+	ctx.baseURL = host.URL
+	ctx.noProxy = host.NoProxy
+	ctx.runner = syncer.NewRunner(syncer.RunnerOptions{
+		Client:       ctx.client,
+		StateStore:   state.NewStore(ctx.binding.StateDir),
+		LocalRoot:    ctx.localRoot,
+		WorkspaceRef: ctx.workspaceRef,
+		RemoteRoot:   ctx.binding.RemoteRoot,
+	})
+	return ctx
+}
+
+func (ctx runContext) runnerWithProgress(reporter syncer.ProgressReporter) syncer.Runner {
+	return syncer.NewRunner(syncer.RunnerOptions{
+		Client:       ctx.client,
+		StateStore:   state.NewStore(ctx.binding.StateDir),
+		LocalRoot:    ctx.localRoot,
+		WorkspaceRef: ctx.workspaceRef,
+		RemoteRoot:   ctx.binding.RemoteRoot,
+		Progress:     reporter,
+	})
 }

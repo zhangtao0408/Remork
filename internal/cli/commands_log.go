@@ -29,6 +29,18 @@ func addLogCommand(root *cobra.Command, opts Options) {
 			}
 			entries, err := runCtx.client.OperationsContext(cmd.Context(), runCtx.binding.RemoteRoot, limit)
 			if err != nil {
+				retryErr := retryAfterTokenFileUpdate(cmd, opts, runCtx, err, func(active runContext) error {
+					var retryErr error
+					entries, retryErr = active.client.OperationsContext(cmd.Context(), active.binding.RemoteRoot, limit)
+					return retryErr
+				})
+				if retryErr != nil {
+					err = retryErr
+				} else {
+					err = nil
+				}
+			}
+			if err != nil {
 				if jsonOut {
 					return writeJSONCommandError(cmd, err)
 				}
