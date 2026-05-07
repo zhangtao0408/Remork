@@ -151,7 +151,7 @@ func setupPrepareServerFields(initial map[string]string) []tui.Field {
 	return []tui.Field{
 		{Section: "Server", Key: "host", Label: "Host", Placeholder: "my-lab", Initial: initial["host"], Help: "Saved Remork host name. Setup reuses the current workspace host when available."},
 		{Section: "Server", Key: "ssh", Label: "SSH target", Placeholder: "user@server", Initial: initial["ssh"], Help: "How this Mac reaches the server over SSH for install or upgrade."},
-		{Section: "Server", Key: "roots", Label: "Allowed roots", Placeholder: "/absolute/allowed/root", Initial: initial["roots"], Help: "Remote base directories remorkd is allowed to serve."},
+		{Section: "Server", Key: "roots", Label: "Allowed roots", Placeholder: "/absolute/allowed/root", Initial: initial["roots"], Help: "Remote base directories remorkd is allowed to serve; this is not the SSH user."},
 		{Section: "Network", Key: "port", Label: "Port", Placeholder: "17731", Initial: firstNonEmpty(initial["port"], "17731"), Help: "Remork derives the daemon URL and listen address from this port."},
 		{Section: "Auth", Key: "token_env", Label: "Token env", Initial: initial["token_env"], Help: "Optional. Use REMORK_TOKEN when you want token auth; leave empty to preserve a trusted private-network setup."},
 		{Section: "Options", Key: "no_proxy", Label: "Bypass proxy y/N", Placeholder: "no", Initial: firstNonEmpty(initial["no_proxy"], "no"), Help: "Use yes for VPN or private IPs that should bypass local proxy variables."},

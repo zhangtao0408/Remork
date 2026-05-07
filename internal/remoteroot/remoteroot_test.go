@@ -66,6 +66,19 @@ func TestNormalizeCleansTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestNormalizeUsesRemotePOSIXPathRules(t *testing.T) {
+	root, err := Normalize("/home/z00879328")
+	if err != nil {
+		t.Fatalf("Linux remote path should be absolute on every client OS: %v", err)
+	}
+	if root.Clean != "/home/z00879328" {
+		t.Fatalf("Clean = %q, want /home/z00879328", root.Clean)
+	}
+	if isRemoteAbs(`C:\Users\me`) {
+		t.Fatal("Windows local paths should not be treated as remote absolute roots")
+	}
+}
+
 func TestContainsAllowsMultipleRoots(t *testing.T) {
 	allowed, err := NormalizeMany([]string{"/opt/projects", "/home/me"})
 	if err != nil {

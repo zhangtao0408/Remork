@@ -63,10 +63,14 @@ func TestSetupPrepareServerFieldsAreMinimal(t *testing.T) {
 	fields := setupPrepareServerFields(nil)
 	keys := make([]string, 0, len(fields))
 	tokenPlaceholder := ""
+	rootsHelp := ""
 	for _, field := range fields {
 		keys = append(keys, field.Key)
 		if field.Key == "token_env" {
 			tokenPlaceholder = field.Placeholder
+		}
+		if field.Key == "roots" {
+			rootsHelp = field.Help
 		}
 	}
 	got := strings.Join(keys, ",")
@@ -80,6 +84,17 @@ func TestSetupPrepareServerFieldsAreMinimal(t *testing.T) {
 	}
 	if tokenPlaceholder != "" {
 		t.Fatalf("token env placeholder should be empty so it is not mistaken for a configured value, got %q", tokenPlaceholder)
+	}
+	if !strings.Contains(rootsHelp, "not the SSH user") {
+		t.Fatalf("allowed roots help should distinguish roots from SSH users, got %q", rootsHelp)
+	}
+}
+
+func TestSplitDaemonDeployRootsAcceptsFullWidthComma(t *testing.T) {
+	got := splitDaemonDeployRoots("/root，/home/z00879328")
+	want := []string{"/root", "/home/z00879328"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("roots = %#v, want %#v", got, want)
 	}
 }
 

@@ -287,7 +287,7 @@ func applyDaemonDeployFormValues(deploy *daemonDeployOptions, values map[string]
 
 func splitDaemonDeployRoots(value string) []string {
 	parts := strings.FieldsFunc(value, func(r rune) bool {
-		return r == ',' || r == '\n'
+		return r == ',' || r == '，' || r == '\n'
 	})
 	roots := make([]string, 0, len(parts))
 	for _, part := range parts {

@@ -3,6 +3,7 @@ package remoteroot
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -16,10 +17,10 @@ func Normalize(root string) (Root, error) {
 	if root == "" {
 		return Root{}, fmt.Errorf("root is required")
 	}
-	if !filepath.IsAbs(root) {
+	if !isRemoteAbs(root) {
 		return Root{}, fmt.Errorf("root %q must be absolute", root)
 	}
-	return Root{Raw: root, Clean: filepath.Clean(root)}, nil
+	return Root{Raw: root, Clean: cleanRemote(root)}, nil
 }
 
 func NormalizeMany(roots []string) ([]Root, error) {
@@ -51,7 +52,7 @@ func ResolveAllowed(allowed []Root, candidate string) (string, bool, error) {
 	if candidate == "" {
 		return "", false, fmt.Errorf("root is required")
 	}
-	if !filepath.IsAbs(candidate) {
+	if !isRemoteAbs(candidate) {
 		return "", false, fmt.Errorf("root %q must be absolute", candidate)
 	}
 	requestedReal, err := evalSymlinksPreservingTraversal(candidate, 255)
@@ -67,16 +68,16 @@ func ResolveAllowed(allowed []Root, candidate string) (string, bool, error) {
 		if basePath == "" {
 			basePath = base.Clean
 		}
-		if !filepath.IsAbs(basePath) {
+		if !isRemoteAbs(basePath) {
 			return "", false, fmt.Errorf("allowed root %q must be absolute", basePath)
 		}
 		baseReal, err := evalSymlinksPreservingTraversal(basePath, 255)
 		if err != nil {
 			return "", false, err
 		}
-		realAllowed = append(realAllowed, Root{Raw: base.Raw, Clean: filepath.Clean(baseReal)})
+		realAllowed = append(realAllowed, Root{Raw: base.Raw, Clean: cleanRemote(baseReal)})
 	}
-	canonical := filepath.Clean(requestedReal)
+	canonical := cleanRemote(requestedReal)
 	ok, err := containsClean(realAllowed, canonical)
 	return canonical, ok, err
 }
@@ -89,7 +90,7 @@ func containsClean(allowed []Root, requestedClean string) (bool, error) {
 		if requestedClean == base.Clean {
 			return true, nil
 		}
-		prefix := strings.TrimRight(base.Clean, string(filepath.Separator)) + string(filepath.Separator)
+		prefix := strings.TrimRight(base.Clean, "/") + "/"
 		if strings.HasPrefix(requestedClean, prefix) {
 			return true, nil
 		}
@@ -101,13 +102,21 @@ func validateAllowedRoot(root Root) error {
 	if root.Clean == "" {
 		return fmt.Errorf("allowed root is empty")
 	}
-	if !filepath.IsAbs(root.Clean) {
+	if !isRemoteAbs(root.Clean) {
 		return fmt.Errorf("allowed root %q must be absolute", root.Clean)
 	}
-	if cleaned := filepath.Clean(root.Clean); cleaned != root.Clean {
+	if cleaned := cleanRemote(root.Clean); cleaned != root.Clean {
 		return fmt.Errorf("allowed root %q is not clean", root.Clean)
 	}
 	return nil
+}
+
+func isRemoteAbs(root string) bool {
+	return path.IsAbs(root)
+}
+
+func cleanRemote(root string) string {
+	return path.Clean(root)
 }
 
 func evalSymlinksPreservingTraversal(path string, linksRemaining int) (string, error) {
