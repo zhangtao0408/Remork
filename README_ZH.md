@@ -50,6 +50,22 @@ remork setup
 
 如果 daemon URL 是私有 IP，而你的 shell 设置了代理变量，setup 里 **Bypass proxy** 建议选 yes。
 
+### 连接已有 daemon
+
+如果服务器上已经运行了 `remorkd`，并且 HTTP 端口可以从本机访问，可以不用 SSH 部署，直接连接：
+
+```bash
+remork connect --url http://server:17731
+```
+
+connect 会探测 `/status`，如果服务端需要 token 会提示输入；然后选择 allowed root 或输入其中的 workspace 路径，最后写入本机 host 配置和当前目录的 workspace binding。之后继续使用日常命令：
+
+```bash
+remork sync
+remork run -- pwd
+remork shell
+```
+
 ## 日常使用
 
 进入本地 working copy：

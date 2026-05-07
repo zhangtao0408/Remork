@@ -12,6 +12,15 @@ remork setup
 This package includes Remork client binaries for macOS and Windows plus Linux
 `remorkd` daemon binaries used by `remork setup`.
 
+## Connect to an existing daemon
+
+```bash
+remork connect --url http://server:17731
+```
+
+Use this when `remorkd` is already running on a reachable server. The client
+stores token auth in a local token file when needed.
+
 ## Security and Network Safety
 
 Remork is intended for trusted private networks, VPNs, or similarly controlled
