@@ -41,6 +41,7 @@ Usage:
 
 Setup:
   setup       Set up Remork for a server or workspace
+  connect     Connect this directory to an existing remorkd
 
 Daily:
   sync        Sync remote files into the local working copy
@@ -135,6 +136,7 @@ func NewRootCommand(opts Options) *cobra.Command {
 	root.SetHelpTemplate(productHelpTemplate)
 	addVersionCommand(root, opts.Version)
 	addSetupCommand(root, opts)
+	addConnectCommand(root, opts)
 	addHostCommand(root, opts)
 	addInitCommand(root, opts)
 	addSyncCommand(root, opts)
@@ -182,6 +184,9 @@ func runRootCommandMenu(cmd *cobra.Command, opts Options) error {
 func rootCommandItems(bound bool) []tui.CommandItem {
 	setup := []tui.CommandItem{
 		{Group: "Setup", Name: "setup", Description: "Set up Remork for a server or workspace", Args: []string{"setup"}},
+	}
+	if !bound {
+		setup = append(setup, tui.CommandItem{Group: "Setup", Name: "connect", Description: "Connect this directory to an existing remorkd", Args: []string{"connect"}, HelpOnly: true})
 	}
 	daily := []tui.CommandItem{
 		{Group: "Daily", Name: "sync", Description: "Pull remote changes into this working copy", Args: []string{"sync"}},
@@ -243,6 +248,23 @@ Automation:
 			example: `  remork setup
   remork host add my-lab --url http://server:17731
   remork init my-lab:/absolute/remote/path --non-interactive`,
+		},
+		"connect": {
+			long: `Connect this local directory to a remorkd that is already running and reachable over HTTP.
+
+When to use:
+  Use connect when a server already exposes a remorkd URL and you only need to
+  save the endpoint, optional token, and workspace binding locally.
+
+Interactive:
+  In a terminal, remork connect opens a guided form for URL, auth, root, and
+  workspace path.
+
+Automation:
+  Pass --url and --workspace-path with --non-interactive for scripts.`,
+			example: `  remork connect --url http://server:17731 --workspace-path project-a
+  remork connect --url http://server:17731 --token-file ~/.remork/tokens/lab.token --root /home/me --workspace-path project-a
+  remork sync`,
 		},
 		"init": {
 			long: `Bind the current local directory to a remote workspace managed by remorkd.
