@@ -24,6 +24,10 @@ import (
 var version = "dev"
 
 func main() {
+	if len(os.Args) == 1 || isTopLevelHelp(os.Args[1]) {
+		fmt.Fprint(os.Stdout, topLevelUsage())
+		return
+	}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "serve":
@@ -72,6 +76,37 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Fatal(runServer(serverOptions{Addr: *addr, Roots: []string(roots), Token: resolvedToken, Version: version}))
+}
+
+func isTopLevelHelp(arg string) bool {
+	return arg == "help" || arg == "-h" || arg == "--help"
+}
+
+func topLevelUsage() string {
+	return `Remork daemon for private remote workspaces.
+
+Usage:
+  remorkd setup [--config PATH]
+      Open the setup TUI and write ~/.remork/remorkd.toml.
+
+  remorkd start [--config PATH]
+      Start the daemon from the saved config.
+
+  remorkd stop [--config PATH]
+      Stop the daemon started from the saved config.
+
+  remorkd status [--config PATH]
+      Show the saved daemon process state.
+
+  remorkd serve [--config PATH]
+      Run the daemon in the foreground from the saved config.
+
+  remorkd --root /home/me --addr 0.0.0.0:17731 [--token TOKEN | --token-file PATH]
+      Run the daemon directly without a saved config.
+
+Start here:
+  remorkd setup
+`
 }
 
 type serverOptions struct {
@@ -215,10 +250,63 @@ func runSetupCommand(args []string) error {
 	if err := remorkdconfig.Save(*configPath, cfg); err != nil {
 		return err
 	}
-	fmt.Printf("Config written: %s\n", *configPath)
-	fmt.Printf("Start daemon: remorkd start --config %s\n", *configPath)
-	fmt.Printf("Client connect: remork connect --url http://HOST:%s\n", daemonPort(cfg.ListenAddr))
+	fmt.Print(setupCompletionMessage(*configPath, cfg, token))
 	return nil
+}
+
+func setupCompletionMessage(configPath string, cfg remorkdconfig.Config, token string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Config written: %s\n", configPath)
+	fmt.Fprintf(&b, "Start daemon: remorkd start --config %s\n", configPath)
+	fmt.Fprintln(&b, "Client connect:")
+	fmt.Fprintf(&b, "  %s\n", clientConnectCommand(cfg.ListenAddr, token))
+	return b.String()
+}
+
+func clientConnectCommand(listenAddr, token string) string {
+	cmd := "remork connect --url " + daemonConnectURL(listenAddr)
+	if strings.TrimSpace(token) != "" {
+		cmd += " --token " + shellArg(strings.TrimSpace(token))
+	}
+	return cmd
+}
+
+func daemonConnectURL(listenAddr string) string {
+	return "http://" + daemonConnectHost(listenAddr) + ":" + daemonPort(listenAddr)
+}
+
+func daemonConnectHost(listenAddr string) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+	if err != nil {
+		host = strings.TrimSpace(listenAddr)
+		if idx := strings.LastIndex(host, ":"); idx >= 0 {
+			host = host[:idx]
+		}
+		host = strings.Trim(host, "[]")
+	}
+	switch strings.TrimSpace(host) {
+	case "", "0.0.0.0", "::", "0:0:0:0:0:0:0:0":
+		return "HOST"
+	}
+	if strings.Contains(host, ":") {
+		return "[" + strings.Trim(host, "[]") + "]"
+	}
+	return host
+}
+
+func shellArg(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if strings.IndexFunc(value, func(r rune) bool {
+		return !(r == '-' || r == '_' || r == '.' || r == '/' || r == ':' ||
+			r >= '0' && r <= '9' ||
+			r >= 'A' && r <= 'Z' ||
+			r >= 'a' && r <= 'z')
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func daemonPort(addr string) string {

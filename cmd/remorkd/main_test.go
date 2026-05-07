@@ -3,10 +3,58 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"remork/internal/remorkdconfig"
 )
+
+func TestTopLevelUsageShowsSetupAndProcessCommands(t *testing.T) {
+	usage := topLevelUsage()
+	for _, want := range []string{
+		"remorkd setup",
+		"remorkd start",
+		"remorkd serve",
+		"remorkd --root /home/me --addr 0.0.0.0:17731",
+	} {
+		if !strings.Contains(usage, want) {
+			t.Fatalf("top-level usage should contain %q, got:\n%s", want, usage)
+		}
+	}
+}
+
+func TestSetupCompletionMessageIncludesClientConnectToken(t *testing.T) {
+	cfg := remorkdconfig.Config{
+		ListenAddr: "0.0.0.0:17731",
+		TokenFile:  "/home/me/.remork/remork.token",
+	}
+
+	msg := setupCompletionMessage("/home/me/.remork/remorkd.toml", cfg, "secret-token")
+
+	for _, want := range []string{
+		"Config written: /home/me/.remork/remorkd.toml",
+		"Start daemon: remorkd start --config /home/me/.remork/remorkd.toml",
+		"Client connect:",
+		"remork connect --url http://HOST:17731 --token secret-token",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("setup message should contain %q, got:\n%s", want, msg)
+		}
+	}
+}
+
+func TestSetupCompletionMessageOmitsTokenWhenAuthDisabled(t *testing.T) {
+	cfg := remorkdconfig.Config{ListenAddr: "127.0.0.1:17731"}
+
+	msg := setupCompletionMessage("/home/me/.remork/remorkd.toml", cfg, "")
+
+	if !strings.Contains(msg, "remork connect --url http://127.0.0.1:17731") {
+		t.Fatalf("setup message should contain URL-only connect command, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "--token") {
+		t.Fatalf("setup message should omit token flag when auth is disabled, got:\n%s", msg)
+	}
+}
 
 func TestResolveTokenRejectsEmptyTokenFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token")

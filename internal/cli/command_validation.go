@@ -60,7 +60,7 @@ func validateWorkspacePathArgs(values []string) error {
 
 func validateWorkspacePathArg(value string) error {
 	value = strings.TrimSpace(value)
-	if value == "" || value == "." {
+	if value == "" || value == "." || value == "./" {
 		return nil
 	}
 	if _, err := paths.NormalizeRemotePath(value); err != nil {
