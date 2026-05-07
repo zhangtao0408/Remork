@@ -65,6 +65,8 @@ func runSetupScopeMenu(cmd *cobra.Command, opts Options) error {
 	switch args[0] {
 	case "prepare":
 		return runSetupPrepareServer(cmd, opts)
+	case "connect-existing":
+		return runConnectTUI(cmd, opts, ConnectSpec{FirstSync: true})
 	case "connect":
 		return runSetupConnectProject(cmd, opts)
 	case "update":
@@ -85,6 +87,7 @@ func setupScopeItems(bound bool) []tui.CommandItem {
 		}
 	}
 	return []tui.CommandItem{
+		{Name: "Connect to existing daemon", Description: "Enter a daemon URL, bind this directory, then offer first sync", Args: []string{"connect-existing"}},
 		{Name: "Connect this project", Description: "Prepare or choose a daemon, bind this directory, then offer first sync", Args: []string{"connect"}},
 		{Name: "Only prepare a server", Description: "Install or update remorkd and configure a host profile", Args: []string{"prepare"}},
 		{Name: "Repair an existing setup", Description: "Check host, daemon, auth, roots, and workspace binding", Args: []string{"repair"}},

@@ -275,6 +275,19 @@ func TestRootMenuPrioritizesSetupWhenDirectoryIsUnbound(t *testing.T) {
 	}
 }
 
+func TestSetupMenuIncludesExistingDaemonConnect(t *testing.T) {
+	items := setupScopeItems(false)
+	found := false
+	for _, item := range items {
+		if item.Name == "Connect to existing daemon" && len(item.Args) == 1 && item.Args[0] == "connect-existing" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("setup menu items = %#v, want Connect to existing daemon", items)
+	}
+}
+
 func TestRootMenuKeepsDailyCommandsFirstWhenDirectoryIsBound(t *testing.T) {
 	items := rootCommandItems(true)
 	if len(items) == 0 {
