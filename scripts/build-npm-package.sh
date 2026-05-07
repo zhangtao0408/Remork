@@ -17,6 +17,20 @@ if [[ "$npm_version" == "dev" || "$npm_version" == "ci" ]]; then
   npm_version="0.0.0-$npm_version"
 fi
 
+npm_install_suffix=""
+if [[ "$npm_version" == *-* ]]; then
+  npm_install_tag="${npm_version#*-}"
+  npm_install_tag="${npm_install_tag%%.*}"
+  case "$npm_install_tag" in
+    alpha | beta | rc | next | canary)
+      npm_install_suffix="@$npm_install_tag"
+      ;;
+    *)
+      npm_install_suffix="@next"
+      ;;
+  esac
+fi
+
 required=(
   remork-darwin-arm64
   remork-darwin-amd64
@@ -88,7 +102,7 @@ Remote workspace control for private servers.
 ## Install
 
 \`\`\`bash
-npm install -g @zhangtao0408/remork@beta
+npm install -g @zhangtao0408/remork$npm_install_suffix
 remork setup
 \`\`\`
 
@@ -169,6 +183,27 @@ cat > "$server_pkg_dir/package.json" <<EOF
   },
   "license": "UNLICENSED"
 }
+EOF
+
+cat > "$server_pkg_dir/README.md" <<EOF
+# Remork Daemon
+
+Server daemon for Remork remote workspace control.
+
+## Install
+
+\`\`\`bash
+npm install -g @zhangtao0408/remorkd$npm_install_suffix
+remorkd setup
+remorkd start
+\`\`\`
+
+\`remorkd setup\` writes \`~/.remork/remorkd.toml\` and can generate a shared token.
+Use the printed \`remork connect --url http://HOST:PORT\` command from your client
+machine.
+
+Do not expose \`remorkd\` directly to untrusted networks. Use token auth on shared
+VPNs or multi-user networks.
 EOF
 
 (cd "$pkg_dir" && npm test && npm pack --dry-run)

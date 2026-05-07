@@ -5,7 +5,7 @@ Server daemon for Remork remote workspace control.
 ## Install
 
 ```bash
-npm install -g @zhangtao0408/remorkd@beta
+npm install -g @zhangtao0408/remorkd@alpha
 remorkd setup
 remorkd start
 ```

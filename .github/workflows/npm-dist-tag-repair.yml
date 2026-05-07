@@ -1,0 +1,27 @@
+name: NPM Dist Tag Repair
+
+on:
+  push:
+    branches:
+      - codex/remork-connect-alpha
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    if: contains(github.event.head_commit.message, '[npm-dist-tag-repair]')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Add alpha dist-tags
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm dist-tag add @zhangtao0408/remork@0.1.2-alpha.0 alpha
+          npm dist-tag add @zhangtao0408/remorkd@0.1.2-alpha.0 alpha
