@@ -508,7 +508,25 @@ func (r Runner) downloadFile(ctx context.Context, op planner.Operation, snap *st
 	if err := r.prepareFileReplacement(op.Path); err != nil {
 		return err
 	}
-	if err := transfer.WriteFileWith(r.opts.LocalRoot, op.Path, func(w io.Writer) error {
+	if err := transfer.CleanupStaleTemps(r.opts.LocalRoot, op.Path); err != nil {
+		return err
+	}
+	expectedHash := op.Entry.Hash
+	if err := transfer.WriteFileWithOptions(r.opts.LocalRoot, op.Path, transfer.WriteOptions{
+		Verify: func(path string) error {
+			if expectedHash == "" {
+				return nil
+			}
+			got, err := state.HashFile(path)
+			if err != nil {
+				return err
+			}
+			if got != expectedHash {
+				return fmt.Errorf("download verification failed for %s: hash %s, want %s", op.Path, got, expectedHash)
+			}
+			return nil
+		},
+	}, func(w io.Writer) error {
 		_, err := r.opts.Client.DownloadToContext(ctx, r.opts.RemoteRoot, op.Path, w)
 		return err
 	}); err != nil {

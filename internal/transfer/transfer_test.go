@@ -3,8 +3,11 @@ package transfer
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -128,6 +131,123 @@ func TestWriteFileUsesTempThenFinalName(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "a.txt.remork-tmp")); !os.IsNotExist(err) {
 		t.Fatalf("temp file should not remain: %v", err)
+	}
+}
+
+func TestWriteFileWithKeepsExistingFileWhenWriterFails(t *testing.T) {
+	local := t.TempDir()
+	target := filepath.Join(local, "src", "file_a.py")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("old complete file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := WriteFileWith(local, "src/file_a.py", func(w io.Writer) error {
+		if _, writeErr := w.Write([]byte("partial new file")); writeErr != nil {
+			return writeErr
+		}
+		return errors.New("simulated transfer failure")
+	})
+	if err == nil {
+		t.Fatal("WriteFileWith error = nil, want simulated failure")
+	}
+
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "old complete file\n" {
+		t.Fatalf("target content = %q, want old complete file", got)
+	}
+
+	matches, globErr := filepath.Glob(filepath.Join(local, "src", ".file_a.py.remork-*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary transfer files left behind: %#v", matches)
+	}
+}
+
+func TestWriteFileWithUsesHiddenRemorkTempFile(t *testing.T) {
+	local := t.TempDir()
+	var tempName string
+
+	err := WriteFileWith(local, "src/file_a.py", func(w io.Writer) error {
+		if named, ok := w.(interface{ Name() string }); ok {
+			tempName = filepath.Base(named.Name())
+		}
+		_, writeErr := w.Write([]byte("complete\n"))
+		return writeErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(tempName, ".file_a.py.remork-") {
+		t.Fatalf("temp name = %q, want .file_a.py.remork-*", tempName)
+	}
+}
+
+func TestWriteFileWithOptionsRejectsFailedVerificationBeforeRename(t *testing.T) {
+	local := t.TempDir()
+	target := filepath.Join(local, "file_a.py")
+	if err := os.WriteFile(target, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := WriteFileWithOptions(local, "file_a.py", WriteOptions{
+		Verify: func(path string) error {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			if string(data) != "expected\n" {
+				return fmt.Errorf("download verification failed")
+			}
+			return nil
+		},
+	}, func(w io.Writer) error {
+		_, writeErr := w.Write([]byte("corrupt\n"))
+		return writeErr
+	})
+	if err == nil || !strings.Contains(err.Error(), "download verification failed") {
+		t.Fatalf("error = %v, want download verification failure", err)
+	}
+
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "old\n" {
+		t.Fatalf("target content = %q, want old content preserved", got)
+	}
+}
+
+func TestCleanupStaleTempsOnlyRemovesTargetTemps(t *testing.T) {
+	local := t.TempDir()
+	dir := filepath.Join(local, "src")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(dir, ".file_a.py.remork-old")
+	other := filepath.Join(dir, ".file_b.py.remork-old")
+	if err := os.WriteFile(stale, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte("other"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CleanupStaleTemps(local, "src/file_a.py"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale temp still exists or stat failed: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("other temp should remain: %v", err)
 	}
 }
 

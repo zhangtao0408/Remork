@@ -25,6 +25,14 @@ func WriteFile(localRoot, remotePath string, data []byte) error {
 }
 
 func WriteFileWith(localRoot, remotePath string, write func(io.Writer) error) error {
+	return WriteFileWithOptions(localRoot, remotePath, WriteOptions{}, write)
+}
+
+type WriteOptions struct {
+	Verify func(path string) error
+}
+
+func WriteFileWithOptions(localRoot, remotePath string, opts WriteOptions, write func(io.Writer) error) error {
 	full, err := LocalPath(localRoot, remotePath)
 	if err != nil {
 		return err
@@ -32,10 +40,14 @@ func WriteFileWith(localRoot, remotePath string, write func(io.Writer) error) er
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
 	}
-	return writeFileAtomic(full, write)
+	return writeFileAtomicWithOptions(full, opts, write)
 }
 
 func writeFileAtomic(full string, write func(io.Writer) error) error {
+	return writeFileAtomicWithOptions(full, WriteOptions{}, write)
+}
+
+func writeFileAtomicWithOptions(full string, opts WriteOptions, write func(io.Writer) error) error {
 	parent := filepath.Dir(full)
 	tmpFile, err := os.CreateTemp(parent, "."+filepath.Base(full)+".remork-*")
 	if err != nil {
@@ -58,6 +70,11 @@ func writeFileAtomic(full string, write func(io.Writer) error) error {
 	}
 	if err := tmpFile.Close(); err != nil {
 		return err
+	}
+	if opts.Verify != nil {
+		if err := opts.Verify(tmp); err != nil {
+			return err
+		}
 	}
 	if err := os.Rename(tmp, full); err != nil {
 		return err
@@ -90,6 +107,24 @@ func LocalPath(localRoot, remotePath string) (string, error) {
 		return "", err
 	}
 	return full, nil
+}
+
+func CleanupStaleTemps(localRoot, remotePath string) error {
+	full, err := LocalPath(localRoot, remotePath)
+	if err != nil {
+		return err
+	}
+	pattern := filepath.Join(filepath.Dir(full), "."+filepath.Base(full)+".remork-*")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return err
+	}
+	for _, match := range matches {
+		if err := os.Remove(match); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func rejectSymlinkWritePath(root, full string) error {

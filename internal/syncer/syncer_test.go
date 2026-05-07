@@ -1,9 +1,12 @@
 package syncer
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -11,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 
+	"remork/internal/api"
 	"remork/internal/apply"
 	"remork/internal/client"
 	"remork/internal/daemon"
@@ -70,6 +74,126 @@ func TestSyncMaterializesSmallFilesAndLargeMeta(t *testing.T) {
 	}
 	if _, err := os.Stat(largeBasePath); !os.IsNotExist(err) {
 		t.Fatalf("large file base cache exists or unexpected stat error: %v", err)
+	}
+}
+
+func TestSyncHashMismatchPreservesExistingLocalFile(t *testing.T) {
+	local := t.TempDir()
+	remoteRoot := "/remote"
+	manifestData := []byte("old\n")
+	downloadData := []byte("old\n")
+	revision := "rev-old"
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/manifest":
+			data, err := json.Marshal(api.ManifestResponse{
+				Root:     remoteRoot,
+				Path:     ".",
+				Revision: revision,
+				Entries: []api.FileEntry{{
+					Path:     "file_a.py",
+					Type:     api.FileTypeFile,
+					Size:     int64(len(manifestData)),
+					Hash:     state.HashBytes(manifestData),
+					Revision: revision,
+				}},
+			})
+			if err != nil {
+				return nil, err
+			}
+			return testHTTPResponse(http.StatusOK, data), nil
+		case "/download":
+			return testHTTPResponse(http.StatusOK, downloadData), nil
+		default:
+			return testHTTPResponse(http.StatusNotFound, []byte("not found")), nil
+		}
+	})}
+
+	runner := NewRunner(RunnerOptions{
+		Client:     client.NewWithOptions(client.Options{BaseURL: "http://remork.test", HTTP: httpClient}),
+		StateStore: state.NewStore(filepath.Join(local, ".remork", "state")),
+		LocalRoot:  local,
+		RemoteRoot: remoteRoot,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+
+	manifestData = []byte("new\n")
+	downloadData = []byte("corrupt\n")
+	revision = "rev-new"
+	_, err := runner.Sync(context.Background(), SyncOptions{})
+	if err == nil || !strings.Contains(err.Error(), "download verification failed") {
+		t.Fatalf("sync error = %v, want verification failure", err)
+	}
+	got, readErr := os.ReadFile(filepath.Join(local, "file_a.py"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "old\n" {
+		t.Fatalf("local file = %q, want old file preserved", got)
+	}
+}
+
+func TestSyncRemovesStaleTransferTempBeforeDownload(t *testing.T) {
+	local := t.TempDir()
+	remoteRoot := "/remote"
+	remoteData := []byte("remote\n")
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/manifest":
+			data, err := json.Marshal(api.ManifestResponse{
+				Root:     remoteRoot,
+				Path:     ".",
+				Revision: "rev-remote",
+				Entries: []api.FileEntry{{
+					Path:     "file_a.py",
+					Type:     api.FileTypeFile,
+					Size:     int64(len(remoteData)),
+					Hash:     state.HashBytes(remoteData),
+					Revision: "rev-remote",
+				}},
+			})
+			if err != nil {
+				return nil, err
+			}
+			return testHTTPResponse(http.StatusOK, data), nil
+		case "/download":
+			return testHTTPResponse(http.StatusOK, remoteData), nil
+		default:
+			return testHTTPResponse(http.StatusNotFound, []byte("not found")), nil
+		}
+	})}
+	stale := filepath.Join(local, ".file_a.py.remork-old")
+	if err := os.WriteFile(stale, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := NewRunner(RunnerOptions{
+		Client:     client.NewWithOptions(client.Options{BaseURL: "http://remork.test", HTTP: httpClient}),
+		StateStore: state.NewStore(filepath.Join(local, ".remork", "state")),
+		LocalRoot:  local,
+		RemoteRoot: remoteRoot,
+	})
+	if _, err := runner.Sync(context.Background(), SyncOptions{}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale temp still exists or stat failed: %v", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func testHTTPResponse(status int, body []byte) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header:     make(http.Header),
 	}
 }
 
