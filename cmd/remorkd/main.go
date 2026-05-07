@@ -10,12 +10,22 @@ import (
 
 	"remork/internal/daemon"
 	"remork/internal/limits"
+	"remork/internal/remorkdconfig"
 	"remork/internal/safety"
 )
 
 var version = "dev"
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "serve":
+			if err := runServeCommand(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
+	}
 	addr := flag.String("addr", "127.0.0.1:7731", "listen address")
 	var roots rootFlags
 	flag.Var(&roots, "root", "allowed base root; repeat to serve multiple base roots")
@@ -34,17 +44,60 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if insecureNoTokenNonLoopbackListenAddr(*addr, resolvedToken != "") {
-		log.Printf("WARNING: remorkd is listening on a non-loopback or wildcard address without authentication; clients that can reach it can use apply/file access and writes, remote command execution, and shell endpoints. Use --token-file and configure clients with remork host add --token-env.")
+	log.Fatal(runServer(serverOptions{Addr: *addr, Roots: []string(roots), Token: resolvedToken, Version: version}))
+}
+
+type serverOptions struct {
+	Addr    string
+	Roots   []string
+	Token   string
+	Version string
+}
+
+func serverOptionsFromConfig(cfg remorkdconfig.Config, version string) (serverOptions, error) {
+	token, err := resolveToken("", cfg.TokenFile)
+	if err != nil {
+		return serverOptions{}, err
 	}
-	srv := daemon.NewServer(daemon.Config{Version: version, Roots: []string(roots), LargeThreshold: 128 << 20, Token: resolvedToken})
+	return serverOptions{Addr: cfg.ListenAddr, Roots: cfg.AllowedRoots, Token: token, Version: version}, nil
+}
+
+func runServer(opts serverOptions) error {
+	if len(opts.Roots) == 0 {
+		return fmt.Errorf("--root is required")
+	}
+	if insecureNoTokenNonLoopbackListenAddr(opts.Addr, opts.Token != "") {
+		log.Printf("WARNING: remorkd is listening on a non-loopback or wildcard address without authentication; clients that can reach it can use apply/file access and writes, remote command execution, and shell endpoints. Use --token-file and configure clients with remork connect.")
+	}
+	srv := daemon.NewServer(daemon.Config{Version: opts.Version, Roots: opts.Roots, LargeThreshold: 128 << 20, Token: opts.Token})
 	httpServer := &http.Server{
-		Addr:              *addr,
+		Addr:              opts.Addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: limits.DaemonReadHeaderTimeout,
 		IdleTimeout:       limits.DaemonIdleTimeout,
 	}
-	log.Fatal(httpServer.ListenAndServe())
+	return httpServer.ListenAndServe()
+}
+
+func runServeCommand(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	configPath := fs.String("config", remorkdconfig.DefaultPath(home), "remorkd config file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := remorkdconfig.Load(*configPath, home)
+	if err != nil {
+		return err
+	}
+	opts, err := serverOptionsFromConfig(cfg, version)
+	if err != nil {
+		return err
+	}
+	return runServer(opts)
 }
 
 type rootFlags []string

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"remork/internal/remorkdconfig"
 )
 
 func TestResolveTokenRejectsEmptyTokenFile(t *testing.T) {
@@ -66,6 +68,27 @@ func TestInsecureNoTokenNonLoopbackListenAddrCases(t *testing.T) {
 				t.Fatalf("insecureNoTokenNonLoopbackListenAddr(%q, %t) = %t, want %t", tt.addr, tt.hasToken, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestServerConfigBuildsDaemonOptions(t *testing.T) {
+	cfg := remorkdconfig.Config{
+		ListenAddr:         "127.0.0.1:17731",
+		AllowedRoots:       []string{"/data"},
+		LargeFileThreshold: "128MB",
+	}
+	opts, err := serverOptionsFromConfig(cfg, "test")
+	if err != nil {
+		t.Fatalf("serverOptionsFromConfig: %v", err)
+	}
+	if opts.Addr != "127.0.0.1:17731" {
+		t.Fatalf("addr = %q", opts.Addr)
+	}
+	if len(opts.Roots) != 1 || opts.Roots[0] != "/data" {
+		t.Fatalf("roots = %#v", opts.Roots)
+	}
+	if opts.Version != "test" {
+		t.Fatalf("version = %q", opts.Version)
 	}
 }
 
